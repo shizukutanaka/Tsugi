@@ -69,3 +69,20 @@ NVIDIA の広い smem を前提にチューニングした構成は AMD で *起
 bf16 は範囲が f32 並みに広いが仮数 7bit で **precision/denormal** が主リスク。
 denormal（最小正規数未満）は GPU の FTZ（flush-to-zero）有無でベンダー差を生む
 （docs/PERSPECTIVE-runtime-envelope.md）。
+
+## 検証器の検出限界（detectability floor）
+
+> `tsugi.calibration.detectability_floor`。許容ベース等価判定が見逃す系統誤差の下限。
+
+相対 floor = safety·√K·u（u = 単位丸め誤差・scale 非依存）。これ未満の系統バグは
+max_abs 等価判定で偽OK になる。K で √K 拡大するのが要点（大K ほど盲点が広がる）。
+
+| K | fp16 検出限界（safety=4, u=2⁻¹¹） |
+|---|---|
+| 256 | 3.1% |
+| 2048 | 8.8% |
+| 8192 | 17.7% |
+
+救済: scale/K 不変な RMS（エネルギー）比。乱雑な累積発散は zero-mean ゆえ ≈0、
+系統バグ（スケール/バイアス）は相関ゆえ検出可能。max_abs（乱雑）と RMS 比（系統）は
+相補的で、合成判定（fail-safe）が偽OK を消す（docs/PERSPECTIVE-verifier-calibration.md）。

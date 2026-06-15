@@ -56,7 +56,16 @@ Keep a Changelog 形式。SemVer。
   - dtype 別エンベロープを IEEE 754 実値で（fp16 は overflow・bf16 は precision が主リスク）
   - portcheck に「認証エンベロープ（保証が有効な前提）」を併記
   - docs/PERSPECTIVE-runtime-envelope.md
-- テスト計 63 PASS / verify 22 不変条件
+- **新視点6（ソクラテス問答）: 検証器そのものの検証（偽OK の非対称コストと検出限界）**
+  - `tsugi.calibration`: 検証器自身を ground-truth コーパスで採点し偽OK率を測るメタ層
+  - 偽OK（発散を等価と誤判定）はオラクル無きベンダーに silent 出荷＝致命・非対称コスト
+  - `detectability_floor()`: 許容判定が見逃す誤差の下限 = safety·√K·u。K で拡大
+    （fp16: 256→3.1%, 2048→8.8%, 8192→17.7%）＝視点2（導出許容）の双対コスト
+  - `systematic_divergence()`/`check_systematic()`: scale/K 不変な RMS 比で系統バグを相補検出
+  - `is_equivalent_combined()`: max_abs（乱雑）+ 系統（相関）の fail-safe 合成判定
+  - 実証: 0.5% 系統スケール誤差を max_abs 単独は全 K で見逃す（偽OK 3/6）が合成判定は 0/6
+  - docs/PERSPECTIVE-verifier-calibration.md
+- テスト計 69 PASS / verify 25 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

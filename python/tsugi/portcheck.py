@@ -115,6 +115,13 @@ def report(module, block_dims, cfg=None) -> int:
         print("\n--- 認証エンベロープ（この保証が有効な前提）---")
         print("  " + env.to_text())
         print("  → 本番入力がこの範囲を逸脱したら envelope.check_tensor で実行時検出（oracle 不要）")
+        # 検証器の検出限界を明示（この K で max_abs 等価判定が見逃す系統誤差の下限）。
+        from .calibration import detectability_floor
+        floor = detectability_floor(K_est, "float16")
+        print("\n--- 検証器の検出限界（偽OK の盲点）---")
+        print(f"  K={K_est} で max_abs 等価判定は相対 {floor['rel'] * 100:.1f}% 未満の"
+              "系統誤差を見逃す（偽OK）")
+        print("  → calibration.check_systematic で scale/K 不変の系統バイアスを相補的に検査")
     print(f"\n判定: {'移植可（要注意点あり）' if worst < 3 else '移植ブロッカーあり'}")
     return 0 if worst < 3 else 1
 

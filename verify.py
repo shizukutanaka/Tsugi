@@ -134,6 +134,25 @@ def main() -> int:
     check("envelope flags fp16 softmax overflow",
           not check_softmax_input(big_logit, env).in_envelope)
 
+    # 14. calibration: 検証器そのものを検証（偽OK の非対称コストと検出限界・新視点6）
+    from tsugi.calibration import (
+        detectability_floor,
+        evaluate,
+        is_equivalent_combined,
+        make_corpus,
+    )
+    from tsugi.equivalence import compare_gemm
+    check("detectability floor grows with K (sqrt)",
+          detectability_floor(8192, "float16")["rel"]
+          > detectability_floor(256, "float16")["rel"] * 4)
+    corpus = make_corpus(seed=0)
+    max_abs_only = evaluate(corpus, lambda a, b, K: compare_gemm(a, b, K, "float16").equivalent)
+    combined = evaluate(corpus, lambda a, b, K: is_equivalent_combined(a, b, K, "float16"))
+    check("max_abs-only verifier is untrustworthy (false-OK on sub-floor bug)",
+          not max_abs_only.trustworthy and max_abs_only.false_ok > 0)
+    check("combined verifier (max_abs + systematic) is trustworthy (false-OK = 0)",
+          combined.trustworthy and combined.false_ok == 0)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

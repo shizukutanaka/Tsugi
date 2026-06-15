@@ -15,6 +15,7 @@ GPU バックエンド（NVPTX/AMDGPU）はこのリファレンスと一致す�
 from __future__ import annotations
 
 from . import (
+    calibration,
     envelope,
     equivalence,
     feasibility,
@@ -41,6 +42,7 @@ __all__ = [
     "feasibility",
     "propagation",
     "envelope",
+    "calibration",
     "jit",
     "trace",
     "compile",

@@ -31,6 +31,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **導出許容誤差** — `tsugi.tolerance` が許容を K・dtype から導出（固定値でなく数学が許す範囲）
 - **合成的等価性** — `tsugi.propagation` が発散を op グラフに沿って伝播しモデルレベルで予測（per-kernel 等価 ⇏ per-model 等価・新視点4）
 - **実行時エンベロープ検査** — `tsugi.envelope` が本番入力の認証前提逸脱（overflow/denormal/scale/logit）を単一ベンダー・oracle 不要で検出（新視点5）
+- **検証器の較正** — `tsugi.calibration` が検証器自身の偽OK（発散を等価と誤判定）を ground-truth で測り、許容判定の検出限界（√K で拡大）の下に隠れる系統バグを相補計量で捕える（新視点6）
 - **permissive のみ** — 依存は全て MIT/Apache-2.0 系
 
 ## Installation
@@ -98,6 +99,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 起動可能性検証（feasibility・新視点3） | ✅ 完了 | 同一構成がNVIDIA起動可/AMD起動不能をBLOCK検出 |
 | 合成的等価性（propagation・新視点4） | ✅ 完了 | 発散が深さで~2000倍累積・モデル許容は単一カーネルの12倍 |
 | 実行時エンベロープ検査（envelope・新視点5） | ✅ 完了 | fp16 overflow/denormal/scale逸脱/logit>11.09 を単一ベンダーで検出 |
+| 検証器の較正（calibration・新視点6） | ✅ 完了 | max_abs単独は偽OK 3/6・合成判定で偽OK 0/6・検出限界 K=2048で8.8% |
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
