@@ -88,7 +88,9 @@ Keep a Changelog 形式。SemVer。
     decision.compare_decisions）を「実行時チェックリスト」として明示・判定からは除外
   - 検証ライフサイクル（静的→動的→メタ→基盤→翻訳）を一望できる to_text
   - portcheck.report は audit へ委譲しアドホックな統合グルーを除去（DRY）
-- テスト計 86 PASS / verify 33 不変条件
+  - **propagation を統合**: traced IR を論理 op 列へ写し（K ループの dot 群を 1 matmul に集約）、
+    per-kernel 静的判定を per-model（合成的等価性）へ拡張。モデル発散 vs naive 和を併記
+- テスト計 88 PASS / verify 34 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

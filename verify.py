@@ -189,6 +189,11 @@ def main() -> int:
           ad.max_risk == portability.Risk.BLOCK and not ad.portable)
     check("audit excludes runtime phases from static verdict",
           ad.max_risk == max(p.max_risk for p in ad.static_phases))
+    from tsugi.audit import _graph_ops
+    mm = [o for o in _graph_ops(mod, dcfg) if o.kind == "matmul"]
+    check("audit propagation collapses K-loop dots into one per-model matmul",
+          len(mm) == 1 and mm[0].K == 256
+          and any(p.name.startswith("propagation") for p in ad.phases))
 
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "

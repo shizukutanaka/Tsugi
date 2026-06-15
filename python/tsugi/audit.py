@@ -66,6 +66,42 @@ def _gemm_depth(module: ir.Module, cfg) -> int:
     return n_dots * bk
 
 
+# IR op → propagation の論理 op への写像。memory op は数値発散に寄与しないので除く。
+_AMPLIFY_KINDS = {"reduce", "exp", "rsqrt", "softmax", "div", "reciprocal"}
+_SKIP_KINDS = {"load", "store", "zeros"}
+
+
+def _graph_ops(module: ir.Module, cfg):
+    """traced IR を propagation 用の論理 op 列へ写す（K ループの dot 群は 1 matmul に集約）。
+
+    torch.compile(model) の op グラフを模す。連続 dot は 1 つの行列積（K=反復×BK）に
+    まとめ、reduce/exp 等は増幅 op、cast/add 等は elementwise(local のみ)として扱う。
+    条件数 cond は静的には不明ゆえ既定 1（実機/モデルで上書きされる前提）。
+    """
+    from .propagation import GraphOp
+
+    bk = cfg.block_k if cfg is not None else 32
+    ops = []
+    for k in module.kernels:
+        run_dots = 0
+        for op in k.body:
+            if op.kind in _SKIP_KINDS:         # memory op: K ループを途切れさせない
+                continue
+            if op.kind == "dot":
+                run_dots += 1
+                continue
+            if run_dots:                       # 実 compute op で dot 連を 1 matmul に集約
+                ops.append(GraphOp("matmul", K=run_dots * bk))
+                run_dots = 0
+            if op.kind in _AMPLIFY_KINDS:
+                ops.append(GraphOp(op.kind))
+            else:                              # cast/to/add/scale 等は elementwise
+                ops.append(GraphOp("scale"))
+        if run_dots:
+            ops.append(GraphOp("matmul", K=run_dots * bk))
+    return ops
+
+
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
           block_dims=None) -> Audit:
     """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。"""
@@ -74,6 +110,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     from .feasibility import cross_vendor_feasibility, first_vendor_only
     from .occupancy import occupancy_gap
     from .portability import analyze
+    from .propagation import propagate
     from .tolerance import explain
 
     a = Audit()
@@ -124,6 +161,24 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             f"検出限界(偽OKの盲点): max_abs は相対 {floor['rel'] * 100:.1f}% 未満の"
             "系統誤差を見逃す → calibration.check_systematic で相補検査")
         a.phases.append(num)
+
+    # --- 静的: 合成的等価性（per-kernel 等価 ⇏ per-model 等価） ---
+    gops = _graph_ops(module, cfg)
+    if gops:
+        pr = propagate(gops)
+        ratio = pr.model_divergence / (pr.naive_sum + 1e-30)
+        # 発散が深さ/増幅でナイーブ和を大きく超えるならモデルレベルで要注意。
+        prop = AuditPhase("propagation 合成的等価性", "static",
+                          Risk.WARN if ratio > 2.0 else Risk.INFO)
+        prop.lines.append(
+            f"モデル発散(予測)={pr.model_divergence:.2e}  "
+            f"naive per-kernel 和={pr.naive_sum:.2e}  (×{ratio:.1f})")
+        if pr.dominant is not None:
+            prop.lines.append(f"支配的増幅 op = {pr.dominant.kind}（amp={pr.dominant.amp:.1f}）")
+        if len(gops) == 1:
+            prop.lines.append("単一 op グラフ: 伝播増幅なし。多 op モデルでは深さ・"
+                              "条件数で累積（cond は実機/モデル依存・既定 1）")
+        a.phases.append(prop)
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---
     rt = AuditPhase("runtime 実行時チェックリスト", "runtime", Risk.INFO)

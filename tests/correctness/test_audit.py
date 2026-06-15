@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-from tsugi.audit import audit  # noqa: E402
+from tsugi.audit import _graph_ops, audit  # noqa: E402
 from tsugi.portcheck import _demo_module  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
 
@@ -15,8 +15,27 @@ def test_audit_aggregates_all_static_phases():
     mod, block, cfg = _demo_module()
     a = audit(mod, cfg, block_dims=block)
     names = {p.name.split()[0] for p in a.phases}
-    # 静的層（portability/feasibility/occupancy/numerics）＋ runtime チェックリスト
-    assert {"portability", "feasibility", "occupancy", "numerics", "runtime"} <= names
+    # 静的層（portability/feasibility/occupancy/numerics/propagation）＋ runtime
+    assert {"portability", "feasibility", "occupancy", "numerics",
+            "propagation", "runtime"} <= names
+
+
+def test_graph_ops_collapses_kloop_dots_into_one_matmul():
+    # K ループの dot 群（load で分断）は 1 つの matmul(K=反復×BK) に集約される
+    mod, block, cfg = _demo_module()
+    gops = _graph_ops(mod, cfg)
+    matmuls = [o for o in gops if o.kind == "matmul"]
+    assert len(matmuls) == 1
+    assert matmuls[0].K == 256   # 4 dots × block_k 64
+
+
+def test_propagation_phase_runs_on_module():
+    # 統合された propagation が per-model 発散を出す（単一 matmul は増幅なし=INFO）
+    mod, block, cfg = _demo_module()
+    a = audit(mod, cfg, block_dims=block)
+    prop = next(p for p in a.phases if p.name.startswith("propagation"))
+    assert prop.when == "static"
+    assert prop.max_risk == Risk.INFO   # 単一 op グラフは伝播増幅なし
 
 
 def test_audit_verdict_from_static_only():
@@ -59,6 +78,8 @@ def main() -> int:
     ok = True
     tests = [
         test_audit_aggregates_all_static_phases,
+        test_graph_ops_collapses_kloop_dots_into_one_matmul,
+        test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,
         test_runtime_phase_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
