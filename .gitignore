@@ -10,3 +10,6 @@ __pycache__/
 .tsugi_cache/
 .venv/
 compile_commands.json
+
+# GitHub App は workflows 権限が無く push 不可のため除外（要 GitHub UI で追加）
+.github/workflows/
