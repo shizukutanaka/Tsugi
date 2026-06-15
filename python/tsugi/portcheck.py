@@ -101,11 +101,17 @@ def report(module, block_dims, cfg=None) -> int:
     # 累積を伴う matmul があれば導出許容の目安を併記（検証層の統合）
     n_dots = sum(1 for k in module.kernels for op in k.body if op.kind == "dot")
     if n_dots >= 2:
+        from .envelope import certify_gemm
         from .tolerance import explain
         K_est = n_dots * 32  # 反復数×典型 BK の粗い推定
         print("\n--- 数値等価性の目安（導出許容）---")
         print("  " + explain(K_est, "float16"))
         print("  → 実 GPU 比較は equivalence.compare_gemm(nv_out, amd_out, K) で照合")
+        # 認証の前提を明示（この保証が有効な動作範囲）。本番入力の逸脱は要 runtime 検査。
+        env = certify_gemm(K_est, "float16", scale=1.0)
+        print("\n--- 認証エンベロープ（この保証が有効な前提）---")
+        print("  " + env.to_text())
+        print("  → 本番入力がこの範囲を逸脱したら envelope.check_tensor で実行時検出（oracle 不要）")
     print(f"\n判定: {'移植可（要注意点あり）' if worst < 3 else '移植ブロッカーあり'}")
     return 0 if worst < 3 else 1
 

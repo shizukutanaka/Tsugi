@@ -122,6 +122,18 @@ def main() -> int:
     flat = model_tolerance([GraphOp("matmul", K=128), GraphOp("softmax", cond=1.0)])
     check("ill-conditioned op amplifies divergence", amp > flat)
 
+    # 13. envelope: 認証前提の実行時逸脱を検出（静的保証の契約化・新視点5）
+    import numpy as np  # noqa: F811
+    from tsugi.envelope import certify_gemm, check_softmax_input, check_tensor
+    env = certify_gemm(K=256, dtype="float16", scale=1.0)
+    overflow = np.full((4, 4), 70000.0, np.float32)   # > fp16 max 65504
+    check("envelope flags fp16 overflow (OUT)", not check_tensor(overflow, env).in_envelope)
+    safe = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    check("envelope accepts in-range input (IN)", check_tensor(safe, env).in_envelope)
+    big_logit = np.array([[0.0, 12.5]], np.float32)   # > ln(65504)=11.09
+    check("envelope flags fp16 softmax overflow",
+          not check_softmax_input(big_logit, env).in_envelope)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

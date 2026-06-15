@@ -54,3 +54,18 @@ NVIDIA の広い smem を前提にチューニングした構成は AMD で *起
 - GEMM が LLM 実行時間を支配（prefill 87.6%/decode 76.2% @ llama3.2-1B f16, arXiv:2505.06461）。
 - AMD の弱点は性能でなく QA 文化（SemiAnalysis 2024）→ クロスベンダー検証が楔
   （docs/PERSPECTIVE-cross-vendor-verification.md）。
+
+## envelope dtype 数値限界（IEEE 754）
+
+> `tsugi.envelope.DTYPE_LIMITS`。本番入力が認証エンベロープ内かを検査する基準。
+
+| dtype | 最大正規数 | 最小正規数 | exp-overflow 閾値 ln(max) |
+|-------|-----------|-----------|---------------------------|
+| float16 (IEEE binary16) | 65504 | 6.1035e-5 | 11.09 |
+| bfloat16 | 3.3895e38 | 1.1755e-38 | 88.72 |
+| float32 (IEEE binary32) | 3.4028e38 | 1.1755e-38 | 88.72 |
+
+要点: fp16 は範囲が狭く **overflow** が主リスク（softmax 生 logit > 11.09 で exp が inf）。
+bf16 は範囲が f32 並みに広いが仮数 7bit で **precision/denormal** が主リスク。
+denormal（最小正規数未満）は GPU の FTZ（flush-to-zero）有無でベンダー差を生む
+（docs/PERSPECTIVE-runtime-envelope.md）。

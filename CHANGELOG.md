@@ -48,7 +48,15 @@ Keep a Changelog 形式。SemVer。
   - 実証（numpy）: 累積順序違いの 2 ベンダーを matmul+rmsnorm の鎖に流すと
     発散が 1→12 層で約 2000 倍に累積。モデル許容は単一カーネル許容の 12 倍
   - docs/PERSPECTIVE-error-propagation.md
-- テスト計 56 PASS / verify 19 不変条件
+- **新視点5（ソクラテス問答）: 数値エンベロープの実行時検査（静的保証の契約化）**
+  - `tsugi.envelope`: 等価性を認証した前提（scale/cond/dtype 範囲）を Envelope として明示
+  - `check_tensor()`: 本番入力の逸脱（NaN/Inf・fp16 overflow・denormal/FTZ・scale 逸脱）を
+    単一ベンダー・oracle 不要で検出。scale 逸脱は認証 atol を無効化＝要再認証
+  - `check_softmax_input()`: fp16 で生 logit が ln(65504)≈11.09 超 → exp overflow を検出
+  - dtype 別エンベロープを IEEE 754 実値で（fp16 は overflow・bf16 は precision が主リスク）
+  - portcheck に「認証エンベロープ（保証が有効な前提）」を併記
+  - docs/PERSPECTIVE-runtime-envelope.md
+- テスト計 63 PASS / verify 22 不変条件
 
 ### Note
 - リファレンス層は CPU で動作・検証済み（8/8 PASS）。
