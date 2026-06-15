@@ -86,3 +86,20 @@ max_abs 等価判定で偽OK になる。K で √K 拡大するのが要点（�
 救済: scale/K 不変な RMS（エネルギー）比。乱雑な累積発散は zero-mean ゆえ ≈0、
 系統バグ（スケール/バイアス）は相関ゆえ検出可能。max_abs（乱雑）と RMS 比（系統）は
 相補的で、合成判定（fail-safe）が偽OK を消す（docs/PERSPECTIVE-verifier-calibration.md）。
+
+## 非決定性のノイズフロア（run-to-run）
+
+> `tsugi.nondeterminism.measure_noise_floor`。GPU の atomic 加算は和の順序が
+> run-to-run で変わり結果が揺れる。出力は固定点でなく分布。
+
+第二の床（HW の床）= run-to-run ノイズ。検証器の実効分解能 = max(数値検出限界, ノイズフロア)。
+クロスベンダー差がこの床未満なら「A vs B」は「A vs A（別 run）」と区別不能 →
+INDISTINGUISHABLE（等価判定が原理的に未定義）。
+
+- 主因: atomicAdd ベースの reduction / split-K（スレッド到着順 = 浮動小数の和順）。
+  関連: NVIDIA は「同一ビット再現性は保証されない」（cuBLAS/cuDNN docs の reproducibility 節）。
+  PyTorch も `torch.use_deterministic_algorithms` で一部のみ決定化可能（atomic 経路は性能犠牲）。
+- 含意: 単一 run 比較は方法論的に不健全。noise_floor を実測してから tolerance に供給する
+  （tolerance.derive_tolerance の noise_floor 引数。既定 0 = 決定論仮定は誤り）。
+  CPU 実装は atomic 非決定の擬似再現（明示）。実機では run_fn を実カーネルにするだけ。
+  （docs/PERSPECTIVE-nondeterminism.md）

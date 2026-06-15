@@ -122,6 +122,11 @@ def report(module, block_dims, cfg=None) -> int:
         print(f"  K={K_est} で max_abs 等価判定は相対 {floor['rel'] * 100:.1f}% 未満の"
               "系統誤差を見逃す（偽OK）")
         print("  → calibration.check_systematic で scale/K 不変の系統バイアスを相補的に検査")
+        # ベンダー出力は分布。実機比較は run-to-run ノイズを実測してから（決定論を仮定しない）。
+        print("\n--- 非決定性（出力は点でなく分布）---")
+        print("  実 GPU の atomic 加算は run-to-run で揺れる。クロス差がノイズ未満なら")
+        print("  等価判定は未定義（INDISTINGUISHABLE）。実機比較は")
+        print("  nondeterminism.compare_stable でノイズ実測→3状態判定（決定論を仮定しない）")
     print(f"\n判定: {'移植可（要注意点あり）' if worst < 3 else '移植ブロッカーあり'}")
     return 0 if worst < 3 else 1
 

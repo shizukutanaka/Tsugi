@@ -153,6 +153,21 @@ def main() -> int:
     check("combined verifier (max_abs + systematic) is trustworthy (false-OK = 0)",
           combined.trustworthy and combined.false_ok == 0)
 
+    # 15. nondeterminism: 出力は分布・ノイズ未満は判定未定義（新視点7）
+    from tsugi.nondeterminism import (
+        DIVERGENT,
+        attribute,
+        measure_noise_floor,
+        simulate_nondeterministic_reduction,
+    )
+    parts = np.random.default_rng(0).standard_normal(4096).astype(np.float32)
+    nf = measure_noise_floor(lambda s: simulate_nondeterministic_reduction(parts, s), 16)
+    check("GPU output is a distribution (run-to-run noise > 0)", nf["spread"] > 0.0)
+    check("below noise floor → INDISTINGUISHABLE (equivalence undefined)",
+          attribute(nf["spread"] * 0.5, nf["spread"], 1e-2) == "INDISTINGUISHABLE")
+    check("above tolerance → DIVERGENT (real divergence survives noise)",
+          attribute(1.0, nf["spread"], 1e-2) == DIVERGENT)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

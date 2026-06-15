@@ -65,7 +65,15 @@ Keep a Changelog 形式。SemVer。
   - `is_equivalent_combined()`: max_abs（乱雑）+ 系統（相関）の fail-safe 合成判定
   - 実証: 0.5% 系統スケール誤差を max_abs 単独は全 K で見逃す（偽OK 3/6）が合成判定は 0/6
   - docs/PERSPECTIVE-verifier-calibration.md
-- テスト計 69 PASS / verify 25 不変条件
+- **新視点7（ソクラテス問答）: 非決定実行（ベンダー出力は点でなく分布）**
+  - `tsugi.nondeterminism`: GPU の atomic 非決定を擬似再現し run-to-run ノイズを実測
+  - 単一 run 比較は「ベンダー内ノイズ」と「ベンダー間発散」を混同（フレーク）→ 実証
+  - `measure_noise_floor()`: 複数 run で noise_floor を実測（tolerance.py の決定論仮定 noise=0 を埋める）
+  - `attribute()`/`compare_stable()`: クロス差を noise/tol に対し 3 状態へ帰属。
+    ノイズ未満は **INDISTINGUISHABLE**（等価判定が原理的に未定義）と正直に報告
+  - 第二の床: 実効分解能 = max(数値検出限界, ノイズフロア)。ノイズ律速を警告
+  - docs/PERSPECTIVE-nondeterminism.md
+- テスト計 75 PASS / verify 28 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で
