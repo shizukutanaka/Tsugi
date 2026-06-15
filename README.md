@@ -34,6 +34,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **検証器の較正** — `tsugi.calibration` が検証器自身の偽OK（発散を等価と誤判定）を ground-truth で測り、許容判定の検出限界（√K で拡大）の下に隠れる系統バグを相補計量で捕える（新視点6）
 - **非決定性の考慮** — `tsugi.nondeterminism` が GPU の run-to-run ノイズを実測し、出力を分布として比較。クロス差がノイズ未満なら INDISTINGUISHABLE と正直に判定（単一 run 比較のフレークを排す・新視点7）
 - **タスクレベル等価** — `tsugi.decision` が数値発散でなく判断フリップ率（argmax/選択トークンの変化）で等価を測る。フリップ率 ≤ P(margin<2δ)・タスク許容はマージン分布（新視点8）
+- **統合監査** — `tsugi.audit` が 8 視点＋メタ＋基盤を 1 つの判定に束ね、静的層の verdict と実行時チェックリスト（実機データが要る層）をライフサイクル順に一望（運用統合）
 - **permissive のみ** — 依存は全て MIT/Apache-2.0 系
 
 ## Installation
@@ -104,6 +105,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 検証器の較正（calibration・新視点6） | ✅ 完了 | max_abs単独は偽OK 3/6・合成判定で偽OK 0/6・検出限界 K=2048で8.8% |
 | 非決定性の考慮（nondeterminism・新視点7） | ✅ 完了 | run-to-run ノイズ実測・出力を分布として3状態判定・単一run比較のフレーク実証 |
 | タスクレベル等価（decision・新視点8） | ✅ 完了 | 判断フリップ率はスケール不変・abs誤差10倍でも同一・P(margin<2δ)上界を実証 |
+| 統合監査（audit・運用統合） | ✅ 完了 | 静的層を1判定に集約・実行時チェックリスト併記・portcheck は audit へ委譲 |
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |

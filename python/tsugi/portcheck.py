@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 from . import compile as _compile  # noqa: F401  (公開 API 確認用)
-from .portability import analyze, cross_vendor_diff
+from .portability import cross_vendor_diff
 
 TARGETS = ("nvidia", "amd_cdna", "amd_rdna")
 
@@ -73,67 +73,20 @@ def _demo_module():
 
 
 def report(module, block_dims, cfg=None) -> int:
-    print("=== Tsugi portability report ===\n")
-    worst = 0
-    for t in TARGETS:
-        rep = analyze(module, t, block_dims=block_dims, cfg=cfg)
-        print(rep.to_text())
-        print()
-        worst = max(worst, int(rep.max_risk))
-    # 起動可能性（占有率より上流のゲート）— 構成があれば categorical に判定
-    if cfg is not None:
-        from .feasibility import cross_vendor_feasibility, first_vendor_only
-        print(f"--- 起動可能性（構成 {cfg.key()}）---")
-        for _v, f in cross_vendor_feasibility(cfg).items():
-            print("  " + f.to_text().replace("\n", "\n  "))
-        only = first_vendor_only(cfg, "nvidia", "amd_cdna")
-        if only:
-            print("  ! 単一ソース約束の破綻（片方でしか起動しない）:")
-            for o in only:
-                print(f"      {o}")
-        print()
+    """統合ファサード tsugi.audit に委譲して 1 レポートにまとめる（重複排除）。"""
+    from .audit import audit
 
+    print("=== Tsugi portability report ===\n")
+    # ベンダー間の挙動差の疑い（audit に無い per-pair 差分）を先に併記
     diffs = cross_vendor_diff(module, ("nvidia", "amd_cdna"))
     if diffs:
         print("--- ベンダー間で挙動差の疑い ---")
         for d in diffs:
             print(f"  ! {d}")
-    # 累積を伴う matmul があれば導出許容の目安を併記（検証層の統合）
-    n_dots = sum(1 for k in module.kernels for op in k.body if op.kind == "dot")
-    if n_dots >= 2:
-        from .envelope import certify_gemm
-        from .tolerance import explain
-        # K = 累積深さ ≈ dot 反復数 × BK。BK は構成から取り（無ければ典型値 32）、
-        # マジックナンバーでなく実際のタイル構成に基づく見積りにする。
-        bk = cfg.block_k if cfg is not None else 32
-        K_est = n_dots * bk
-        print("\n--- 数値等価性の目安（導出許容）---")
-        print("  " + explain(K_est, "float16"))
-        print("  → 実 GPU 比較は equivalence.compare_gemm(nv_out, amd_out, K) で照合")
-        # 認証の前提を明示（この保証が有効な動作範囲）。本番入力の逸脱は要 runtime 検査。
-        env = certify_gemm(K_est, "float16", scale=1.0)
-        print("\n--- 認証エンベロープ（この保証が有効な前提）---")
-        print("  " + env.to_text())
-        print("  → 本番入力がこの範囲を逸脱したら envelope.check_tensor で実行時検出（oracle 不要）")
-        # 検証器の検出限界を明示（この K で max_abs 等価判定が見逃す系統誤差の下限）。
-        from .calibration import detectability_floor
-        floor = detectability_floor(K_est, "float16")
-        print("\n--- 検証器の検出限界（偽OK の盲点）---")
-        print(f"  K={K_est} で max_abs 等価判定は相対 {floor['rel'] * 100:.1f}% 未満の"
-              "系統誤差を見逃す（偽OK）")
-        print("  → calibration.check_systematic で scale/K 不変の系統バイアスを相補的に検査")
-        # ベンダー出力は分布。実機比較は run-to-run ノイズを実測してから（決定論を仮定しない）。
-        print("\n--- 非決定性（出力は点でなく分布）---")
-        print("  実 GPU の atomic 加算は run-to-run で揺れる。クロス差がノイズ未満なら")
-        print("  等価判定は未定義（INDISTINGUISHABLE）。実機比較は")
-        print("  nondeterminism.compare_stable でノイズ実測→3状態判定（決定論を仮定しない）")
-        # 最終的に問うべきはタスクの判断。数値発散はマージン分布を介して判断に翻訳される。
-        print("\n--- タスクレベル等価（判断は数値でなく決定で測る）---")
-        print("  数値発散はスケール不変な判断フリップと decouple する。実機 logit 比較は")
-        print("  decision.compare_decisions で判断フリップ率（ユーザーに見える差）を測る")
-        print("  → フリップ率 ≤ P(margin<2δ)。タスク許容=固定atolでなくマージン分布")
-    print(f"\n判定: {'移植可（要注意点あり）' if worst < 3 else '移植ブロッカーあり'}")
-    return 0 if worst < 3 else 1
+        print()
+    a = audit(module, cfg, block_dims=block_dims)
+    print(a.to_text())
+    return 0 if a.portable else 1
 
 
 def main(argv: list[str] | None = None) -> int:

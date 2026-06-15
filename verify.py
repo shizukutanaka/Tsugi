@@ -180,6 +180,16 @@ def main() -> int:
     check("high flip rate blocks at task level",
           not compare_decisions(va, vb, flip_budget=0.001).ok)
 
+    # 17. audit: 統合ファサードが静的層を 1 判定に束ねる（運用統合）
+    from tsugi.audit import audit
+    from tsugi.portcheck import _demo_module
+    mod, block, dcfg = _demo_module()
+    ad = audit(mod, dcfg, block_dims=block)
+    check("audit aggregates static phases into one verdict (AMD launch BLOCK)",
+          ad.max_risk == portability.Risk.BLOCK and not ad.portable)
+    check("audit excludes runtime phases from static verdict",
+          ad.max_risk == max(p.max_risk for p in ad.static_phases))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

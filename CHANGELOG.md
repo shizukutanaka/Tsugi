@@ -81,7 +81,14 @@ Keep a Changelog 形式。SemVer。
     フリップ＝系統的発散の疑いを警告
   - 数値等価 ⇏ タスク等価（大きな数値発散でもマージン大ならフリップ無視可能）を実証
   - docs/PERSPECTIVE-task-equivalence.md
-- テスト計 81 PASS / verify 31 不変条件
+- **統合監査ファサード（視点が出揃ったので統合）**: `tsugi.audit`
+  - traced IR ＋構成から静的層（portability/feasibility/occupancy/tolerance/envelope/
+    calibration）をまとめて回し、1 つの Audit 判定に集約（深刻度を単一責任で束ねる）
+  - 実機データが要る層（envelope.check_tensor/nondeterminism.compare_stable/
+    decision.compare_decisions）を「実行時チェックリスト」として明示・判定からは除外
+  - 検証ライフサイクル（静的→動的→メタ→基盤→翻訳）を一望できる to_text
+  - portcheck.report は audit へ委譲しアドホックな統合グルーを除去（DRY）
+- テスト計 86 PASS / verify 33 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で
