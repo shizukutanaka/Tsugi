@@ -14,7 +14,16 @@ GPU バックエンド（NVPTX/AMDGPU）はこのリファレンスと一致す�
 """
 from __future__ import annotations
 
-from . import equivalence, feasibility, ir, occupancy, portability, tile, tolerance
+from . import (
+    equivalence,
+    feasibility,
+    ir,
+    occupancy,
+    portability,
+    propagation,
+    tile,
+    tolerance,
+)
 from .compile import compile  # noqa: A004
 from .dtypes import bfloat16, constexpr, float16, float32, int8, int32
 from .jit import jit
@@ -29,6 +38,7 @@ __all__ = [
     "occupancy",
     "tolerance",
     "feasibility",
+    "propagation",
     "jit",
     "trace",
     "compile",

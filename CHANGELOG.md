@@ -40,7 +40,15 @@ Keep a Changelog 形式。SemVer。
     NVIDIA 起動可 / AMD CDNA・RDNA 起動不能（LDS 64KiB 超過）を実証
   - docs/SOURCES.md に per-block 上限の出典追加
   - docs/PERSPECTIVE-launch-feasibility.md
-- テスト計 51 PASS / verify 17 不変条件
+- **新視点4（ソクラテス問答）: 合成的等価性（per-kernel 等価 ⇏ per-model 等価）**
+  - `tsugi.propagation`: ベンダー間発散を op グラフに沿って伝播（δ_out = amp·δ_in + local）
+  - `propagate()` が累積発散・支配的増幅 op・素朴な per-kernel 和との乖離を返す
+  - `model_tolerance()`: モデルレベルで正当に生じうる発散（per-model 許容の目安）
+  - ill-conditioned op（相殺 reduction・小値除算・大 exp/softmax）を amp=条件数で扱う
+  - 実証（numpy）: 累積順序違いの 2 ベンダーを matmul+rmsnorm の鎖に流すと
+    発散が 1→12 層で約 2000 倍に累積。モデル許容は単一カーネル許容の 12 倍
+  - docs/PERSPECTIVE-error-propagation.md
+- テスト計 56 PASS / verify 19 不変条件
 
 ### Note
 - リファレンス層は CPU で動作・検証済み（8/8 PASS）。

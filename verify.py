@@ -113,6 +113,15 @@ def main() -> int:
           portability.analyze(Module(kernels=[]), "amd_cdna", cfg=nv_tuned).max_risk
           == portability.Risk.BLOCK)
 
+    # 12. propagation: per-kernel 等価 ⇏ per-model 等価（深さで発散が累積・新視点4）
+    from tsugi.propagation import GraphOp, model_tolerance
+    single = model_tolerance([GraphOp("matmul", K=256)])
+    deep = model_tolerance([GraphOp("matmul", K=256)] * 12)
+    check("model-level divergence exceeds single-kernel (composition)", deep > single)
+    amp = model_tolerance([GraphOp("matmul", K=128), GraphOp("softmax", cond=8.0)])
+    flat = model_tolerance([GraphOp("matmul", K=128), GraphOp("softmax", cond=1.0)])
+    check("ill-conditioned op amplifies divergence", amp > flat)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

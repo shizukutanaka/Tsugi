@@ -29,6 +29,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **数値等価性保証** — `tsugi.equivalence` が両ベンダーの数値発散を検出（Triton にない保証）
 - **占有率推定** — `tsugi.occupancy` が同一構成のベンダー別占有率差を計算
 - **導出許容誤差** — `tsugi.tolerance` が許容を K・dtype から導出（固定値でなく数学が許す範囲）
+- **合成的等価性** — `tsugi.propagation` が発散を op グラフに沿って伝播しモデルレベルで予測（per-kernel 等価 ⇏ per-model 等価・新視点4）
 - **permissive のみ** — 依存は全て MIT/Apache-2.0 系
 
 ## Installation
@@ -94,6 +95,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 占有率推定（occupancy） | ✅ 完了 | 一次情報源HW値・同一構成のベンダー差 |
 | 導出許容誤差（tolerance・新視点2） | ✅ 完了 | K依存・固定値の過剰検出を解消 |
 | 起動可能性検証（feasibility・新視点3） | ✅ 完了 | 同一構成がNVIDIA起動可/AMD起動不能をBLOCK検出 |
+| 合成的等価性（propagation・新視点4） | ✅ 完了 | 発散が深さで~2000倍累積・モデル許容は単一カーネルの12倍 |
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
