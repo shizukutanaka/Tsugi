@@ -1,18 +1,22 @@
-"""Tsugi portability — クロスベンダー移植リスクの静的解析（ソクラテス問答で発見した新視点）。
+"""Tsugi portability — クロスベンダー移植リスクの静的解析。
 
-新視点: Tsugi の最強の楔は codegen でなく「移植が正しいと証明する検証層」。
+Tsugi の最強の楔は codegen でなく「移植が正しいと証明する検証層」。
 Triton は NVIDIA/AMD カーネルを生成するが、両者の数値等価性は保証しない。
 本モジュールは traced IR から *実行前に* 移植リスクを告げる（GPU 不要・CPU で動く）。
 
 リサーチ由来: 堀の本質はライブラリ＋QA。AMD の弱点は性能でなく QA 文化（SemiAnalysis）。
 ゆえにクロスベンダー QA そのものが差別化になる。
+
+深刻度モデル（Risk/Finding）は report モジュールに集約し検証層横断で共有する。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import dataclass
 
 from . import ir
+from .report import Finding, FindingReport, Risk  # 検証層共通の深刻度モデル
+
+__all__ = ["Risk", "Finding", "PortabilityReport", "analyze", "cross_vendor_diff"]
 
 # 各ベンダーの実行モデル定数（移植時に壊れる主因）
 VENDOR_WARP = {"nvidia": 32, "amd_cdna": 64, "amd_rdna": 32}
@@ -29,40 +33,18 @@ SUPPORTED_MMA = {
 BF16_MATRIX = {"nvidia": True, "amd_cdna": True, "amd_rdna": False}
 
 
-class Risk(IntEnum):
-    OK = 0
-    INFO = 1
-    WARN = 2
-    BLOCK = 3
-
-
 @dataclass
-class Finding:
-    risk: Risk
-    op: str
-    message: str
-
-
-@dataclass
-class PortabilityReport:
-    target: str
-    findings: list[Finding] = field(default_factory=list)
-
-    @property
-    def max_risk(self) -> Risk:
-        return max((f.risk for f in self.findings), default=Risk.OK)
+class PortabilityReport(FindingReport):
+    target: str = ""
 
     @property
     def portable(self) -> bool:
-        return self.max_risk < Risk.BLOCK
+        return self.ok
 
-    def to_text(self) -> str:
-        lines = [f"portability report → {self.target} (max_risk={self.max_risk.name})"]
-        for f in self.findings:
-            lines.append(f"  [{f.risk.name:5s}] {f.op:6s} {f.message}")
-        if not self.findings:
-            lines.append("  (no risks detected)")
-        return "\n".join(lines)
+    def to_text(self) -> str:  # type: ignore[override]
+        return super().to_text(
+            header=f"portability report → {self.target}",
+            empty="(no risks detected)")
 
 
 def analyze(module: ir.Module, target: str,

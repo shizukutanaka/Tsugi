@@ -42,7 +42,7 @@ def test_scale_exceedance_voids_certification():
     x = np.random.default_rng(1).standard_normal((64, 64)).astype(np.float32) * 50.0
     rep = check_tensor(x, env)
     assert rep.max_risk == Risk.BLOCK
-    assert any("再認証" in m for _, m in rep.findings)
+    assert any("再認証" in f.message for f in rep.findings)
 
 
 def test_denormal_flagged_for_ftz_divergence():
@@ -52,7 +52,7 @@ def test_denormal_flagged_for_ftz_divergence():
     x[0, 0] = lim.min_normal * 0.1   # denormal 域
     x[0, 1] = 1.0                    # スケールは正常に保つ
     rep = check_tensor(x, env)
-    assert any("denormal" in m or "FTZ" in m for _, m in rep.findings)
+    assert any("denormal" in f.message or "FTZ" in f.message for f in rep.findings)
 
 
 def test_nan_is_block():

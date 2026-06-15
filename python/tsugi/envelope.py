@@ -1,4 +1,4 @@
-"""Tsugi envelope — 数値エンベロープの実行時検査（ソクラテス問答・第5ラウンド）。
+"""Tsugi envelope — 数値エンベロープの実行時検査。
 
 盲点: portability/tolerance/feasibility/propagation はすべて *デプロイ前の静的検証*。
 等価性は「scale・条件数・K がこうである」という前提の下で *認証* される
@@ -14,16 +14,16 @@ oracle も第2ベンダーも不要・単一ベンダーで計算できる安価
   - 出力スケールが認証時の scale_max を超過 → 認証 atol が無効
   - softmax/exp の logit が dtype の exp-overflow 閾値を超過（fp16 で特に致命的）
 
-dtype 数値限界は IEEE 754 の実値。
+dtype 数値限界は IEEE 754 の実値。深刻度モデル（Risk/Finding）は report 層と共有。
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from .portability import Risk  # 検証層で深刻度を統一
+from .report import FindingReport, Risk  # 検証層共通の深刻度モデル
 
 
 @dataclass(frozen=True)
@@ -76,25 +76,15 @@ def certify_gemm(K: int, dtype: str = "float16", scale: float = 1.0,
 
 
 @dataclass
-class EnvelopeReport:
-    findings: list[tuple[Risk, str]] = field(default_factory=list)
-
-    @property
-    def max_risk(self) -> Risk:
-        return max((r for r, _ in self.findings), default=Risk.OK)
-
+class EnvelopeReport(FindingReport):
     @property
     def in_envelope(self) -> bool:
-        return self.max_risk < Risk.BLOCK
+        return self.ok
 
-    def to_text(self) -> str:
+    def to_text(self) -> str:  # type: ignore[override]
         status = "IN-ENVELOPE" if self.in_envelope else "OUT-OF-ENVELOPE"
-        lines = [f"envelope check ({status}, max_risk={self.max_risk.name})"]
-        for r, msg in self.findings:
-            lines.append(f"  [{r.name:5s}] {msg}")
-        if not self.findings:
-            lines.append("  (within certified envelope)")
-        return "\n".join(lines)
+        return super().to_text(header=f"envelope check ({status})",
+                               empty="(within certified envelope)")
 
 
 def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
@@ -105,37 +95,37 @@ def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
 
     # NaN/Inf は即破綻（ベンダー間で伝播挙動も異なる）
     if not np.all(np.isfinite(xf)):
-        rep.findings.append((Risk.BLOCK, "NaN/Inf 検出 → 数値破綻・ベンダー間挙動も発散"))
+        rep.add(Risk.BLOCK, "tensor", "NaN/Inf 検出 → 数値破綻・ベンダー間挙動も発散")
         return rep
 
     max_abs = float(np.abs(xf).max()) if xf.size else 0.0
     # dtype overflow（特に fp16 は max=65504 と狭い）
     if max_abs >= lim.max_normal:
-        rep.findings.append((Risk.BLOCK,
-            f"max|x|={max_abs:.3g} ≥ {env.dtype} 上限 {lim.max_normal:.3g} → overflow/inf"))
+        rep.add(Risk.BLOCK, "tensor",
+            f"max|x|={max_abs:.3g} ≥ {env.dtype} 上限 {lim.max_normal:.3g} → overflow/inf")
     elif max_abs >= 0.1 * lim.max_normal:
-        rep.findings.append((Risk.WARN,
-            f"max|x|={max_abs:.3g} が {env.dtype} 上限の 10% 超 → overflow 近接"))
+        rep.add(Risk.WARN, "tensor",
+            f"max|x|={max_abs:.3g} が {env.dtype} 上限の 10% 超 → overflow 近接")
 
     # denormal 域: FTZ（flush-to-zero）の有無がベンダーで異なり発散源になる
     nz = np.abs(xf[xf != 0.0])
     if nz.size:
         min_abs = float(nz.min())
         if min_abs < lim.min_normal:
-            rep.findings.append((Risk.WARN,
+            rep.add(Risk.WARN, "tensor",
                 f"min nonzero |x|={min_abs:.3g} < {env.dtype} 最小正規数 {lim.min_normal:.3g} "
-                "→ denormal・FTZ 挙動がベンダー差を生む"))
+                "→ denormal・FTZ 挙動がベンダー差を生む")
 
     # 出力スケールが認証時の前提を超過 → 認証 atol はもはや無効
     scale = float(np.sqrt(np.mean(xf ** 2))) if xf.size else 0.0
     if scale > env.scale_max * 1.5:
         implied = env.certified_atol * (scale / max(env.scale_max, 1e-30))
-        rep.findings.append((Risk.BLOCK,
+        rep.add(Risk.BLOCK, "scale",
             f"実スケール {scale:.3g} が認証 scale_max {env.scale_max:.3g} を超過 "
-            f"→ 認証 atol={env.certified_atol:.2e} 無効（実許容 ~{implied:.2e}）・要再認証"))
+            f"→ 認証 atol={env.certified_atol:.2e} 無効（実許容 ~{implied:.2e}）・要再認証")
     elif scale > env.scale_max:
-        rep.findings.append((Risk.WARN,
-            f"実スケール {scale:.3g} が認証 scale_max {env.scale_max:.3g} 近接 → 余裕が縮小"))
+        rep.add(Risk.WARN, "scale",
+            f"実スケール {scale:.3g} が認証 scale_max {env.scale_max:.3g} 近接 → 余裕が縮小")
     return rep
 
 
@@ -149,15 +139,15 @@ def check_softmax_input(logits: np.ndarray, env: Envelope) -> EnvelopeReport:
     lim = dtype_limits(env.dtype)
     xf = np.asarray(logits, dtype=np.float64)
     if not np.all(np.isfinite(xf)):
-        rep.findings.append((Risk.BLOCK, "logit に NaN/Inf"))
+        rep.add(Risk.BLOCK, "softmax", "logit に NaN/Inf")
         return rep
     max_logit = float(np.abs(xf).max()) if xf.size else 0.0
     if max_logit > lim.exp_overflow:
-        rep.findings.append((Risk.BLOCK,
+        rep.add(Risk.BLOCK, "softmax",
             f"max|logit|={max_logit:.2f} > {env.dtype} exp-overflow {lim.exp_overflow:.2f} "
-            "→ exp が inf（max-subtract 未適用なら片ベンダーで softmax 破綻）"))
+            "→ exp が inf（max-subtract 未適用なら片ベンダーで softmax 破綻）")
     elif max_logit > 0.7 * lim.exp_overflow:
-        rep.findings.append((Risk.WARN,
+        rep.add(Risk.WARN, "softmax",
             f"max|logit|={max_logit:.2f} が exp-overflow {lim.exp_overflow:.2f} に近接 "
-            "→ max-subtract 必須・ベンダー差が出やすい"))
+            "→ max-subtract 必須・ベンダー差が出やすい")
     return rep

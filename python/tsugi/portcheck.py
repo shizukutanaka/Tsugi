@@ -103,7 +103,10 @@ def report(module, block_dims, cfg=None) -> int:
     if n_dots >= 2:
         from .envelope import certify_gemm
         from .tolerance import explain
-        K_est = n_dots * 32  # 反復数×典型 BK の粗い推定
+        # K = 累積深さ ≈ dot 反復数 × BK。BK は構成から取り（無ければ典型値 32）、
+        # マジックナンバーでなく実際のタイル構成に基づく見積りにする。
+        bk = cfg.block_k if cfg is not None else 32
+        K_est = n_dots * bk
         print("\n--- 数値等価性の目安（導出許容）---")
         print("  " + explain(K_est, "float16"))
         print("  → 実 GPU 比較は equivalence.compare_gemm(nv_out, amd_out, K) で照合")

@@ -58,6 +58,15 @@ Keep a Changelog 形式。SemVer。
   - docs/PERSPECTIVE-runtime-envelope.md
 - テスト計 63 PASS / verify 22 不変条件
 
+### Changed
+- **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で
+  再実装していた深刻度モデル（Risk/Finding/max_risk/to_text）を `tsugi.report` に集約。
+  `report.FindingReport` 基底を `portability`/`envelope` が継承し定型を排除（DRY）。
+  `Risk`/`Finding` は `portability` から後方互換 re-export。
+- portcheck の累積深さ K 推定をマジックナンバー（`n_dots*32`）から実タイル構成
+  （`n_dots*cfg.block_k`）由来の見積りに修正。
+- production docstring から開発過程ノイズ（「第Nラウンド」等）を除去（触れた 2 モジュール）。
+
 ### Note
 - リファレンス層は CPU で動作・検証済み（8/8 PASS）。
 - GPU バックエンド（NVPTX/AMDGPU）の correctness/性能は **未検証**（要 LLVM/MLIR + 実機）。
