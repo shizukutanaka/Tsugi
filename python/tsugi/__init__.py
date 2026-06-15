@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from . import (
     calibration,
+    decision,
     envelope,
     equivalence,
     feasibility,
@@ -45,6 +46,7 @@ __all__ = [
     "envelope",
     "calibration",
     "nondeterminism",
+    "decision",
     "jit",
     "trace",
     "compile",

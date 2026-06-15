@@ -73,7 +73,15 @@ Keep a Changelog 形式。SemVer。
     ノイズ未満は **INDISTINGUISHABLE**（等価判定が原理的に未定義）と正直に報告
   - 第二の床: 実効分解能 = max(数値検出限界, ノイズフロア)。ノイズ律速を警告
   - docs/PERSPECTIVE-nondeterminism.md
-- テスト計 75 PASS / verify 28 不変条件
+- **新視点8（ソクラテス問答）: タスクレベル等価性（判断は数値でなく決定で測る）**
+  - `tsugi.decision`: 数値発散でなく判断フリップ率（argmax/選択トークンの変化）で等価判定
+  - `flip_rate()`: スケール不変（logit 10 倍で abs 誤差 10 倍でもフリップ率は同一）を実証
+  - `margin()`/`predicted_flip_bound()`: フリップ率 ≤ P(margin<2δ)。数値発散→タスク影響の橋
+  - `compare_decisions()`: タスク予算（例 フリップ率<0.1%）で判定。near-tie 裾外の
+    フリップ＝系統的発散の疑いを警告
+  - 数値等価 ⇏ タスク等価（大きな数値発散でもマージン大ならフリップ無視可能）を実証
+  - docs/PERSPECTIVE-task-equivalence.md
+- テスト計 81 PASS / verify 31 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

@@ -168,6 +168,18 @@ def main() -> int:
     check("above tolerance → DIVERGENT (real divergence survives noise)",
           attribute(1.0, nf["spread"], 1e-2) == DIVERGENT)
 
+    # 16. decision: タスクレベル等価（判断フリップは数値発散と decouple・新視点8）
+    from tsugi.decision import compare_decisions, flip_rate
+    z = np.random.default_rng(0).standard_normal((2000, 200)).astype(np.float32)
+    va = z + 1e-2 * np.random.default_rng(1).standard_normal(z.shape).astype(np.float32)
+    vb = z + 1e-2 * np.random.default_rng(2).standard_normal(z.shape).astype(np.float32)
+    check("decision flips are scale-invariant (decoupled from abs error)",
+          abs(flip_rate(va, vb) - flip_rate(va * 10, vb * 10)) < 1e-12)
+    check("predicted flip bound P(margin<2d) upper-bounds actual flips",
+          flip_rate(va, vb) <= compare_decisions(va, vb).predicted_bound + 1e-9)
+    check("high flip rate blocks at task level",
+          not compare_decisions(va, vb, flip_budget=0.001).ok)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -1,0 +1,110 @@
+"""Tsugi decision — タスクレベル等価性（判断は数値でなく決定で測る）。
+
+盲点: 全 7 視点は「数値がどれだけ違うか」(abs/rel/bias/noise) を測ってきた。だが
+開発者が出荷するのは *タスクの判断* —— 分類の argmax、LM の選択トークン、検出のしきい値。
+数値発散は判断の代理にすぎず、両者は decouple している:
+
+  - **スケール不変**: logit を 10 倍すれば abs 誤差も 10 倍だが argmax は不変
+    → 判断フリップ率は同一（max_abs は判断を測れていない）。
+  - **数値等価 ⇏ タスク等価**: 巨大な数値発散でもマージンが大きければフリップ 0、
+    微小な発散でも near-tie ならフリップする。
+
+判断が変わるか否かは局所 **マージン（top1−top2）** が支配する。発散 δ が判断を覆すには
+マージン < 2δ が *必要*（十分ではない）。ゆえにフリップ率 ≤ P(margin < 2δ) という
+保守的な上界が成り立ち、タスク相対の許容は固定 atol でなく **マージン分布** である。
+
+本当に問うべきは「数値がどれだけ違うか」でなく「何 % の予測がベンダー間で変わるか」。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .report import FindingReport, Risk
+
+
+def margin(logits: np.ndarray) -> np.ndarray:
+    """各サンプルの判断マージン = top1 − top2（最後の軸をクラス軸とみなす）。"""
+    x = np.asarray(logits, dtype=np.float64)
+    part = np.partition(x, -2, axis=-1)
+    return part[..., -1] - part[..., -2]
+
+
+def decision_flips(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """ベンダー間で argmax（判断）が変わったサンプルの真偽配列。"""
+    return np.argmax(a, axis=-1) != np.argmax(b, axis=-1)
+
+
+def flip_rate(a: np.ndarray, b: np.ndarray) -> float:
+    """判断フリップ率（ユーザーに見える差・スケール不変）。"""
+    f = decision_flips(a, b)
+    return float(np.mean(f)) if f.size else 0.0
+
+
+def divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
+    """ベンダー間 logit 差の典型値 δ（RMS）。"""
+    af = np.asarray(a, dtype=np.float64)
+    bf = np.asarray(b, dtype=np.float64)
+    return float(np.sqrt(np.mean((af - bf) ** 2)))
+
+
+def predicted_flip_bound(ref_logits: np.ndarray, delta: float) -> float:
+    """発散 δ が与える判断フリップ率の保守的上界 = P(margin < 2δ)。
+
+    数値の床（calibration）・ノイズの床（nondeterminism）を *タスク影響* に翻訳する橋。
+    フリップには margin<2δ が必要ゆえ上界。実フリップ率はこれ以下に収まる。
+    """
+    m = margin(ref_logits)
+    return float(np.mean(m < 2.0 * delta)) if m.size else 0.0
+
+
+@dataclass
+class DecisionReport(FindingReport):
+    flip_rate: float = 0.0
+    n: int = 0
+    flipped_margin_median: float = 0.0
+    overall_margin_median: float = 0.0
+    predicted_bound: float = 0.0
+
+    def to_text(self) -> str:  # type: ignore[override]
+        return super().to_text(
+            header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
+                    f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
+                    f"flipped-margin {self.flipped_margin_median:.3g} "
+                    f"vs overall {self.overall_margin_median:.3g})"),
+            empty="(no decision flips — task-equivalent)")
+
+
+def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
+                      ref: np.ndarray | None = None) -> DecisionReport:
+    """タスクレベルの等価判定（数値でなく判断のフリップで測る）。
+
+    flip_budget: 許容する判断フリップ率（タスク予算・例 0.001 = 0.1%）。
+    ref: マージン基準の logit（既定 a）。
+    """
+    flips = decision_flips(a, b)
+    ref_logits = a if ref is None else ref
+    m = margin(ref_logits)
+    fm = m[flips]
+    rep = DecisionReport(
+        flip_rate=flip_rate(a, b),
+        n=int(np.argmax(a, axis=-1).size),
+        flipped_margin_median=float(np.median(fm)) if fm.size else 0.0,
+        overall_margin_median=float(np.median(m)) if m.size else 0.0,
+        predicted_bound=predicted_flip_bound(ref_logits, divergence_rms(a, b)),
+    )
+    if rep.flip_rate > flip_budget:
+        risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN
+        rep.add(risk, "task",
+                f"判断フリップ率 {rep.flip_rate * 100:.2f}% > 予算 {flip_budget * 100:.2f}% "
+                "→ ベンダー間でユーザーに見える予測が変わる")
+    elif rep.flip_rate > 0.0:
+        rep.add(Risk.INFO, "task",
+                f"判断フリップ {rep.flip_rate * 100:.2f}%（予算内）・near-tie に集中")
+    # 健全性: フリップは低マージン(near-tie)の裾に集中するはず。確信領域で起きるなら異常。
+    if fm.size and rep.overall_margin_median > 0 and \
+            rep.flipped_margin_median > 0.5 * rep.overall_margin_median:
+        rep.add(Risk.WARN, "task",
+                "フリップが near-tie 裾に集中していない → 確信予測まで変化・系統的発散を疑う")
+    return rep

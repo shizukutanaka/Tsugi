@@ -127,6 +127,11 @@ def report(module, block_dims, cfg=None) -> int:
         print("  実 GPU の atomic 加算は run-to-run で揺れる。クロス差がノイズ未満なら")
         print("  等価判定は未定義（INDISTINGUISHABLE）。実機比較は")
         print("  nondeterminism.compare_stable でノイズ実測→3状態判定（決定論を仮定しない）")
+        # 最終的に問うべきはタスクの判断。数値発散はマージン分布を介して判断に翻訳される。
+        print("\n--- タスクレベル等価（判断は数値でなく決定で測る）---")
+        print("  数値発散はスケール不変な判断フリップと decouple する。実機 logit 比較は")
+        print("  decision.compare_decisions で判断フリップ率（ユーザーに見える差）を測る")
+        print("  → フリップ率 ≤ P(margin<2δ)。タスク許容=固定atolでなくマージン分布")
     print(f"\n判定: {'移植可（要注意点あり）' if worst < 3 else '移植ブロッカーあり'}")
     return 0 if worst < 3 else 1
 
