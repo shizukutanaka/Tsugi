@@ -1,0 +1,7 @@
+build/
+.tsugi_cache/
+*.ptx
+*.hsaco
+*.ll
+__pycache__/
+*.egg-info/

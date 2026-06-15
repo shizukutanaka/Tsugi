@@ -1,0 +1,3 @@
+add_library(TsugiBackend STATIC VendorLowering.cpp)
+target_link_libraries(TsugiBackend PUBLIC MLIRIR MLIRPass)
+add_dependencies(TsugiBackend TsugiTileOpsIncGen TsugiGpuOpsIncGen)

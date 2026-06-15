@@ -1,0 +1,12 @@
+build/
+*.o
+*.so
+*.ll
+*.ptx
+*.hsaco
+__pycache__/
+.ruff_cache/
+*.egg-info/
+.tsugi_cache/
+.venv/
+compile_commands.json

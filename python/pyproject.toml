@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tsugi-torch"
+version = "0.1.0"
+description = "Tsugi torch.compile backend — cross-vendor GPU kernels (NVIDIA/AMD)"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# torch は実行時依存（ビルド時には要求しない）
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tsugi_torch*"]
+
+[tool.ruff]
+line-length = 100

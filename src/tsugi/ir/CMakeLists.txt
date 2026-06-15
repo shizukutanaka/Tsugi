@@ -1,0 +1,12 @@
+# tsugi.tile / tsugi.gpu dialect (TableGen → C++)
+set(LLVM_TARGET_DEFINITIONS TsugiTileOps.td)
+mlir_tablegen(TsugiTileOps.h.inc -gen-op-decls)
+mlir_tablegen(TsugiTileOps.cpp.inc -gen-op-defs)
+mlir_tablegen(TsugiTileDialect.h.inc -gen-dialect-decls)
+add_public_tablegen_target(TsugiTileOpsIncGen)
+
+set(LLVM_TARGET_DEFINITIONS TsugiGpuOps.td)
+mlir_tablegen(TsugiGpuOps.h.inc -gen-op-decls)
+mlir_tablegen(TsugiGpuOps.cpp.inc -gen-op-defs)
+mlir_tablegen(TsugiGpuDialect.h.inc -gen-dialect-decls)
+add_public_tablegen_target(TsugiGpuOpsIncGen)
