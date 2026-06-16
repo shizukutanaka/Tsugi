@@ -20,6 +20,7 @@ from tsugi.decision import (  # noqa: E402
     margin,
     predicted_flip_bound,
     residual_divergence_rms,
+    topk_flip_rate,
 )
 
 
@@ -34,6 +35,19 @@ def _vendor(z, eps, seed):
 def test_margin_is_top1_minus_top2():
     x = np.array([[1.0, 5.0, 3.0]])
     assert abs(float(margin(x)[0]) - 2.0) < 1e-9   # 5 - 3
+
+
+def test_topk_flip_rate_generalizes_argmax():
+    # 生成タスク向け: top-k 候補集合の一致。k=1 は argmax フリップ率に一致、k で単調増加、
+    # スケール不変、同一入力で 0。
+    z = _logits()
+    a, b = _vendor(z, 3e-2, 1), _vendor(z, 3e-2, 2)
+    assert abs(topk_flip_rate(a, b, 1) - flip_rate(a, b)) < 1e-12
+    assert topk_flip_rate(a, b, 1) <= topk_flip_rate(a, b, 5) <= topk_flip_rate(a, b, 10)
+    assert topk_flip_rate(a, b, 5) == topk_flip_rate(a * 7.0, b * 7.0, 5)  # スケール不変
+    assert topk_flip_rate(a, a, 5) == 0.0
+    # k がクラス数を超えても安全（全集合一致 → flip 0 ではなく valid な率）
+    assert 0.0 <= topk_flip_rate(a, b, 9999) <= 1.0
 
 
 def test_decision_flips_are_scale_invariant():
@@ -128,6 +142,7 @@ def main() -> int:
     ok = True
     tests = [
         test_margin_is_top1_minus_top2,
+        test_topk_flip_rate_generalizes_argmax,
         test_decision_flips_are_scale_invariant,
         test_flips_concentrate_in_low_margin_tail,
         test_predicted_bound_is_upper_bound,

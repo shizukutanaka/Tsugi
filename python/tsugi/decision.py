@@ -42,6 +42,25 @@ def flip_rate(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.mean(f)) if f.size else 0.0
 
 
+def topk_flip_rate(a: np.ndarray, b: np.ndarray, k: int = 5) -> float:
+    """top-k 候補 *集合* がベンダー間で変わるサンプル率（生成タスク向け）。
+
+    LLM は top-k/top-p から次トークンを選ぶので、argmax だけでなく候補集合の一致が重要。
+    集合の比較（順序は問わない）。k=1 は argmax フリップ率に一致する。
+    候補がどれか境界（rank k と k+1）を跨ぐと flip = より大きな摂動を要し、生成の
+    実効的な「選択肢の安定性」を測る。
+    """
+    af = np.asarray(a)
+    bf = np.asarray(b)
+    n, c = af.shape[0], af.shape[-1]
+    kk = min(k, c)
+    ta = np.argpartition(af, -kk, axis=-1)[:, -kk:]
+    tb = np.argpartition(bf, -kk, axis=-1)[:, -kk:]
+    ta.sort(axis=-1)
+    tb.sort(axis=-1)
+    return float(np.mean(np.any(ta != tb, axis=-1))) if n else 0.0
+
+
 def divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
     """ベンダー間 logit 差の典型値 δ（RMS）。"""
     af = np.asarray(a, dtype=np.float64)
