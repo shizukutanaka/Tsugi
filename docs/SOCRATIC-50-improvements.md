@@ -189,8 +189,8 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 
 **Q45.** AuditPhase.when は "static"/"runtime" だが audit_runtime は実データ層を "static" と付ける
 （意味の二重定義）。
-→ 「判定に算入=static」と運用しているが名前と乖離。**改善: when を "decided"/"pending" に
-改名し意味を一致させる。**
+→ ✅ **修正済**: when を "decided"（verdict に算入）/"pending"（実機データ待ち）に改名し意味を
+一致させた。`decided_phases` プロパティ（旧 `static_phases` は後方互換エイリアス）。
 
 **Q46.** 多くの関数が関数内 import（遅延）。一貫していない（top と function 内が混在）。
 → 循環回避のためだが基準が不明瞭。**改善: 遅延 import の方針を 1 行で明文化。**
@@ -221,7 +221,7 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
   audit の propagation グラフに現れる（perspective4 の実効化）。残: Q8（cond 推定で増幅の
   *大きさ* を出す）は P1。
 - ✅ Q2/Q1（修正済）: safety を `tsugi.constants.SAFETY` に集約＋根拠を docstring に明記。
-- Q45: AuditPhase.when を decided/pending に改名（意味の一致）。
+- ✅ Q45（修正済）: AuditPhase.when を decided/pending に改名（意味の一致）。
 - Q37: テストサマリに SKIP 件数を表示（緑の誤読防止）。
 
 **P1（近く）**

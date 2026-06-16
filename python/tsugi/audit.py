@@ -22,12 +22,12 @@ TARGETS = ("nvidia", "amd_cdna", "amd_rdna")
 @dataclass
 class AuditPhase:
     name: str          # 層名
-    when: str          # "static"（今ここで判定）/ "runtime"（実機データが要る）
+    when: str          # "decided"（今 verdict に算入）/ "pending"（実機データ待ち）
     max_risk: Risk
     lines: list[str] = field(default_factory=list)
 
     def to_text(self) -> str:
-        tag = "" if self.when == "static" else " [要実機データ]"
+        tag = "" if self.when == "decided" else " [要実機データ]"
         head = f"[{self.max_risk.name:5s}] {self.name}{tag}"
         body = "\n".join("    " + ln for ln in self.lines)
         return head + ("\n" + body if body else "")
@@ -38,13 +38,19 @@ class Audit:
     phases: list[AuditPhase] = field(default_factory=list)
 
     @property
+    def decided_phases(self) -> list[AuditPhase]:
+        """verdict に算入する層（実データで決定済み）。pending（実機待ち）は除く。"""
+        return [p for p in self.phases if p.when == "decided"]
+
+    # 後方互換エイリアス（旧名）。
+    @property
     def static_phases(self) -> list[AuditPhase]:
-        return [p for p in self.phases if p.when == "static"]
+        return self.decided_phases
 
     @property
     def max_risk(self) -> Risk:
-        """判定は静的層のみから（実行時層は実機まで未確定）。"""
-        return max((p.max_risk for p in self.static_phases), default=Risk.OK)
+        """判定は decided 層のみから（pending=実機データ待ちは未確定ゆえ除外）。"""
+        return max((p.max_risk for p in self.decided_phases), default=Risk.OK)
 
     @property
     def portable(self) -> bool:
@@ -121,7 +127,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
     # --- 静的: 移植性（per target） ---
     worst = Risk.OK
-    port = AuditPhase("portability 移植リスク", "static", Risk.OK)
+    port = AuditPhase("portability 移植リスク", "decided", Risk.OK)
     for t in targets:
         rep = analyze(module, t, block_dims=block_dims, cfg=cfg)
         worst = max(worst, rep.max_risk)
@@ -134,7 +140,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
     # --- 静的: 起動可能性（占有率より上流のゲート） ---
     if cfg is not None:
-        feas = AuditPhase("feasibility 起動可能性", "static", Risk.OK)
+        feas = AuditPhase("feasibility 起動可能性", "decided", Risk.OK)
         fr = cross_vendor_feasibility(cfg)
         for v, f in fr.items():
             feas.lines.append(f"{v}: {'LAUNCHABLE' if f.launchable else 'NOT-LAUNCHABLE'}")
@@ -148,7 +154,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
         # --- 静的: 占有率ギャップ（速度の片寄り） ---
         gap = occupancy_gap(cfg, "nvidia", "amd_cdna")
-        occ = AuditPhase("occupancy 占有率", "static",
+        occ = AuditPhase("occupancy 占有率", "decided",
                          Risk.WARN if gap >= 0.25 else Risk.INFO)
         occ.lines.append(f"NVIDIA↔AMD CDNA 占有率差 = {gap:.0%}"
                          + ("（性能が片方だけ崩れる）" if gap >= 0.25 else ""))
@@ -157,7 +163,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     # --- 静的: 数値等価性の目安（導出許容 + 認証エンベロープ + 検出限界） ---
     K = _gemm_depth(module, cfg)
     if K > 0:
-        num = AuditPhase("numerics 数値等価性の目安", "static", Risk.INFO)
+        num = AuditPhase("numerics 数値等価性の目安", "decided", Risk.INFO)
         num.lines.append("導出許容: " + explain(K, "float16"))
         num.lines.append("認証エンベロープ: " + certify_gemm(K, "float16", 1.0).to_text())
         floor = detectability_floor(K, "float16")
@@ -172,7 +178,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         pr = propagate(gops)
         ratio = pr.model_divergence / (pr.naive_sum + 1e-30)
         # 発散が深さ/増幅でナイーブ和を大きく超えるならモデルレベルで要注意。
-        prop = AuditPhase("propagation 合成的等価性", "static",
+        prop = AuditPhase("propagation 合成的等価性", "decided",
                           Risk.WARN if ratio > 2.0 else Risk.INFO)
         prop.lines.append(
             f"モデル発散(予測)={pr.model_divergence:.2e}  "
@@ -200,7 +206,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         a.phases.append(prop)
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---
-    rt = AuditPhase("runtime 実行時チェックリスト", "runtime", Risk.INFO)
+    rt = AuditPhase("runtime 実行時チェックリスト", "pending", Risk.INFO)
     rt.lines += [
         "envelope.check_tensor(x, env): 本番入力が認証前提内か（overflow/denormal/scale）",
         "nondeterminism.compare_stable(runA, runB, K): run-to-run ノイズを実測し分布比較",
@@ -223,7 +229,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
       - calibration.check_systematic（max_abs の盲点に隠れる系統バイアス）
       - equivalence + nondeterminism（noise_floor を織り込んだ 3 状態帰属）
       - logits があれば decision.compare_decisions（タスク判断フリップ）
-    すべて実データで *決定済み* なので静的 verdict に算入する（when="static"）。
+    すべて実データで *決定済み* なので静的 verdict に算入する（when="decided"）。
     """
     import numpy as np
 
@@ -239,7 +245,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 
     # envelope: 本番入力（両ベンダー出力）が認証前提内か
     if env is not None:
-        ep = AuditPhase("envelope 実行時エンベロープ", "static", Risk.OK)
+        ep = AuditPhase("envelope 実行時エンベロープ", "decided", Risk.OK)
         for name, x in (("A", af), ("B", bf)):
             r = check_tensor(x, env)
             ep.max_risk = max(ep.max_risk, r.max_risk)
@@ -251,7 +257,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     eq = compare_gemm(af, bf, K, dtype)
     cross = float(np.abs(af - bf).max())
     verdict = attribute(cross, noise_floor, eq.atol)
-    eqp = AuditPhase("equivalence 数値等価性", "static",
+    eqp = AuditPhase("equivalence 数値等価性", "decided",
                      Risk.BLOCK if verdict == "DIVERGENT" else Risk.OK)
     eqp.lines.append(f"{verdict}: cross={cross:.2e} atol={eq.atol:.2e} noise={noise_floor:.2e}")
     if verdict == "INDISTINGUISHABLE":
@@ -268,7 +274,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     if logits_a is not None and logits_b is not None:
         dr = compare_decisions(np.asarray(logits_a), np.asarray(logits_b),
                                flip_budget=flip_budget)
-        dp = AuditPhase("decision タスクレベル等価", "static", dr.max_risk)
+        dp = AuditPhase("decision タスクレベル等価", "decided", dr.max_risk)
         dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
                         f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
         ad.phases.append(dp)

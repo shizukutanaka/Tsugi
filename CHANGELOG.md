@@ -141,6 +141,9 @@ Keep a Changelog 形式。SemVer。
   - **safety 定数の単一情報源化（SOCRATIC Q1/Q2）**: `tsugi.constants.SAFETY` に集約（従来は
     tolerance/calibration/propagation の 5 箇所に重複）。docstring に根拠（√K·u·scale の 1σ に
     掛ける ~4σ ヘッドルーム・実機 noise で校正すべき初期値）を明記。挙動不変
+  - **AuditPhase.when を decided/pending に改名（SOCRATIC Q45）**: 「verdict に算入」(decided)と
+    「実機データ待ち」(pending)の意味を名前に一致（旧 static/runtime は二重定義だった）。
+    `decided_phases` プロパティ（`static_phases` は後方互換エイリアス）
 - テスト計 126 関数（property 10 × 200 試行含む）/ verify 48 不変条件
 
 ### Changed

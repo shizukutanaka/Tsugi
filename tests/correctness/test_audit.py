@@ -37,7 +37,7 @@ def test_propagation_phase_runs_on_module():
     mod, block, cfg = _demo_module()
     a = audit(mod, cfg, block_dims=block)
     prop = next(p for p in a.phases if p.name.startswith("propagation"))
-    assert prop.when == "static"
+    assert prop.when == "decided"
     assert prop.max_risk == Risk.INFO   # 単一 op グラフは伝播増幅なし
 
 
@@ -53,10 +53,10 @@ def test_runtime_phase_excluded_from_verdict():
     # runtime 層は実機データ待ちゆえ判定に影響しない（静的層のみで verdict）
     mod, block, cfg = _demo_module()
     a = audit(mod, cfg, block_dims=block)
-    rt = [p for p in a.phases if p.when == "runtime"]
+    rt = [p for p in a.phases if p.when == "pending"]
     assert len(rt) == 1
-    assert all(p.when == "static" for p in a.static_phases)
-    assert a.max_risk == max(p.max_risk for p in a.static_phases)
+    assert all(p.when == "decided" for p in a.decided_phases)
+    assert a.max_risk == max(p.max_risk for p in a.decided_phases)
 
 
 def test_audit_text_has_lifecycle_and_verdict():

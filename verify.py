@@ -188,7 +188,7 @@ def main() -> int:
     check("audit aggregates static phases into one verdict (AMD launch BLOCK)",
           ad.max_risk == portability.Risk.BLOCK and not ad.portable)
     check("audit excludes runtime phases from static verdict",
-          ad.max_risk == max(p.max_risk for p in ad.static_phases))
+          ad.max_risk == max(p.max_risk for p in ad.decided_phases))
     from tsugi.audit import _graph_ops
     mm = [o for o in _graph_ops(mod, dcfg) if o.kind == "matmul"]
     check("audit propagation collapses K-loop dots into one per-model matmul",
