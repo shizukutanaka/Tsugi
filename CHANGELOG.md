@@ -97,7 +97,11 @@ Keep a Changelog 形式。SemVer。
     静的=AMD 起動不能 BLOCK、実行時=max_abs 盲点に隠れる 0.5% 系統バグを BLOCK
   - **docs/VERIFICATION.md**: 検証層の全体マップ（8 視点＋メタ＋audit・ライフサイクル図・
     2 つの床・相補的計量の索引）。各 PERSPECTIVE doc へリンク
-- テスト計 92 PASS / verify 36 不変条件
+  - **`audit_cross_vendor()`**: 実機向け入口。各ベンダーの run-to-run ノイズを実測して
+    から audit_runtime（nondeterminism と audit をつなぐ正規経路・決定論を仮定しない）
+  - **tests/gpu/ ハーネス**: 実機クロスベンダー監査の実行可能な契約。GPU 無しは正直に
+    SKIP し、配線（ノイズ実測→監査）は擬似 run で CPU 検証。run.py [3] に統合
+- テスト計 94 PASS / verify 38 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

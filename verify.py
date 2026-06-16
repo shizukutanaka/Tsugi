@@ -205,6 +205,18 @@ def main() -> int:
     check("audit_runtime blocks a real systematic divergence (5% scale)",
           not audit_runtime(_a, _a * 1.05, K=256, noise_floor=1e-3).portable)
 
+    # 19. audit_cross_vendor: ノイズ実測→監査の実機経路（擬似 run で配線を検証）
+    from tsugi.audit import audit_cross_vendor
+    def _run(scale, vseed):
+        def r(seed):
+            g = np.random.default_rng(vseed * 9973 + seed)
+            return _a * scale + 1e-4 * g.standard_normal(_a.shape).astype(np.float32)
+        return r
+    check("audit_cross_vendor measures noise then passes equivalent vendors",
+          audit_cross_vendor(_run(1.0, 1), _run(1.0, 2), K=256, n_runs=8).portable)
+    check("audit_cross_vendor blocks a real cross-vendor divergence",
+          not audit_cross_vendor(_run(1.0, 1), _run(1.05, 2), K=256, n_runs=8).portable)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

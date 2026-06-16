@@ -256,3 +256,22 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 
     return ad
 
+
+def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None,
+                       n_runs: int = 16, logits_a=None, logits_b=None,
+                       flip_budget: float = 0.001) -> Audit:
+    """実機向けの入口: 各ベンダーの run-to-run ノイズを実測してから audit_runtime する。
+
+    run_a/run_b: seed を受け取り出力テンソルを返す呼び出し可能（= 実 GPU カーネル）。
+    決定論を仮定せず、まず各ベンダーを n_runs 回走らせてノイズフロアを測り（視点7）、
+    その noise を等価判定の床に織り込む。これが nondeterminism と audit_runtime を
+    つなぐ正規の経路（実機では run_a/run_b を実カーネルにするだけ・CPU では擬似 run で検証）。
+    """
+    from .nondeterminism import measure_noise_floor
+
+    nf_a = measure_noise_floor(run_a, n_runs)
+    nf_b = measure_noise_floor(run_b, n_runs)
+    noise = max(nf_a["spread"], nf_b["spread"])
+    return audit_runtime(run_a(0), run_b(0), K, dtype=dtype, env=env,
+                         noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
+                         flip_budget=flip_budget)

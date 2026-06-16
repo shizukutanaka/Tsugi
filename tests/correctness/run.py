@@ -44,6 +44,10 @@ def main() -> int:
     else:
         print(f"detected vendors: {vendors}")
         print("kernel execution vs reference: not yet implemented (Phase1, requires GPU)")
+
+    print("\n=== [3] GPU cross-vendor audit contract（ハーネス配線は CPU 検証）===")
+    gpu = HERE.parent / "gpu" / "test_audit_runtime_contract.py"
+    rc |= subprocess.run([sys.executable, str(gpu)], check=False).returncode
     return rc
 
 
