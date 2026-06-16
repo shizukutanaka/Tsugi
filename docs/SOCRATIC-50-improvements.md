@@ -147,8 +147,9 @@ test から不変条件を生成する。**
 → 1 関数に全 check。**改善: セクション分割（既に番号付きだが関数化）。**
 
 **Q35.** テストは固定 seed の単発。数値主張なのに fuzz/property test が無い。
-→ 無い。**改善: hypothesis 等で「derive_tolerance は K 単調増加」「flip_bound は上界」を
-性質として検査。**
+→ ✅ **修正済**: test_properties.py に 10 性質 × 200 試行のゼロ依存 property 検査を追加
+（derive_tolerance の K 単調性・residual≤total・flip_rate スケール不変・残差 bound は上界・
+アフィン系統は無フリップ・attribute 領域・envelope overflow 等）。hypothesis 不使用（ゼロ依存）。
 
 **Q36.** calibration corpus は 9 ケースの合成。「TRUSTWORTHY=偽OK 0」は統計的に弱い。
 → n が小さい。**改善: ケース数を増やし、バグ強度を連続掃引して ROC を描く。**
@@ -225,7 +226,7 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 - Q23/Q26: torch backend に静的 audit を差し込み「検証だけ先に届ける」。FX→GraphOp 写像。
 - Q18/Q20: 橋を系統/乱雑成分に分け、上界＋期待値の両方を返す。
 - ✅ Q44/Q47（修正済）: equivalence に共通 risk/max_risk/ok インターフェースを付与。
-- Q35/Q36: property test と calibration corpus 拡充（ROC）。
+- ✅ Q35（修正済）: property test 10×200 追加。残 Q36: calibration corpus を ROC へ拡充。
 
 **P2（後・要設計/実機）**
 - Q12/Q11: propagation の DAG・scale 伝播対応。

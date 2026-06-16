@@ -128,7 +128,10 @@ Keep a Changelog 形式。SemVer。
   - **equivalence を共通 Risk 基盤へ（SOCRATIC Q44/Q47）**: `EquivalenceReport` に
     `risk`/`max_risk`/`ok`（equivalent→OK / divergent→BLOCK）。全レポートが統一インターフェース。
     スカラ計量ゆえ FindingReport は継承せず理由を明記
-- テスト計 109 PASS / verify 44 不変条件
+  - **property-based テスト（SOCRATIC Q35）**: test_properties.py に 10 性質 × 200 試行の
+    ゼロ依存 fuzz 検査（K 単調性・residual≤total・flip スケール不変・残差 bound は上界・
+    アフィン系統は無フリップ・empirical_cond・attribute 領域・envelope overflow）
+- テスト計 119 検査（10 property × 200 試行含む）/ verify 44 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で
