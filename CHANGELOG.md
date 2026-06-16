@@ -8,6 +8,7 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 - **生成タスク向け top-k 候補集合フリップ**: `decision.topk_flip_rate(a, b, k)`。LLM 生成は
   top-k/top-p から選ぶので候補集合の一致を測る。k=1 で argmax フリップ率に一致・k で単調・
   スケール不変。決定空間の等価判定を分類(top-1)から生成(top-k)へ拡張。
+  `compare_decisions(topk=k)` に統合し DecisionReport に併記（製品経路から到達可能）。
 - **torch backend の静的→タスク翻訳**: `audit_fx(gm, ref_logits=)` がモデル発散を判断
   フリップ率上界 `task_flip_bound` に翻訳。backend は example 出力を代表 logit として
   best-effort 利用し、`model_divergence` でなくユーザーに見える「予測フリップ率」を warn

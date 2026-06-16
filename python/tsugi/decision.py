@@ -127,23 +127,28 @@ class DecisionReport(FindingReport):
     overall_margin_median: float = 0.0
     predicted_bound: float = 0.0
     systematic_frac: float = 0.0
+    topk: int = 1
+    topk_flip_rate: float = 0.0
 
     def to_text(self) -> str:  # type: ignore[override]
+        tk = (f", top-{self.topk} set flip={self.topk_flip_rate * 100:.2f}%"
+              if self.topk > 1 else "")
         return super().to_text(
             header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
                     f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
-                    f"systematic={self.systematic_frac * 100:.0f}%, "
+                    f"systematic={self.systematic_frac * 100:.0f}%{tk}, "
                     f"flipped-margin {self.flipped_margin_median:.3g} "
                     f"vs overall {self.overall_margin_median:.3g})"),
             empty="(no decision flips — task-equivalent)")
 
 
 def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
-                      ref: np.ndarray | None = None) -> DecisionReport:
+                      ref: np.ndarray | None = None, topk: int = 1) -> DecisionReport:
     """タスクレベルの等価判定（数値でなく判断のフリップで測る）。
 
     flip_budget: 許容する判断フリップ率（タスク予算・例 0.001 = 0.1%）。
     ref: マージン基準の logit（既定 a）。
+    topk: >1 なら生成タスク向けに top-k 候補集合フリップ率も併記する。
     bound は *残差*（argmax 保存的な系統成分を除いた成分）で評価し系統発散の過大評価を排す。
     """
     flips = decision_flips(a, b)
@@ -158,6 +163,8 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
         overall_margin_median=float(np.median(m)) if m.size else 0.0,
         predicted_bound=predicted_flip_bound(ref_logits, decomp["residual"]),
         systematic_frac=decomp["systematic_frac"],
+        topk=topk,
+        topk_flip_rate=topk_flip_rate(a, b, topk) if topk > 1 else flip_rate(a, b),
     )
     if rep.flip_rate > flip_budget:
         risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN

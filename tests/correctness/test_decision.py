@@ -89,6 +89,18 @@ def test_numerical_divergence_not_sufficient_for_task_divergence():
     assert compare_decisions(a, b, flip_budget=0.01).ok  # タスク予算内で等価
 
 
+def test_compare_decisions_reports_topk():
+    # compare_decisions(topk=k) は top-k 集合フリップ率も併記（生成タスク向け統合）
+    z = _logits()
+    b = _vendor(z, 5e-2, 3)
+    r1 = compare_decisions(z, b)
+    assert r1.topk == 1 and abs(r1.topk_flip_rate - r1.flip_rate) < 1e-12
+    r5 = compare_decisions(z, b, topk=5)
+    assert r5.topk == 5
+    assert r5.topk_flip_rate >= r5.flip_rate          # 集合は argmax より緩く変化
+    assert "top-5 set flip" in r5.to_text()
+
+
 def test_compare_decisions_blocks_high_flip_rate():
     z = _logits()
     a, b = _vendor(z, 1e-1, 1), _vendor(z, 1e-1, 2)  # 多数フリップ
@@ -147,6 +159,7 @@ def main() -> int:
         test_flips_concentrate_in_low_margin_tail,
         test_predicted_bound_is_upper_bound,
         test_numerical_divergence_not_sufficient_for_task_divergence,
+        test_compare_decisions_reports_topk,
         test_compare_decisions_blocks_high_flip_rate,
         test_systematic_affine_divergence_does_not_flip,
         test_residual_bound_tighter_than_total_for_systematic,
