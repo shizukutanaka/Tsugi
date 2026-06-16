@@ -144,6 +144,8 @@ Keep a Changelog 形式。SemVer。
   - **AuditPhase.when を decided/pending に改名（SOCRATIC Q45）**: 「verdict に算入」(decided)と
     「実機データ待ち」(pending)の意味を名前に一致（旧 static/runtime は二重定義だった）。
     `decided_phases` プロパティ（`static_phases` は後方互換エイリアス）
+  - **テストサマリの正直化（SOCRATIC Q37）**: run.py 末尾に SUMMARY（CPU PASS 件数 + SKIP 件数
+    列挙 + 「緑は CPU 検証可能範囲のみ」注記）。GPU 未検証を緑に紛れさせない
 - テスト計 126 関数（property 10 × 200 試行含む）/ verify 48 不変条件
 
 ### Changed

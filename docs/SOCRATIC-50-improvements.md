@@ -158,7 +158,8 @@ test から不変条件を生成する。**
 （~0.2%）は合成判定でも見逃す残存盲点を *正直に* 露出（test で両側を固定）。
 
 **Q37.** GPU 経路は全 SKIP。SKIP が緑に紛れ「検証済み」と誤読されないか？
-→ run.py は明記するが集計は緑。**改善: SKIP 件数をサマリに出す（"X passed, Y skipped"）。**
+→ ✅ **修正済**: run.py 末尾に SUMMARY（CPU suites PASS 件数 + SKIPPED 件数の列挙 + 「緑は CPU
+検証可能範囲のみ」注記）を出す。GPU 未検証を緑に紛れさせない。
 
 **Q38.** カバレッジ計測が無い。147 関数中どれが未実行？
 → 不明。**改善: coverage を CI で測り閾値ゲート。**
@@ -222,7 +223,7 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
   *大きさ* を出す）は P1。
 - ✅ Q2/Q1（修正済）: safety を `tsugi.constants.SAFETY` に集約＋根拠を docstring に明記。
 - ✅ Q45（修正済）: AuditPhase.when を decided/pending に改名（意味の一致）。
-- Q37: テストサマリに SKIP 件数を表示（緑の誤読防止）。
+- ✅ Q37（修正済）: run.py に SUMMARY（CPU PASS 件数 + SKIP 件数 + 「緑は CPU 範囲のみ」注記）。
 
 **P1（近く）**
 - ✅ Q8（修正済）: 相対増幅 op の是正＋ empirical_cond（data-driven）＋ 静的下界の WARN。

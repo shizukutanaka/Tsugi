@@ -31,23 +31,38 @@ def _available_vendors() -> list[str]:
 
 def main() -> int:
     rc = 0
+    cpu_suites = ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_audit.py", "test_properties.py", "test_fxbridge.py")
     print("=== [1] reference correctness (CPU/NumPy oracle) ===")
-    for t in ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_audit.py", "test_properties.py", "test_fxbridge.py"):
+    for t in cpu_suites:
         r = subprocess.run([sys.executable, str(HERE / t)], check=False)
         rc |= r.returncode
 
+    skipped = []
     print("\n=== [2] GPU two-vendor correctness ===")
     vendors = _available_vendors()
     if not vendors:
         print("SKIP: no GPU detected (LLVM/MLIR + NVIDIA/AMD hardware required). "
               "未検証 — 実機での実行が必要。")
+        skipped.append("GPU two-vendor correctness (kernel exec vs reference)")
     else:
         print(f"detected vendors: {vendors}")
         print("kernel execution vs reference: not yet implemented (Phase1, requires GPU)")
+        skipped.append("GPU two-vendor correctness (codegen not implemented)")
 
     print("\n=== [3] GPU cross-vendor audit contract（ハーネス配線は CPU 検証）===")
     gpu = HERE.parent / "gpu" / "test_audit_runtime_contract.py"
     rc |= subprocess.run([sys.executable, str(gpu)], check=False).returncode
+    if not vendors:
+        skipped.append("GPU real-kernel audit (harness wiring CPU-verified)")
+
+    # 正直なサマリ: 緑（CPU PASS）を「全部検証済み」と誤読させない（SOCRATIC Q37）。
+    status = "PASS" if rc == 0 else "FAIL"
+    print(f"\n=== SUMMARY === CPU suites: {status} ({len(cpu_suites)} files) | "
+          f"SKIPPED (requires hardware): {len(skipped)}")
+    for s in skipped:
+        print(f"  - SKIP: {s}")
+    if skipped:
+        print("  注意: GPU 経路は未検証。緑は CPU 検証可能範囲のみを意味する。")
     return rc
 
 
