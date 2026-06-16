@@ -131,7 +131,10 @@ Keep a Changelog 形式。SemVer。
   - **property-based テスト（SOCRATIC Q35）**: test_properties.py に 10 性質 × 200 試行の
     ゼロ依存 fuzz 検査（K 単調性・residual≤total・flip スケール不変・残差 bound は上界・
     アフィン系統は無フリップ・empirical_cond・attribute 領域・envelope overflow）
-- テスト計 119 検査（10 property × 200 試行含む）/ verify 44 不変条件
+  - **calibration ROC（SOCRATIC Q36）**: `roc_sweep(strengths, seeds)` でバグ強度を連続掃引し
+    偽OK率を測る。合成判定は系統閾値超で偽OK=0・max_abs 単独は一様スケールを吸収し見逃す。
+    閾値未満（~0.2%）の残存盲点も正直に露出（9 ケース corpus を ROC 化）
+- テスト計 121 関数（property 10 × 200 試行含む）/ verify 45 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

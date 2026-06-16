@@ -18,6 +18,7 @@ from tsugi.calibration import (  # noqa: E402
     evaluate,
     is_equivalent_combined,
     make_corpus,
+    roc_sweep,
     systematic_divergence,
 )
 from tsugi.equivalence import compare_gemm, simulate_vendor_matmul  # noqa: E402
@@ -81,10 +82,26 @@ def test_max_abs_alone_is_untrustworthy_corpus():
     assert "scale" in conf.missed      # 系統スケールバグを見逃す
 
 
+def test_roc_sweep_combined_catches_above_threshold():
+    # 強度掃引: 合成判定は系統閾値超で偽OK=0、max_abs 単独は広範囲で偽OK（ROC 化）
+    rows = roc_sweep(strengths=(0.005, 0.05), K=2048, seeds=10)
+    for row in rows:
+        assert row["false_ok_combined"] == 0.0     # 0.5%/5% は合成判定が全捕捉
+        assert row["false_ok_max_abs"] > 0.0       # max_abs は一様スケールを吸収し見逃す
+
+
+def test_roc_sweep_honest_subthreshold_blindspot():
+    # 系統閾値(~safety·u≈0.2%)未満は合成判定でも見逃す（正直な残存盲点）
+    rows = roc_sweep(strengths=(0.001,), K=2048, seeds=10)
+    assert rows[0]["false_ok_combined"] > 0.0
+
+
 def main() -> int:
     ok = True
     tests = [
         test_floor_grows_with_K,
+        test_roc_sweep_combined_catches_above_threshold,
+        test_roc_sweep_honest_subthreshold_blindspot,
         test_max_abs_misses_subfloor_scale_bug,
         test_systematic_check_catches_what_max_abs_misses,
         test_systematic_check_passes_legitimate_order_divergence,

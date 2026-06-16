@@ -152,7 +152,9 @@ test から不変条件を生成する。**
 アフィン系統は無フリップ・attribute 領域・envelope overflow 等）。hypothesis 不使用（ゼロ依存）。
 
 **Q36.** calibration corpus は 9 ケースの合成。「TRUSTWORTHY=偽OK 0」は統計的に弱い。
-→ n が小さい。**改善: ケース数を増やし、バグ強度を連続掃引して ROC を描く。**
+→ ✅ **修正済**: `roc_sweep(strengths, seeds)` でバグ強度を連続掃引し偽OK率を測る。合成判定は
+系統閾値（≈safety·u）超で偽OK=0、max_abs 単独は一様スケールを吸収し広範囲で偽OK。閾値未満
+（~0.2%）は合成判定でも見逃す残存盲点を *正直に* 露出（test で両側を固定）。
 
 **Q37.** GPU 経路は全 SKIP。SKIP が緑に紛れ「検証済み」と誤読されないか？
 → run.py は明記するが集計は緑。**改善: SKIP 件数をサマリに出す（"X passed, Y skipped"）。**
@@ -226,7 +228,7 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 - Q23/Q26: torch backend に静的 audit を差し込み「検証だけ先に届ける」。FX→GraphOp 写像。
 - Q18/Q20: 橋を系統/乱雑成分に分け、上界＋期待値の両方を返す。
 - ✅ Q44/Q47（修正済）: equivalence に共通 risk/max_risk/ok インターフェースを付与。
-- ✅ Q35（修正済）: property test 10×200 追加。残 Q36: calibration corpus を ROC へ拡充。
+- ✅ Q35/Q36（修正済）: property test 10×200・calibration を roc_sweep で ROC 化。
 
 **P2（後・要設計/実機）**
 - Q12/Q11: propagation の DAG・scale 伝播対応。

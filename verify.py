@@ -256,6 +256,12 @@ def main() -> int:
           _cmp(_o, _o.copy()).risk == portability.Risk.OK
           and _cmp(_o, _o + 10.0).risk == portability.Risk.BLOCK)
 
+    # 24. calibration ROC: 合成判定は閾値超のバグ強度で偽OK=0・max_abs 単独は見逃す（Q36）
+    from tsugi.calibration import roc_sweep
+    _roc = roc_sweep(strengths=(0.05,), K=2048, seeds=8)
+    check("ROC sweep: combined verifier false-OK=0 above threshold, max_abs misses",
+          _roc[0]["false_ok_combined"] == 0.0 and _roc[0]["false_ok_max_abs"] > 0.0)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

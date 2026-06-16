@@ -183,3 +183,33 @@ def is_equivalent_combined(a: np.ndarray, b: np.ndarray, K: int,
     random_ok = compare_gemm(a, b, K, dtype).equivalent
     systematic_ok = check_systematic(a, b, K, dtype).ok
     return random_ok and systematic_ok
+
+
+def roc_sweep(strengths=(0.001, 0.005, 0.02, 0.05, 0.1), K: int = 2048,
+              dtype: str = "float16", seeds: int = 20) -> list[dict]:
+    """バグ強度を連続掃引し検証器の偽OK率を測る（9 ケース corpus の ROC 化・Q36）。
+
+    各強度の *系統スケールバグ*（出力を一様に (1+strength) 倍）を seeds 個生成し、
+    max_abs 単独 と 合成判定（max_abs + 系統）の偽OK率を比較する。max_abs の rtol は
+    一様スケールを吸収するため広い範囲で偽OK だが、合成判定は系統閾値（safety·u・K 不変）
+    を超える強度で偽OK=0 に落ちる。閾値未満（~0.2%）は合成判定でも見逃す（正直な残存盲点）。
+    """
+    from .equivalence import simulate_vendor_matmul
+
+    rows = []
+    for st in strengths:
+        fo_alone = fo_comb = 0
+        for s in range(seeds):
+            r = np.random.default_rng(s)
+            a = r.standard_normal((64, K)).astype(np.float16)
+            b = r.standard_normal((K, 64)).astype(np.float16)
+            base = simulate_vendor_matmul(a, b, accum="f32", split_k=1)
+            bug = base * (1.0 + st)
+            from .equivalence import compare_gemm
+            if compare_gemm(base, bug, K, dtype).equivalent:
+                fo_alone += 1
+            if is_equivalent_combined(base, bug, K, dtype):
+                fo_comb += 1
+        rows.append({"strength": st, "false_ok_max_abs": fo_alone / seeds,
+                     "false_ok_combined": fo_comb / seeds})
+    return rows
