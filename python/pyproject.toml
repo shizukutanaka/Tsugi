@@ -4,15 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsugi-torch"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tsugi torch.compile backend — cross-vendor GPU kernels (NVIDIA/AMD)"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
-# torch は実行時依存（ビルド時には要求しない）
+# numpy はリファレンス実装・検証層の実行時依存（RNG/noise の再現性のため下限を固定）。
+# torch は torch.compile backend 利用時のみの任意依存（ビルド時には要求しない）。
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+torch = ["torch>=2.1"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["tsugi_torch*"]
+include = ["tsugi*"]
 
 [tool.ruff]
 line-length = 100

@@ -5,9 +5,15 @@
 ### リファレンス層（GPU不要・すぐ動く）
 ```bash
 pip install numpy ruff
-python tests/correctness/run.py   # リファレンス correctness + autotune（8テスト）
+python tests/correctness/run.py   # リファレンス correctness + 検証層（CPU 全スイート）
+python verify.py                  # 機械可読な不変条件（49+）
 ruff check python/ tests/ examples/
 ```
+
+> **CI について（正直な現状）**: `.github/workflows` はこの環境の権限制約で無効化
+> （`.gitignore` 除外）されており、**GitHub Actions は実際には走らない**。当面の CI 代替は
+> 上記ローカルの `run.py`（末尾 SUMMARY に CPU PASS 件数と SKIP 件数を表示）+ `verify.py`。
+> GPU 二ベンダー照合は実機が要るため常に SKIP（緑は CPU 検証可能範囲のみを意味する）。
 
 ### GPU バックエンド層（要実機）
 - LLVM/MLIR（NVPTX + AMDGPU target 有効化ビルド）
@@ -20,7 +26,8 @@ cmake --build build
 
 ## ブランチ戦略
 - `feature/<issue>-<説明>` / `fix/<issue>-<説明>`
-- main は protected。直接 push 禁止。Squash merge + CI 全通過。
+- main は protected。直接 push 禁止。Squash merge + ローカル検証（run.py / verify.py）全通過
+  （GitHub Actions は現状無効・上記「CI について」参照）。
 
 ## コミット規約
 Conventional Commits: `feat:` `fix:` `refactor:` `docs:` `test:` `chore:`

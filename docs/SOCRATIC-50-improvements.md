@@ -167,14 +167,17 @@ test から不変条件を生成する。**
 ## H. 再現性・依存・CI（Q39–43）
 
 **Q39.** numpy 版が未固定。noise_floor/RNG 挙動は版で変わりうる。
-→ pyproject に numpy 制約なし。**改善: numpy 下限固定・RNG は default_rng で版間安定だが明記。**
+→ ✅ **修正済**: pyproject に `numpy>=1.22` を宣言（さらに発覚した packaging 欠陥も修正——
+`tsugi` パッケージ自体が build 対象外で numpy 依存も未宣言だった。`include=["tsugi*"]`＋deps 追加）。
 
 **Q40.** version は全変更を通じ 0.1.0 のまま。SemVer 運用は？
-→ 据え置き。**改善: 0.x で API 変化を MINOR/PATCH に反映、CHANGELOG に版見出し。**
+→ ✅ **修正済**: 0.2.0 に bump（pyproject + `__version__`）。CHANGELOG に `[0.2.0] 2026-06-16`
+見出しを追加。0.x は API 未凍結である旨も明記。
 
 **Q41.** .github/workflows は除外で CI が実際には回らない。「CI」主張は願望では？
-→ そう（権限制約で除外）。**改善: CI が無効である事実を CONTRIBUTING に明記、ローカル
-verify.py を「CI 代替」と位置づけ。**
+→ ✅ **修正済**: CONTRIBUTING に「CI について（正直な現状）」節を追加——GitHub Actions は
+無効で、当面の CI 代替は ローカル `run.py`（SUMMARY 付）+ `verify.py`。protected-main の
+「CI 全通過」記述も実態に合わせて修正。
 
 **Q42.** ライセンス/依存監査は手動。permissive 主張の自動チェックは？
 → 無い。**改善: 依存ライセンスの自動検査（pip-licenses 等）を verify に追加可能。**

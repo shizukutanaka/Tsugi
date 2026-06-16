@@ -1,8 +1,15 @@
 # Changelog
 
-Keep a Changelog 形式。SemVer。
+Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加・互換変更ありうる）。
 
 ## [Unreleased]
+
+## [0.2.0] — 2026-06-16
+検証層を 8 視点 + メタ(calibration) + 基盤(nondeterminism) + 翻訳(decision) へ拡張し、
+統合ファサード `audit`/`audit_runtime`/`audit_cross_vendor` で 1 判定に集約。最新研究
+（batch-invariance / 構造的 FP ノイズ）を取り込み、property test・ROC・FX backend 検証・
+外れ値頑健ノイズ床を追加。詳細は下記 [Unreleased] からの全項目。パッケージ metadata 修正
+（`tsugi` パッケージ・numpy 依存を宣言）。テスト 127 関数 / verify 49 不変条件。
 
 ### Added
 - Phase 0 完成形ファイル: SPEC / ARCHITECTURE / ADR-001..004 / README / FAQ / BENCHMARK
@@ -149,6 +156,15 @@ Keep a Changelog 形式。SemVer。
   - **外れ値頑健なノイズ床（SOCRATIC Q49）**: `measure_noise_floor`/`measure_batch_variance`
     が `spread_robust`（10-90 パーセンタイル幅）も返し、`compare_stable(robust=True)` で選択。
     測定グリッチ 1 個で max-min が ~4 万倍膨張するのを防ぐ（偽BLOCK 化対策）
+
+### Fixed
+- **packaging 欠陥（SOCRATIC Q39）**: pyproject が core `tsugi` パッケージを build 対象外にし
+  numpy 依存も未宣言だった → `include=["tsugi*"]` + `dependencies=["numpy>=1.22"]`、torch は
+  optional-dependencies に。version を 0.2.0 に bump（Q40・CHANGELOG に版見出し）。
+- **CI の正直化（SOCRATIC Q41）**: CONTRIBUTING に「GitHub Actions は無効・ローカル
+  run.py/verify.py が CI 代替」を明記。stale なテスト件数記述も更新。
+
+### Meta
 - テスト計 127 関数（property 10 × 200 試行含む）/ verify 49 不変条件
 
 ### Changed
