@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 import numpy as np  # noqa: E402
 
-from tsugi.audit import _graph_ops, audit, audit_runtime  # noqa: E402
+from tsugi.audit import _graph_ops, audit, audit_cross_vendor, audit_runtime  # noqa: E402
 from tsugi.envelope import certify_gemm  # noqa: E402
 from tsugi.portcheck import _demo_module  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
@@ -108,6 +108,22 @@ def test_audit_runtime_includes_decision_when_logits_given():
     assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
 
 
+def test_audit_cross_vendor_folds_batch_variance_floor():
+    # run_batch を渡すと batch-invariance 床が実効床に合流する（2025 研究の取り込み）
+    from tsugi.nondeterminism import simulate_batch_variant_reduction
+    base = np.random.default_rng(0).standard_normal((4, 16)).astype(np.float32)
+
+    def run(s):
+        g = np.random.default_rng(7777 + s).standard_normal(base.shape).astype(np.float32)
+        return base + 1e-6 * g
+
+    flat = np.random.default_rng(1).standard_normal(4096).astype(np.float32)
+    ad = audit_cross_vendor(run, run, K=256, n_runs=6,
+                            run_batch=lambda t: simulate_batch_variant_reduction(flat, t))
+    # 真に等価（同じ run）+ 床込み → ブロッカー無し
+    assert ad.portable
+
+
 def test_audit_demo_runs_end_to_end():
     # examples/audit_demo.py が両 facade を回し、系統バグを BLOCK にすることを保証
     import contextlib
@@ -140,6 +156,7 @@ def main() -> int:
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
+        test_audit_cross_vendor_folds_batch_variance_floor,
         test_audit_demo_runs_end_to_end,
     ]
     for t in tests:

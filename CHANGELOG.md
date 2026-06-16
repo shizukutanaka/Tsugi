@@ -117,7 +117,10 @@ Keep a Changelog 形式。SemVer。
     あり atomic 並行性ではない（Thinking Machines 2025 / SC'24 arXiv:2408.05148）。run-to-run とは
     独立した決定論的な第三の床。実効床 = max(run-to-run, batch-invariance, 数値検出限界)。
     FP ノイズは構造的（相関）で独立ガウスでない（arXiv:2511.00025）→ calibration の系統検出を裏づけ
-- テスト計 104 PASS / verify 42 不変条件
+  - **batch-invariance 床を比較経路に合流**: `compare_stable(batch_floor=)` と
+    `audit_cross_vendor(run_batch=)` が実効床 = max(run-to-run, batch-invariance) を使う。
+    バッチ律速のとき WARN（バッチ不変カーネルが要る）
+- テスト計 106 PASS / verify 42 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

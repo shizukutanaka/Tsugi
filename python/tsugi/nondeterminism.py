@@ -144,18 +144,22 @@ class StabilityReport(FindingReport):
 
 def compare_stable(run_a: Callable[[int], np.ndarray],
                    run_b: Callable[[int], np.ndarray], K: int,
-                   dtype: str = "float16", n_runs: int = 16) -> StabilityReport:
+                   dtype: str = "float16", n_runs: int = 16,
+                   batch_floor: float = 0.0) -> StabilityReport:
     """方法論的に健全なクロスベンダー比較（出力を分布として扱う）。
 
     1) 各ベンダーの run-to-run ノイズを実測 → noise_floor
-    2) noise を織り込んだ許容を導出（決定論仮定 noise=0 を排す）
-    3) クロス差を noise/tol に対し 3 状態へ帰属（INDISTINGUISHABLE を正直に出す）
+    2) 実効床 = max(run-to-run, batch-invariance 床) ——後者は measure_batch_variance で
+       実測して batch_floor に渡す（2025 研究: バッチ変動が支配的非決定源）
+    3) noise を織り込んだ許容を導出（決定論仮定 noise=0 を排す）
+    4) クロス差を noise/tol に対し 3 状態へ帰属（INDISTINGUISHABLE を正直に出す）
     """
     from .tolerance import derive_tolerance, expected_gemm_abs_error
 
     nf_a = measure_noise_floor(run_a, n_runs)
     nf_b = measure_noise_floor(run_b, n_runs)
-    noise = max(nf_a["spread"], nf_b["spread"])
+    run_to_run = max(nf_a["spread"], nf_b["spread"])
+    noise = max(run_to_run, batch_floor)
 
     a = np.asarray(run_a(0), dtype=np.float64)
     b = np.asarray(run_b(0), dtype=np.float64)
@@ -177,4 +181,8 @@ def compare_stable(run_a: Callable[[int], np.ndarray],
         rep.add(Risk.WARN, "noise",
                 f"ノイズ律速: run-to-run ノイズ {noise:.2e} が数値検出限界 {numerical:.2e} "
                 "を支配 → 検証器の分解能は HW 非決定性で決まる（noise_floor 実測が必須）")
+    if batch_floor > run_to_run:
+        rep.add(Risk.WARN, "batch",
+                f"バッチ不変性律速: batch-invariance 床 {batch_floor:.2e} が run-to-run "
+                f"{run_to_run:.2e} を支配 → 本番バッチ変動が主因（バッチ不変カーネルが要る）")
     return rep

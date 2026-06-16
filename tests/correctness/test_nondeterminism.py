@@ -47,6 +47,19 @@ def test_batch_variance_floor_is_positive():
     assert bv["n_batches"] >= 2
 
 
+def test_batch_floor_folds_into_effective_floor():
+    # batch_floor が run-to-run を支配すると実効床になり batch-limited を WARN する
+    p = _parts(0, K=64).reshape(4, 16)
+
+    def run(s):
+        g = np.random.default_rng(1000 + s).standard_normal(p.shape).astype(np.float32)
+        return p + 1e-6 * g
+
+    rep = compare_stable(run, run, K=256, n_runs=8, batch_floor=1e-2)
+    assert rep.noise_floor >= 1e-2          # batch_floor が実効床に合流
+    assert any(f.op == "batch" for f in rep.findings)
+
+
 def test_reduction_is_nondeterministic():
     # 同一入力でも seed(=atomic順)で結果が揺れる＝出力は点でない
     p = _parts(0)
@@ -106,6 +119,7 @@ def main() -> int:
     tests = [
         test_batch_variance_is_deterministic_but_batch_dependent,
         test_batch_variance_floor_is_positive,
+        test_batch_floor_folds_into_effective_floor,
         test_reduction_is_nondeterministic,
         test_noise_floor_is_positive,
         test_attribute_three_regimes,
