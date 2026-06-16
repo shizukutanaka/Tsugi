@@ -262,6 +262,24 @@ def main() -> int:
     check("ROC sweep: combined verifier false-OK=0 above threshold, max_abs misses",
           _roc[0]["false_ok_combined"] == 0.0 and _roc[0]["false_ok_max_abs"] > 0.0)
 
+    # 25. torch backend がコード生成前でも FX グラフに静的検証を届ける（Q23/Q26）
+    from tsugi_torch.fxbridge import audit_fx, fx_to_graph_ops
+
+    class _N:
+        def __init__(s, op, t, shp=None):
+            s.op, s.target, s.meta = op, t, ({"tensor_meta": type("M", (), {"shape": shp})} if shp else {})
+
+    class _G:
+        def __init__(s, ns):
+            s.graph = type("GR", (), {"nodes": ns})
+    _gm = _G([_N("call_function", "aten.addmm.default", (8, 512)),
+              _N("call_function", "aten._softmax.default"),
+              _N("output", "output")])
+    check("torch backend maps FX aten ops to logical ops (matmul/softmax)",
+          [o.kind for o in fx_to_graph_ops(_gm)] == ["matmul", "softmax"])
+    check("torch backend audit_fx surfaces amplifiers before codegen",
+          "softmax" in audit_fx(_gm)["amplifiers"])
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

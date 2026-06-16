@@ -20,7 +20,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 ## Features
 
 - **1ソース・2ベンダー** — 同じタイルカーネルが NVIDIA(PTX) と AMD(AMDGCN) で動く
-- **torch.compile バックエンド** — `torch.compile(model, backend="tsugi")` で透過利用
+- **torch.compile バックエンド** — `torch.compile(model, backend="tsugi")` で透過利用。codegen 前でも FX グラフに静的検証（propagation）を走らせ増幅 op・モデル発散を warn（検証だけ先に届ける）
 - **Tensorコア抽象** — `tile.dot` が各社行列コア（WMMA/MFMA）へ自動 lowering
 - **autotuning** — タイルサイズ・レイアウトをベンダー別に自動探索
 - **escape-hatch** — 標準 GEMM は cuBLAS/rocBLAS へ委譲（性能優先）

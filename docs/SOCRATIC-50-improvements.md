@@ -102,19 +102,20 @@ empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 ## E. torch.compile の楔が検証を届けていない（Q23–28）
 
 **Q23.** 製品の入口は `torch.compile(model, backend="tsugi")`。今そこで検証は走るか？
-→ 走らない。backend は eager 素通し。**改善: codegen 前でも、FX グラフに対し portability/
-propagation 静的監査を走らせ警告する（検証だけ先に届ける）。これが楔の早期価値。**
+→ ✅ **修正済**: `tsugi_torch.fxbridge.audit_fx` が FX グラフに propagation 静的監査を走らせ、
+backend が codegen 前でも増幅 op・モデル発散を warn する（検証だけ先に届ける＝楔の早期価値）。
+実行は引き続き eager 素通し。
 
 **Q24.** backend は torch 無し環境で全くテストされていない。回帰は誰が捕まえる？
 → 誰も。**改善: torch を test extra に入れ、最小 FX グラフで backend 登録と素通しを検証。**
 
 **Q25.** backend が eager 素通しなのにユーザーは「両ベンダー対応」と思い込まないか？
-→ README は明記するがコードは沈黙。**改善: backend が一度 warn ログ（「verification-only / 
-no codegen yet」）を出す。**
+→ ✅ **修正済**: backend が `verification-only (no codegen yet)` を warn するようにした。
 
 **Q26.** FX グラフ → `_graph_ops` の橋は無い。audit は traced tile IR 専用。二重路線では？
-→ そう。tile IR と FX の二系統。**改善: FX→propagation GraphOp の写像を作れば backend で
-audit が即使える（B9 の op 語彙とも合流）。**
+→ ✅ **修正済**: `fxbridge.fx_to_graph_ops` が aten op 名（addmm/bmm/softmax/mean/...）を
+propagation GraphOp へ写す（duck-typed・torch 不要でテスト）。実 torch.fx 結線は torch 環境が
+要る（本環境では stand-in で検証・実 FX は未検証）。
 
 **Q27.** escape-hatch（cuBLAS/rocBLAS 委譲）時、その区間の等価性は誰が保証？
 → 委譲先はベンダー実装で発散源そのもの。**改善: escape-hatch 区間こそ audit_runtime の対象、
@@ -225,8 +226,9 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 
 **P1（近く）**
 - ✅ Q8（修正済）: 相対増幅 op の是正＋ empirical_cond（data-driven）＋ 静的下界の WARN。
-- Q23/Q26: torch backend に静的 audit を差し込み「検証だけ先に届ける」。FX→GraphOp 写像。
-- Q18/Q20: 橋を系統/乱雑成分に分け、上界＋期待値の両方を返す。
+- ✅ Q23/Q25/Q26（修正済）: torch backend が FX→GraphOp 写像で静的 audit を走らせ warn
+  （検証だけ先に届ける）。実 torch.fx 結線は torch 環境が要る（stand-in で検証）。
+- ✅ Q18/Q20（修正済）: 橋を系統/乱雑成分に分け残差ベース bound に（前イテレーション）。
 - ✅ Q44/Q47（修正済）: equivalence に共通 risk/max_risk/ok インターフェースを付与。
 - ✅ Q35/Q36（修正済）: property test 10×200・calibration を roc_sweep で ROC 化。
 

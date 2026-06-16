@@ -21,9 +21,24 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
       4. 標準 GEMM 等は cuBLAS/rocBLAS へ escape-hatch (性能優先・R5)
       5. 残りは torch eager にフォールバック (正しさ優先)
 
-    現状: 未実装。eager 実行へ素通し（嘘をつかない）。
+    現状: codegen は未実装だが、FX グラフに静的検証（propagation）を走らせて警告を出す
+    —— 「検証だけ先に届ける」楔の早期価値。実行は eager に素通し（嘘をつかない）。
     """
-    # TODO(Phase4): tsugi.tile IR への変換と vendor lowering を実装。
+    # 検証だけ先に届ける: FX グラフを静的監査し増幅 op / モデル発散を警告（codegen 不要）。
+    try:
+        import warnings
+
+        from .fxbridge import audit_fx
+        rep = audit_fx(gm)
+        if rep["n_ops"]:
+            warnings.warn(
+                f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
+                f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e} "
+                "(cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
+                stacklevel=2)
+    except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない
+        pass
+
     def _forward(*args: Any, **kwargs: Any) -> Any:
         # 未実装のため eager に委譲。性能利得なし（明示）。
         return gm.forward(*args, **kwargs)
