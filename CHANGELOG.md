@@ -93,7 +93,9 @@ Keep a Changelog 形式。SemVer。
   - **`audit_runtime()`**: 実行時チェックリストの *実行版*。実機/実データのクロスベンダー
     出力を envelope/equivalence(+noise 3 状態)/systematic/decision で束ねて 1 判定に。
     静的 audit() の鏡像。真の発散は BLOCK・ノイズ未満は INDISTINGUISHABLE
-- テスト計 91 PASS / verify 36 不変条件
+  - **examples/audit_demo.py**: 両 facade を一望する実行可能デモ（GPU 不要・スモークテスト付）。
+    静的=AMD 起動不能 BLOCK、実行時=max_abs 盲点に隠れる 0.5% 系統バグを BLOCK
+- テスト計 92 PASS / verify 36 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

@@ -77,6 +77,13 @@ def matmul(a, b, c, M, N, K,
     tile.store(c, (pid_m, pid_n), acc.to(tsugi.float16))
 ```
 
+検証層をまとめて回す（静的＋実行時の両 facade・GPU 不要のデモ）:
+
+```bash
+python examples/audit_demo.py      # tsugi.audit（静的）と tsugi.audit_runtime（実データ）
+python -m tsugi.portcheck k.py     # 移植性レポート CLI（audit へ委譲）
+```
+
 ## アーキテクチャ
 
 ```

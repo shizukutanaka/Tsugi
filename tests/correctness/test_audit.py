@@ -108,6 +108,25 @@ def test_audit_runtime_includes_decision_when_logits_given():
     assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
 
 
+def test_audit_demo_runs_end_to_end():
+    # examples/audit_demo.py が両 facade を回し、系統バグを BLOCK にすることを保証
+    import contextlib
+    import importlib.util
+    import io
+
+    path = Path(__file__).resolve().parents[2] / "examples" / "audit_demo.py"
+    spec = importlib.util.spec_from_file_location("audit_demo", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mod.main()
+    out = buf.getvalue()
+    assert rc == 0
+    assert "系統バイアス" in out          # 実行時に max_abs 盲点の系統バグを捕捉
+    assert "移植ブロッカー" in out        # 静的に AMD 起動不能を BLOCK
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -121,6 +140,7 @@ def main() -> int:
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
+        test_audit_demo_runs_end_to_end,
     ]
     for t in tests:
         try:
