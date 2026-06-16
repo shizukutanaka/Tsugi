@@ -103,8 +103,12 @@ def _graph_ops(module: ir.Module, cfg):
 
 
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
-          block_dims=None) -> Audit:
-    """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。"""
+          block_dims=None, ref_logits=None) -> Audit:
+    """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。
+
+    ref_logits を渡すと、propagation のモデル発散を decision に橋渡しして、第2ベンダーを
+    走らせる前にタスク判断フリップ率の上界を予測する（静的 → タスク影響）。
+    """
     from .calibration import detectability_floor
     from .envelope import certify_gemm
     from .feasibility import cross_vendor_feasibility, first_vendor_only
@@ -178,6 +182,13 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         if len(gops) == 1:
             prop.lines.append("単一 op グラフ: 伝播増幅なし。多 op モデルでは深さ・"
                               "条件数で累積（cond は実機/モデル依存・既定 1）")
+        # propagation → decision の橋: 静的発散を代表 logit でタスクフリップ率に翻訳
+        if ref_logits is not None:
+            from .decision import flip_bound_from_divergence
+            bound = flip_bound_from_divergence(ref_logits, pr.model_divergence)
+            prop.lines.append(
+                f"タスク影響(予測): 判断フリップ率 ≤ {bound * 100:.2f}%"
+                "（第2ベンダー実行前・代表 logit 分布から）")
         a.phases.append(prop)
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---

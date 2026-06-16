@@ -80,6 +80,20 @@ def test_compare_decisions_blocks_high_flip_rate():
     assert not rep.ok                     # 予算超で BLOCK
 
 
+def test_flip_bound_from_divergence_bridges_propagation_to_task():
+    # propagation の相対発散 → タスクフリップ率上界。第2ベンダー無しで予測でき、
+    # 同じ δ で実際に摂動したフリップ率の上界になっている（保守的）。
+    from tsugi.decision import flip_bound_from_divergence
+    z = _logits(n=5000, c=500)
+    rel = 0.03
+    bound = flip_bound_from_divergence(z, rel)
+    scale = float(np.sqrt(np.mean(z.astype(np.float64) ** 2)))
+    b = z + rel * scale * np.random.default_rng(7).standard_normal(z.shape).astype(np.float32)
+    actual = flip_rate(z, b)
+    assert 0.0 < bound <= 1.0
+    assert actual <= bound + 1e-9         # 上界として成立
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -89,6 +103,7 @@ def main() -> int:
         test_predicted_bound_is_upper_bound,
         test_numerical_divergence_not_sufficient_for_task_divergence,
         test_compare_decisions_blocks_high_flip_rate,
+        test_flip_bound_from_divergence_bridges_propagation_to_task,
     ]
     for t in tests:
         try:

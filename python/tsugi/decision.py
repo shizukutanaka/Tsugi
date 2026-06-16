@@ -59,6 +59,19 @@ def predicted_flip_bound(ref_logits: np.ndarray, delta: float) -> float:
     return float(np.mean(m < 2.0 * delta)) if m.size else 0.0
 
 
+def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float) -> float:
+    """*相対* 発散（propagation のモデル発散）を *タスク* フリップ率上界へ翻訳する。
+
+    propagation は相対発散 δ_rel を返す。logit に効く絶対発散は δ_abs = δ_rel·scale。
+    これを predicted_flip_bound に通すことで、第2ベンダーを走らせる前に、静的な
+    op グラフ＋代表的な logit 分布だけからタスク影響（判断フリップ率の上界）を予測できる。
+    視点4（propagation）→ 視点8（decision）をつなぐ橋。
+    """
+    x = np.asarray(ref_logits, dtype=np.float64)
+    scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
+    return predicted_flip_bound(ref_logits, rel_divergence * scale)
+
+
 @dataclass
 class DecisionReport(FindingReport):
     flip_rate: float = 0.0
