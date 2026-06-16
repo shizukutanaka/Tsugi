@@ -28,7 +28,7 @@ from . import (
     tile,
     tolerance,
 )
-from .audit import Audit, audit
+from .audit import Audit, audit, audit_runtime
 from .compile import compile  # noqa: A004
 from .dtypes import bfloat16, constexpr, float16, float32, int8, int32
 from .jit import jit
@@ -49,6 +49,7 @@ __all__ = [
     "nondeterminism",
     "decision",
     "audit",
+    "audit_runtime",
     "Audit",
     "jit",
     "trace",

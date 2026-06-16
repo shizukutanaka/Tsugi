@@ -188,6 +188,71 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         "  クロス差 ≤ ノイズなら INDISTINGUISHABLE（等価判定は未定義）",
         "decision.compare_decisions(logitsA, logitsB): 判断フリップ率（タスク影響）",
         "  数値発散はマージン分布を介してフリップに翻訳・タスク予算で判定",
+        "→ 実データがあれば audit_runtime(...) でこれらを実行し 1 判定に束ねる",
     ]
     a.phases.append(rt)
     return a
+
+
+def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
+                  noise_floor: float = 0.0, logits_a=None, logits_b=None,
+                  flip_budget: float = 0.001) -> Audit:
+    """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
+
+    静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
+      - env があれば envelope.check_tensor（本番入力が認証前提内か）
+      - calibration.check_systematic（max_abs の盲点に隠れる系統バイアス）
+      - equivalence + nondeterminism（noise_floor を織り込んだ 3 状態帰属）
+      - logits があれば decision.compare_decisions（タスク判断フリップ）
+    すべて実データで *決定済み* なので静的 verdict に算入する（when="static"）。
+    """
+    import numpy as np
+
+    from .calibration import check_systematic
+    from .decision import compare_decisions
+    from .envelope import check_tensor
+    from .equivalence import compare_gemm
+    from .nondeterminism import attribute
+
+    ad = Audit()
+    af = np.asarray(a_out, dtype=np.float64)
+    bf = np.asarray(b_out, dtype=np.float64)
+
+    # envelope: 本番入力（両ベンダー出力）が認証前提内か
+    if env is not None:
+        ep = AuditPhase("envelope 実行時エンベロープ", "static", Risk.OK)
+        for name, x in (("A", af), ("B", bf)):
+            r = check_tensor(x, env)
+            ep.max_risk = max(ep.max_risk, r.max_risk)
+            ep.lines.append(f"{name}: {'IN' if r.in_envelope else 'OUT'}-envelope "
+                            f"(max_risk={r.max_risk.name})")
+        ad.phases.append(ep)
+
+    # equivalence（ノイズ床を織り込んだ 3 状態）+ systematic（相補・偽OK 対策）
+    eq = compare_gemm(af, bf, K, dtype)
+    cross = float(np.abs(af - bf).max())
+    verdict = attribute(cross, noise_floor, eq.atol)
+    eqp = AuditPhase("equivalence 数値等価性", "static",
+                     Risk.BLOCK if verdict == "DIVERGENT" else Risk.OK)
+    eqp.lines.append(f"{verdict}: cross={cross:.2e} atol={eq.atol:.2e} noise={noise_floor:.2e}")
+    if verdict == "INDISTINGUISHABLE":
+        eqp.max_risk = Risk.WARN
+        eqp.lines.append("クロス差 ≤ ノイズ → 等価判定は未定義（要 run 増/決定化）")
+    sysrep = check_systematic(af, bf, K, dtype)
+    if not sysrep.ok:
+        eqp.max_risk = max(eqp.max_risk, sysrep.max_risk)
+        eqp.lines.append(f"系統バイアス {sysrep.bias * 100:+.3f}% "
+                         f"（max_abs 検出限界 {sysrep.floor_rel * 100:.1f}% の下に隠れる）")
+    ad.phases.append(eqp)
+
+    # decision: タスク判断のフリップ（最終単位）
+    if logits_a is not None and logits_b is not None:
+        dr = compare_decisions(np.asarray(logits_a), np.asarray(logits_b),
+                               flip_budget=flip_budget)
+        dp = AuditPhase("decision タスクレベル等価", "static", dr.max_risk)
+        dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
+                        f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
+        ad.phases.append(dp)
+
+    return ad
+

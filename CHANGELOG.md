@@ -90,7 +90,10 @@ Keep a Changelog 形式。SemVer。
   - portcheck.report は audit へ委譲しアドホックな統合グルーを除去（DRY）
   - **propagation を統合**: traced IR を論理 op 列へ写し（K ループの dot 群を 1 matmul に集約）、
     per-kernel 静的判定を per-model（合成的等価性）へ拡張。モデル発散 vs naive 和を併記
-- テスト計 88 PASS / verify 34 不変条件
+  - **`audit_runtime()`**: 実行時チェックリストの *実行版*。実機/実データのクロスベンダー
+    出力を envelope/equivalence(+noise 3 状態)/systematic/decision で束ねて 1 判定に。
+    静的 audit() の鏡像。真の発散は BLOCK・ノイズ未満は INDISTINGUISHABLE
+- テスト計 91 PASS / verify 36 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

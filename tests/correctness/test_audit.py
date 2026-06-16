@@ -6,7 +6,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-from tsugi.audit import _graph_ops, audit  # noqa: E402
+import numpy as np  # noqa: E402
+
+from tsugi.audit import _graph_ops, audit, audit_runtime  # noqa: E402
+from tsugi.envelope import certify_gemm  # noqa: E402
 from tsugi.portcheck import _demo_module  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
 
@@ -74,6 +77,37 @@ def test_audit_without_cfg_still_runs_portability():
     assert "feasibility" not in names   # cfg 無しでは起動可能性は判定不可
 
 
+def test_audit_runtime_passes_equivalent_within_noise():
+    # 真に等価(微小差)・ノイズ床込み → ブロッカー無し（INDISTINGUISHABLE/EQ は OK 寄り）
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    b = a + 1e-4 * rng.standard_normal((64, 64)).astype(np.float32)
+    ad = audit_runtime(a, b, K=256, env=certify_gemm(256, "float16", 1.0),
+                       noise_floor=1e-3)
+    assert ad.portable                     # 真の発散なし
+    names = {p.name.split()[0] for p in ad.phases}
+    assert {"envelope", "equivalence"} <= names
+
+
+def test_audit_runtime_blocks_real_divergence():
+    # 5% 系統スケール誤差 → BLOCK（max_abs か系統バイアスのいずれかが捕捉）
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    ad = audit_runtime(a, a * 1.05, K=256, noise_floor=1e-3)
+    assert not ad.portable
+    assert ad.max_risk == Risk.BLOCK
+
+
+def test_audit_runtime_includes_decision_when_logits_given():
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    la = rng.standard_normal((1500, 200)).astype(np.float32)
+    lb = la + 1e-1 * rng.standard_normal(la.shape).astype(np.float32)  # 多数フリップ
+    ad = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=lb, flip_budget=0.001)
+    dp = next(p for p in ad.phases if p.name.startswith("decision"))
+    assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -84,6 +118,9 @@ def main() -> int:
         test_runtime_phase_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
         test_audit_without_cfg_still_runs_portability,
+        test_audit_runtime_passes_equivalent_within_noise,
+        test_audit_runtime_blocks_real_divergence,
+        test_audit_runtime_includes_decision_when_logits_given,
     ]
     for t in tests:
         try:

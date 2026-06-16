@@ -195,6 +195,16 @@ def main() -> int:
           len(mm) == 1 and mm[0].K == 256
           and any(p.name.startswith("propagation") for p in ad.phases))
 
+    # 18. audit_runtime: 実データで実行時層を束ねて判定（チェックリストの実行版）
+    from tsugi.audit import audit_runtime
+    from tsugi.envelope import certify_gemm as _cert
+    _a = np.random.default_rng(0).standard_normal((64, 64)).astype(np.float32)
+    check("audit_runtime passes truly-equivalent outputs within noise",
+          audit_runtime(_a, _a + 1e-4, K=256, env=_cert(256, "float16", 1.0),
+                        noise_floor=1e-3).portable)
+    check("audit_runtime blocks a real systematic divergence (5% scale)",
+          not audit_runtime(_a, _a * 1.05, K=256, noise_floor=1e-3).portable)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
