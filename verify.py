@@ -280,6 +280,14 @@ def main() -> int:
     check("torch backend audit_fx surfaces amplifiers before codegen",
           "softmax" in audit_fx(_gm)["amplifiers"])
 
+    # 26. safety 係数は単一情報源（constants.SAFETY）に集約（Q1/Q2）
+    from tsugi.constants import SAFETY
+    from tsugi.propagation import GraphOp
+    from tsugi.tolerance import derive_tolerance as _dt
+    check("safety factor is single-sourced from constants.SAFETY",
+          GraphOp("matmul", K=8).safety == SAFETY
+          and _dt(8, "float16")["atol"] == _dt(8, "float16", safety=SAFETY)["atol"])
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

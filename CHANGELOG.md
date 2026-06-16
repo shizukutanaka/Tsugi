@@ -138,7 +138,10 @@ Keep a Changelog 形式。SemVer。
     （`fx_to_graph_ops`/`audit_fx`）。aten op 名（addmm/bmm/softmax/mean/...）を propagation
     GraphOp へ写し、codegen 前でも FX グラフに静的検証を走らせ増幅 op・モデル発散を warn
     （`verification-only (no codegen yet)`）。duck-typed・torch 不要でテスト（実 FX は torch 要）
-- テスト計 125 関数（property 10 × 200 試行含む）/ verify 47 不変条件
+  - **safety 定数の単一情報源化（SOCRATIC Q1/Q2）**: `tsugi.constants.SAFETY` に集約（従来は
+    tolerance/calibration/propagation の 5 箇所に重複）。docstring に根拠（√K·u·scale の 1σ に
+    掛ける ~4σ ヘッドルーム・実機 noise で校正すべき初期値）を明記。挙動不変
+- テスト計 126 関数（property 10 × 200 試行含む）/ verify 48 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

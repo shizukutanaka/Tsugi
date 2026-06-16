@@ -23,12 +23,13 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .constants import SAFETY
 from .report import FindingReport, Risk
 from .tolerance import unit_roundoff
 
 
 def detectability_floor(K: int, dtype: str = "float16", scale: float = 1.0,
-                        safety: float = 4.0) -> dict[str, float]:
+                        safety: float = SAFETY) -> dict[str, float]:
     """許容ベース等価判定が検出できる最小誤差（これ未満のバグは不可視＝偽OK）。
 
     rel = safety·√K·u（scale 非依存）。K とともに拡大する点が肝。
@@ -65,7 +66,7 @@ class CalibrationReport(FindingReport):
 
 
 def check_systematic(a: np.ndarray, b: np.ndarray, K: int = 1,
-                     dtype: str = "float16", safety: float = 4.0) -> CalibrationReport:
+                     dtype: str = "float16", safety: float = SAFETY) -> CalibrationReport:
     """系統的スケール/バイアス誤差を検査する（K 不変の閾値 = safety·u）。
 
     閾値は √K を掛けない（系統誤差は累積発散と違い K で増えない）。ゆえに max_abs の

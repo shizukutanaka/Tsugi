@@ -73,10 +73,22 @@ def test_noise_floor_widens_tolerance():
     assert t1["atol"] >= t0["atol"]
 
 
+def test_safety_is_single_source():
+    # SAFETY は constants に集約され、各層の既定がそれを参照する（Q1/Q2）
+    from tsugi.constants import SAFETY
+    from tsugi.calibration import detectability_floor
+    from tsugi.propagation import GraphOp
+    assert GraphOp("matmul", K=256).safety == SAFETY
+    # 既定（=SAFETY）と明示 SAFETY で同値（一元化が効いている）
+    assert (detectability_floor(256, "float16")["rel"]
+            == detectability_floor(256, "float16", safety=SAFETY)["rel"])
+
+
 def main() -> int:
     ok = True
     tests = [
         test_tolerance_grows_with_K,
+        test_safety_is_single_source,
         test_fp16_looser_than_fp32,
         test_bf16_loosest,
         test_derived_reclassifies_largeK_case,

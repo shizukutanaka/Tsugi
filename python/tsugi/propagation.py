@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from .constants import SAFETY
 from .tolerance import unit_roundoff
 
 # *相対*誤差を増幅する op（実測で確認）。相対発散の枠組みでは reciprocal/div/add は
@@ -39,7 +40,7 @@ class GraphOp:
     K: int = 1
     dtype: str = "float16"
     cond: float = 1.0   # 条件数（>1 で ill-conditioned・発散を増幅）
-    safety: float = 4.0
+    safety: float = SAFETY
 
 
 def local_divergence(op: GraphOp) -> float:

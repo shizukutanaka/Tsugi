@@ -9,11 +9,11 @@
 ## A. safety 係数とマジックナンバー（Q1–6）
 
 **Q1.** tolerance の `safety=4.0` は全許容を決める最重要定数だが、根拠は？
-→ コメントは「モデルの粗さを吸収」のみ。出典も導出も無い。**改善: safety の選定根拠
-（√K ランダムウォーク仮定 + 何σ をカバーするか）を SOURCES.md に明記し、実機 noise で校正。**
+→ ✅ **修正済**: `tsugi.constants.SAFETY` の docstring に根拠（√K ランダムウォーク 1σ に掛ける
+~4σ ヘッドルーム・実機 noise で校正すべき初期値）を明記。
 
 **Q2.** safety は 5 箇所に重複（tolerance/calibration/propagation 等）。一元化されているか？
-→ 各所で既定 4.0 を独立に持つ。**改善: `tsugi.constants` に SAFETY を集約し単一情報源化。**
+→ ✅ **修正済**: `tsugi.constants.SAFETY` に集約し 5 箇所すべてがそれを参照（単一情報源・DRY）。
 
 **Q3.** safety=4.0 は fp16/bf16/fp32 で同じでよいか？
 → dtype で丸めの統計的性質は変わりうる。**改善: dtype 別 safety の妥当性を検討（少なくとも
@@ -220,7 +220,7 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
   （sub/mul/div）を IR に記録するようにした。softmax がトレース可能になり、増幅 op が IR と
   audit の propagation グラフに現れる（perspective4 の実効化）。残: Q8（cond 推定で増幅の
   *大きさ* を出す）は P1。
-- Q2/Q1: safety 等の定数を `tsugi.constants` に集約＋根拠を SOURCES に明記。
+- ✅ Q2/Q1（修正済）: safety を `tsugi.constants.SAFETY` に集約＋根拠を docstring に明記。
 - Q45: AuditPhase.when を decided/pending に改名（意味の一致）。
 - Q37: テストサマリに SKIP 件数を表示（緑の誤読防止）。
 

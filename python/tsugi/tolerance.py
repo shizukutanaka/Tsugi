@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import math
 
+from .constants import SAFETY
+
 # 単位丸め誤差（unit roundoff, u = 2^-(mantissa_bits+1)）
 UNIT_ROUNDOFF = {
     "float16": 2.0 ** -11,   # 10 仮数ビット → u ≈ 4.88e-4
@@ -26,7 +28,7 @@ def unit_roundoff(dtype: str) -> float:
 
 
 def expected_gemm_abs_error(K: int, dtype: str = "float16",
-                            scale: float = 1.0, safety: float = 4.0) -> float:
+                            scale: float = 1.0, safety: float = SAFETY) -> float:
     """K 次元の累積を持つ GEMM の、ベンダー間で正当に生じうる絶対誤差の目安。
 
     safety: 安全係数（モデルの粗さを吸収）。
@@ -37,7 +39,7 @@ def expected_gemm_abs_error(K: int, dtype: str = "float16",
 
 
 def derive_tolerance(K: int, dtype: str = "float16", scale: float = 1.0,
-                     noise_floor: float = 0.0, safety: float = 4.0) -> dict[str, float]:
+                     noise_floor: float = 0.0, safety: float = SAFETY) -> dict[str, float]:
     """導出された許容誤差。数値条件とノイズフロアの大きい方を採用。
 
     noise_floor: ハードウェアの run-to-run 非決定性の実測幅（あれば）。
