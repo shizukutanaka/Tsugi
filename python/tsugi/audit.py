@@ -182,6 +182,14 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         if len(gops) == 1:
             prop.lines.append("単一 op グラフ: 伝播増幅なし。多 op モデルでは深さ・"
                               "条件数で累積（cond は実機/モデル依存・既定 1）")
+        # 正直さ: データ依存増幅 op（reduce/exp）に静的 cond=1 を当てるのは *下界*。
+        from .propagation import is_amplifier
+        amps = sorted({o.kind for o in gops if is_amplifier(o.kind)})
+        if amps and all(o.cond == 1.0 for o in gops):
+            prop.max_risk = Risk.WARN
+            prop.lines.append(
+                f"データ依存増幅 op {amps} が存在: 静的 cond=1 は *下界*（過小評価）。"
+                "真の増幅は empirical_cond / audit_runtime で実データから定量化せよ")
         # propagation → decision の橋: 静的発散を代表 logit でタスクフリップ率に翻訳
         if ref_logits is not None:
             from .decision import flip_bound_from_divergence

@@ -16,6 +16,8 @@ import numpy as np  # noqa: E402
 from tsugi.equivalence import simulate_vendor_matmul  # noqa: E402
 from tsugi.propagation import (  # noqa: E402
     GraphOp,
+    empirical_cond,
+    is_amplifier,
     model_tolerance,
     propagate,
 )
@@ -90,6 +92,39 @@ def test_empty_graph():
     assert model_tolerance([]) == 0.0
 
 
+def test_only_genuine_relative_amplifiers():
+    # 相対誤差を増幅するのは reduce/softmax/exp のみ。div/reciprocal/add は相対 ~1。
+    assert is_amplifier("reduce") and is_amplifier("exp") and is_amplifier("softmax")
+    assert not is_amplifier("div") and not is_amplifier("reciprocal")
+    assert not is_amplifier("add") and not is_amplifier("matmul")
+
+
+def test_empirical_cond_is_data_driven():
+    rng = np.random.default_rng(0)
+    signed = rng.standard_normal((4, 256))
+    positive = np.abs(rng.standard_normal((4, 256)))
+    # 符号付き和は相殺で κ≫1、正の和は κ≈1（相殺なし）
+    assert empirical_cond(signed, "reduce", axis=1) > 5.0
+    assert empirical_cond(positive, "reduce", axis=1) < 1.5
+    # max reduction は well-conditioned
+    assert empirical_cond(signed, "reduce", axis=1, reduce_kind="max") == 1.0
+    # exp の相対条件数は max|x|
+    logits = rng.standard_normal((4, 16)) * 3
+    assert abs(empirical_cond(logits, "exp") - float(np.abs(logits).max())) < 1e-9
+    # div は相対では増幅しない
+    assert empirical_cond(signed, "div") == 1.0
+
+
+def test_empirical_cond_makes_amplification_fire():
+    # 静的 cond=1 では amp=1 だが、実測 cond を入れると合成発散が naive 和を超える
+    rng = np.random.default_rng(1)
+    signed = rng.standard_normal((4, 512))
+    kappa = empirical_cond(signed, "reduce", axis=1)
+    ops = [GraphOp("matmul", K=256), GraphOp("reduce", cond=kappa)]
+    rep = propagate(ops)
+    assert rep.model_divergence > rep.naive_sum   # 実測 cond で増幅が発火
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -98,6 +133,9 @@ def main() -> int:
         test_ill_conditioned_op_is_dominant,
         test_per_kernel_pass_but_model_diverges_numpy,
         test_empty_graph,
+        test_only_genuine_relative_amplifiers,
+        test_empirical_cond_is_data_driven,
+        test_empirical_cond_makes_amplification_fire,
     ]
     for t in tests:
         try:

@@ -36,8 +36,11 @@
 増幅の検出）を既定で無効化している。最低限ドキュメントで強く警告し、cond 推定の道筋を示す。**
 
 **Q8.** audit の `_graph_ops` は実カーネルから cond をどう得るか？
-→ 得ない（常に 1）。**改善: op 種別から cond 下限ヒント（softmax→入力レンジ依存・reduction→
-要素数依存）を静的に推定する初版を入れる。**
+→ 得ない（常に 1）。✅ **修正済**: (1) `_AMPLIFYING` を *相対*増幅する op のみ（reduce/
+softmax/exp）に是正（div/reciprocal/add は相対条件数 ~1 で増幅しないと実測確認）。
+(2) `empirical_cond(sample,kind)` でデータ依存 cond を実測（reduce=Σ|x|/|Σx| の相殺・
+exp=max|x|）。(3) audit は増幅 op があるのに静的 cond=1 を当てる時 *下界* と WARN し
+empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 
 **Q9.** 現トレーサは reduce/exp/softmax を IR に出すか？
 → 出さない（dot/load/store/cast/add/zeros のみ）。よって audit の propagation は実質常に
@@ -216,6 +219,7 @@ verify.py を「CI 代替」と位置づけ。**
 - Q37: テストサマリに SKIP 件数を表示（緑の誤読防止）。
 
 **P1（近く）**
+- ✅ Q8（修正済）: 相対増幅 op の是正＋ empirical_cond（data-driven）＋ 静的下界の WARN。
 - Q23/Q26: torch backend に静的 audit を差し込み「検証だけ先に届ける」。FX→GraphOp 写像。
 - Q18/Q20: 橋を系統/乱雑成分に分け、上界＋期待値の両方を返す。
 - Q44/Q47: equivalence を report/Risk 基盤へ寄せる。

@@ -130,11 +130,24 @@ def test_audit_propagation_sees_amplifying_ops():
     assert "reduce" in kinds and "exp" in kinds and "div" in kinds
 
 
+def test_audit_warns_amplifiers_underestimated_statically():
+    # 正直さ: 増幅 op があるのに静的 cond=1 は下界 → propagation フェーズが WARN
+    from tsugi.audit import audit
+    from tsugi.report import Risk
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal((8, 16)).astype(np.float32)
+    mod = tsugi.trace(softmax_kernel, (x, x.copy(), 8, 16), {}, program_ids=(0, 0))
+    prop = next(p for p in audit(mod, None).phases if p.name.startswith("propagation"))
+    assert prop.max_risk == Risk.WARN
+    assert "下界" in prop.to_text()
+
+
 def main() -> int:
     ok = True
     for t in (test_trace_produces_ir, test_mlir_text_renders, test_trace_values_match_eager,
               test_trace_records_amplifying_ops, test_traced_softmax_matches_reference,
-              test_audit_propagation_sees_amplifying_ops):
+              test_audit_propagation_sees_amplifying_ops,
+              test_audit_warns_amplifiers_underestimated_statically):
         try:
             r = t()
             info = f"ops={r}" if isinstance(r, int) else (f"err={r:.2e}" if isinstance(r, float) else "ok")

@@ -217,6 +217,16 @@ def main() -> int:
     check("audit_cross_vendor blocks a real cross-vendor divergence",
           not audit_cross_vendor(_run(1.0, 1), _run(1.05, 2), K=256, n_runs=8).portable)
 
+    # 20. propagation: 相対増幅は reduce/softmax/exp のみ・empirical_cond は data-driven
+    from tsugi.propagation import empirical_cond, is_amplifier
+    check("only reduce/softmax/exp amplify relative error (not div/reciprocal/add)",
+          is_amplifier("reduce") and is_amplifier("exp")
+          and not is_amplifier("div") and not is_amplifier("add"))
+    _sg = np.random.default_rng(0).standard_normal((4, 256))
+    check("empirical_cond is data-driven (signed reduction cancels, positive does not)",
+          empirical_cond(_sg, "reduce", axis=1)
+          > empirical_cond(np.abs(_sg), "reduce", axis=1) * 3)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

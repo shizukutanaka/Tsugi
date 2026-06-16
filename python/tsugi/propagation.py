@@ -20,9 +20,15 @@ from dataclasses import dataclass, field
 
 from .tolerance import unit_roundoff
 
-# amp が 1 を超える（入力発散を増幅する）代表的な op。既定は well-conditioned(amp=1)。
-# cond を明示すると条件数依存の増幅を反映する（相殺・小値除算・大値 exp）。
-_AMPLIFYING = {"reduce", "add", "exp", "reciprocal", "rsqrt", "div", "softmax"}
+# *相対*誤差を増幅する op（実測で確認）。相対発散の枠組みでは reciprocal/div/add は
+# 相対条件数 ~1（増幅しない）。真の相対増幅は (1) 符号付き reduction の相殺 と
+# (2) exp（相対条件数=|x|）。cond を明示するとその大きさを反映する。
+_AMPLIFYING = {"reduce", "softmax", "exp"}
+
+
+def is_amplifier(kind: str) -> bool:
+    """この op が *相対*誤差を増幅しうるか（reduce 相殺・exp）。"""
+    return kind in _AMPLIFYING
 
 
 @dataclass
@@ -122,6 +128,31 @@ def propagate(ops: list[GraphOp], input_div: float = 0.0) -> PropagationReport:
         delta = amp * delta + loc
         rep.ops.append(OpTrace(kind=op.kind, local=loc, amp=amp, cumulative=delta))
     return rep
+
+
+def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum") -> float:
+    """代表サンプルからデータ依存の *相対* 条件数を実測する（静的 cond=1 の置換）。
+
+    静的には cond 不明（符号や値域に依存）。実機/代表データがあれば測れる:
+      - reduce(sum): 和の条件数 κ = Σ|x| / |Σx|（相殺で増大・正の和なら ~1）。worst-case
+        だが検証器は非対称コストゆえ保守側でよい。reduce(max) は ~1。
+      - exp: 相対条件数 = max|x|。
+      - その他（div/reciprocal/add 等）: 相対的には ~1。
+    audit_runtime からこれを与えれば propagation の増幅が実データで発火する。
+    """
+    import numpy as np
+
+    x = np.asarray(sample, dtype=np.float64)
+    if kind in ("reduce", "softmax"):
+        if reduce_kind == "max":
+            return 1.0
+        num = np.sum(np.abs(x), axis=axis)
+        den = np.abs(np.sum(x, axis=axis))
+        ratio = num / np.maximum(den, 1e-30)
+        return float(np.median(ratio))
+    if kind == "exp":
+        return float(np.abs(x).max()) if x.size else 1.0
+    return 1.0
 
 
 def model_tolerance(ops: list[GraphOp]) -> float:
