@@ -101,7 +101,14 @@ Keep a Changelog 形式。SemVer。
     から audit_runtime（nondeterminism と audit をつなぐ正規経路・決定論を仮定しない）
   - **tests/gpu/ ハーネス**: 実機クロスベンダー監査の実行可能な契約。GPU 無しは正直に
     SKIP し、配線（ノイズ実測→監査）は擬似 run で CPU 検証。run.py [3] に統合
-- テスト計 94 PASS / verify 38 不変条件
+  - **propagation→decision 橋** `decision.flip_bound_from_divergence`: 静的 op グラフの
+    相対発散を代表 logit のタスクフリップ率上界へ翻訳（第2ベンダー実行前に予測・視点4→8）。
+    audit(ref_logits=...) が propagation フェーズに併記
+  - **tracer 拡張（SOCRATIC 50 の最優先 Q9/Q10 修正）**: reduce/exp/sqrt/rsqrt/maximum＋
+    elementwise(sub/mul/div) を IR に記録。softmax/rmsnorm がトレース可能になり、増幅 op が
+    IR と audit の propagation グラフに流れる（perspective4 の実効化）
+  - **docs/SOCRATIC-50-improvements.md**: 50 問のソクラテス監査で改善点を洗い出し優先度付け
+- テスト計 98 PASS / verify 38 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

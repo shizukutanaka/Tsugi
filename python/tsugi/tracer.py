@@ -21,6 +21,14 @@ from .runtime_ref import _arr
 _trace = threading.local()
 
 
+def _tt_of(data: np.ndarray) -> str:
+    """numpy 配列から MLIR 風テンソル型文字列を作る。"""
+    s = "x".join(str(d) for d in data.shape)
+    dt = {np.dtype("float16"): "f16", np.dtype("float32"): "f32"}.get(
+        data.dtype, str(data.dtype))
+    return f"tensor<{s}x{dt}>"
+
+
 class _Tracer:
     def __init__(self, kernel_name: str) -> None:
         self.kernel = ir.Kernel(name=kernel_name)
@@ -49,11 +57,14 @@ class SymTensor:
         self.val = val
 
     def _tt(self) -> str:
-        s = "x".join(str(d) for d in self.data.shape)
-        dt = {np.dtype("float16"): "f16", np.dtype("float32"): "f32"}.get(
-            self.data.dtype, str(self.data.dtype)
-        )
-        return f"tensor<{s}x{dt}>"
+        return _tt_of(self.data)
+
+    def _binop(self, other, kind: str, fn) -> "SymTensor":
+        ov = other.data if isinstance(other, SymTensor) else _arr(other)
+        data = fn(self.data, ov)
+        operands = [self.val] + ([other.val] if isinstance(other, SymTensor) else [])
+        res = _tracer().emit(kind, operands, {}, _tt_of(data))
+        return SymTensor(data, res)
 
     def __iadd__(self, other: "SymTensor") -> "SymTensor":
         t = _tracer()
@@ -61,6 +72,14 @@ class SymTensor:
         self.data = self.data + _arr(other)
         self.val = res
         return self
+
+    # elementwise（softmax/rmsnorm 等が要する。IR を記録しつつ実値を計算）
+    def __add__(self, other): return self._binop(other, "add", lambda a, b: a + b)
+    def __sub__(self, other): return self._binop(other, "sub", lambda a, b: a - b)
+    def __mul__(self, other): return self._binop(other, "mul", lambda a, b: a * b)
+    def __truediv__(self, other): return self._binop(other, "div", lambda a, b: a / b)
+    __radd__ = __add__
+    __rmul__ = __mul__
 
     def to(self, dtype) -> "SymTensor":
         t = _tracer()
@@ -125,6 +144,39 @@ class _TraceTile:
         res = _tracer().emit("dot", operands, {}, f"tensor<{s}xf32>")
         return SymTensor(out, res)
 
+    # 縮約・非線形 op（softmax/rmsnorm の核。IR に現れないと propagation が空回りする）
+    @staticmethod
+    def reduce(x: SymTensor, axis: int, kind: str = "sum") -> SymTensor:
+        v = x.data
+        data = (np.sum(v, axis=axis, keepdims=True) if kind == "sum"
+                else np.max(v, axis=axis, keepdims=True) if kind == "max"
+                else _bad_reduce(kind))
+        res = _tracer().emit("reduce", [x.val], {"kind": kind, "axis": axis}, _tt_of(data))
+        return SymTensor(data, res)
+
+    @staticmethod
+    def exp(x: SymTensor) -> SymTensor:
+        data = np.exp(x.data)
+        return SymTensor(data, _tracer().emit("exp", [x.val], {}, _tt_of(data)))
+
+    @staticmethod
+    def sqrt(x: SymTensor) -> SymTensor:
+        data = np.sqrt(x.data)
+        return SymTensor(data, _tracer().emit("sqrt", [x.val], {}, _tt_of(data)))
+
+    @staticmethod
+    def rsqrt(x: SymTensor) -> SymTensor:
+        data = 1.0 / np.sqrt(x.data)
+        return SymTensor(data, _tracer().emit("rsqrt", [x.val], {}, _tt_of(data)))
+
+    @staticmethod
+    def maximum(a: SymTensor, b) -> SymTensor:
+        return a._binop(b, "max", np.maximum)
+
+
+def _bad_reduce(kind: str):
+    raise ValueError(f"unknown reduce kind: {kind}")
+
 
 def trace(kernel, args: tuple, kwargs: dict, program_ids=(0, 0)) -> ir.Module:
     """カーネルを 1 プログラムインスタンスとしてトレースし IR を返す。
@@ -140,11 +192,18 @@ def trace(kernel, args: tuple, kwargs: dict, program_ids=(0, 0)) -> ir.Module:
     _trace.t = t
 
     # tile モジュールの関数を一時的にトレース版へ差し替え（共有モジュールを直接patch）
-    saved = {k: getattr(tile_mod, k) for k in ("zeros", "load", "store", "dot")}
+    patched = ("zeros", "load", "store", "dot", "reduce", "exp", "sqrt",
+               "rsqrt", "maximum")
+    saved = {k: getattr(tile_mod, k) for k in patched}
     tile_mod.zeros = _TraceTile.zeros
     tile_mod.load = _TraceTile.load
     tile_mod.store = _TraceTile.store
     tile_mod.dot = _TraceTile.dot
+    tile_mod.reduce = _TraceTile.reduce
+    tile_mod.exp = _TraceTile.exp
+    tile_mod.sqrt = _TraceTile.sqrt
+    tile_mod.rsqrt = _TraceTile.rsqrt
+    tile_mod.maximum = _TraceTile.maximum
     runtime_ref._ctx.ctx = runtime_ref._ProgramContext(program_ids=program_ids)
     try:
         fn(*args, **kwargs)

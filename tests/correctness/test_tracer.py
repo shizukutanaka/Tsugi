@@ -88,9 +88,53 @@ def test_trace_values_match_eager():
     return float(err)
 
 
+@tsugi.jit
+def softmax_kernel(x, out, N, D):
+    row = tile.load(x, (0, 0), (N, D))
+    m = tile.reduce(row, 1, "max")
+    e = tile.exp(row - m)
+    s = tile.reduce(e, 1, "sum")
+    tile.store(out, (0, 0), e / s)
+
+
+def test_trace_records_amplifying_ops():
+    # 修正前: reduce/exp はトレースされず IR から消えていた（propagation 空回り）。
+    # 修正後: softmax がトレースでき、増幅 op が IR に現れる。
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((8, 16)).astype(np.float32)
+    mod = tsugi.trace(softmax_kernel, (x, x.copy(), 8, 16), {}, program_ids=(0, 0))
+    kinds = mod.op_kinds()
+    for expected in ("reduce", "exp", "sub", "div"):
+        assert expected in kinds, f"IR missing amplifying op '{expected}': {kinds}"
+    assert kinds.count("reduce") == 2
+
+
+def test_traced_softmax_matches_reference():
+    # 具体トレースの実値が真の softmax と一致（IR が正しい証明）
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal((8, 16)).astype(np.float32)
+    out = x.copy()
+    tsugi.trace(softmax_kernel, (x, out, 8, 16), {}, program_ids=(0, 0))
+    ref = np.exp(x - x.max(1, keepdims=True))
+    ref /= ref.sum(1, keepdims=True)
+    assert np.max(np.abs(out - ref)) < 1e-6
+
+
+def test_audit_propagation_sees_amplifying_ops():
+    # 統合経路: audit の propagation グラフに増幅 op が流れる（perspective4 の実効化）
+    from tsugi.audit import _graph_ops
+    rng = np.random.default_rng(2)
+    x = rng.standard_normal((8, 16)).astype(np.float32)
+    mod = tsugi.trace(softmax_kernel, (x, x.copy(), 8, 16), {}, program_ids=(0, 0))
+    kinds = [o.kind for o in _graph_ops(mod, None)]
+    assert "reduce" in kinds and "exp" in kinds and "div" in kinds
+
+
 def main() -> int:
     ok = True
-    for t in (test_trace_produces_ir, test_mlir_text_renders, test_trace_values_match_eager):
+    for t in (test_trace_produces_ir, test_mlir_text_renders, test_trace_values_match_eager,
+              test_trace_records_amplifying_ops, test_traced_softmax_matches_reference,
+              test_audit_propagation_sees_amplifying_ops):
         try:
             r = t()
             info = f"ops={r}" if isinstance(r, int) else (f"err={r:.2e}" if isinstance(r, float) else "ok")
