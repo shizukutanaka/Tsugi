@@ -61,19 +61,27 @@ def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
     return ops
 
 
-def audit_fx(gm: Any) -> dict:
+def audit_fx(gm: Any, ref_logits=None) -> dict:
     """FX グラフに静的検証（propagation）を走らせ、要点を dict で返す。
 
     codegen 前でも「このモデルはクロスベンダーでどれだけ発散しうるか・どの増幅 op が
     あるか」を告げる。cond は静的不明ゆえ既定 1（=下界・実機/実データで定量化すべき）。
+
+    ref_logits（代表的な出力 logit 分布）を渡すと、モデル発散を *タスク影響* に翻訳し
+    判断フリップ率の上界 `task_flip_bound` を返す（静的グラフ → ユーザーに見える差）。
     """
     ops = fx_to_graph_ops(gm)
     rep = propagate(ops)
     amps = sorted({o.kind for o in ops if is_amplifier(o.kind)})
-    return {
+    out = {
         "n_ops": len(ops),
         "model_divergence": rep.model_divergence,
         "naive_sum": rep.naive_sum,
         "amplifiers": amps,
         "dominant": rep.dominant.kind if rep.dominant is not None else None,
+        "task_flip_bound": None,
     }
+    if ref_logits is not None:
+        from tsugi.decision import flip_bound_from_divergence
+        out["task_flip_bound"] = flip_bound_from_divergence(ref_logits, rep.model_divergence)
+    return out

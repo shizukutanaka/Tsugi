@@ -5,6 +5,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **torch backend の静的→タスク翻訳**: `audit_fx(gm, ref_logits=)` がモデル発散を判断
+  フリップ率上界 `task_flip_bound` に翻訳。backend は example 出力を代表 logit として
+  best-effort 利用し、`model_divergence` でなくユーザーに見える「予測フリップ率」を warn
+  （propagation→decision を FX/製品経路で接続）。
 - **propagation 残差トポロジ対応（Q11/Q12）**: `GraphOp(residual=True)` で残差ブロック
   y=x+f(x) を表現。skip 接続が δ_in を再増幅しないため δ_out=sqrt(δ_in²+(amp·local)²) と
   random-walk 希釈（~√L）になり、平坦チェーンの線形累積より小さい。pre-norm transformer

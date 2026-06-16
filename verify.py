@@ -291,6 +291,10 @@ def main() -> int:
           [o.kind for o in fx_to_graph_ops(_gm)] == ["matmul", "softmax"])
     check("torch backend audit_fx surfaces amplifiers before codegen",
           "softmax" in audit_fx(_gm)["amplifiers"])
+    _lg = np.random.default_rng(0).standard_normal((500, 128)).astype(np.float32)
+    check("torch backend translates model divergence to task flip bound (static→task)",
+          0.0 <= audit_fx(_gm, ref_logits=_lg)["task_flip_bound"] <= 1.0
+          and audit_fx(_gm)["task_flip_bound"] is None)
 
     # 26. safety 係数は単一情報源（constants.SAFETY）に集約（Q1/Q2）
     from tsugi.constants import SAFETY

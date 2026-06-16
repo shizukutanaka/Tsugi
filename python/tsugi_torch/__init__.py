@@ -29,12 +29,22 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         import warnings
 
         from .fxbridge import audit_fx
-        rep = audit_fx(gm)
+        # 代表 logit があればタスク影響（判断フリップ率）へ翻訳。example 出力を best-effort で利用。
+        ref_logits = None
+        try:
+            out = gm.forward(*example_inputs)
+            t = out[0] if isinstance(out, (tuple, list)) else out
+            ref_logits = t.detach().cpu().numpy()
+        except Exception:  # noqa: BLE001 — 取れなければ発散のみ報告
+            ref_logits = None
+        rep = audit_fx(gm, ref_logits=ref_logits)
         if rep["n_ops"]:
+            task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%"
+                    if rep["task_flip_bound"] is not None else "")
             warnings.warn(
                 f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
-                f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e} "
-                "(cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
+                f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
+                f"{task} (cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない
         pass

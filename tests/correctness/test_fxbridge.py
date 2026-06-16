@@ -82,6 +82,17 @@ def test_audit_fx_empty_graph():
     assert rep["model_divergence"] == 0.0
 
 
+def test_audit_fx_translates_to_task_flip_bound():
+    # ref_logits を渡すと静的グラフ発散 → タスク判断フリップ率上界に翻訳（静的→タスク）
+    import numpy as np
+    rep_none = audit_fx(_transformer_block())
+    assert rep_none["task_flip_bound"] is None       # logit 無しなら None
+    logits = np.random.default_rng(0).standard_normal((1000, 256)).astype(np.float32)
+    rep = audit_fx(_transformer_block(), ref_logits=logits)
+    assert rep["task_flip_bound"] is not None
+    assert 0.0 <= rep["task_flip_bound"] <= 1.0      # 確率（上界）
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -89,6 +100,7 @@ def main() -> int:
         test_fx_matmul_K_from_shape_meta,
         test_audit_fx_surfaces_amplifiers,
         test_audit_fx_empty_graph,
+        test_audit_fx_translates_to_task_flip_bound,
     ]
     for t in tests:
         try:
