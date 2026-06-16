@@ -18,6 +18,17 @@
 tolerance.derive_tolerance は noise_floor 引数を持つが既定 0（＝決定論を仮定）だった。
 本モジュールはその noise_floor を **複数 run の実測** で埋める（CPU では atomic 非決定を
 擬似再現・明示）。実 GPU では run_fn を実機カーネルにすればそのまま使える。
+
+最新研究の取り込み（2025）:
+- **バッチ不変性（batch invariance）が LLM 推論の *支配的* 非決定源**であり、atomic 並行性の
+  浮動小数非結合性ではない（Thinking Machines Lab 2025・SC'24 arXiv:2408.05148）。あるサンプルの
+  出力は forward の *バッチサイズ* に依存する —— バッチ依存のタイル/縮約順序が丸めを変えるため。
+  これは run-to-run の atomic ノイズとは別の **決定論的だがバッチ変動で生じる第三の床**。
+  GPU 固有でなく CPU/TPU でも生じる。クロスベンダーでは「タイルが違う＝実効バッチが違う」ため、
+  各ベンダーが個別に決定論的でも発散しうる。→ measure_batch_variance で実測する。
+- **浮動小数ノイズは独立ガウスでなく構造的（相関）**（arXiv:2511.00025）。これは calibration の
+  系統（RMS 比）検出が必要十分でなく *必要* である根拠を外部から裏づける（max_abs 単独では
+  相関誤差を見逃す）。
 """
 from __future__ import annotations
 
@@ -61,6 +72,40 @@ def measure_noise_floor(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
     mean_mag = float(np.sqrt(np.mean(stack ** 2)) + 1e-30)
     return {"spread": spread, "std": float(stack.std(axis=0).max()),
             "rel": spread / mean_mag, "n_runs": n_runs}
+
+
+def simulate_batch_variant_reduction(parts: np.ndarray, tile: int) -> np.ndarray:
+    """バッチ依存タイルでの縮約を擬似再現する（CPU・シミュレーション・明示）。
+
+    バッチ不変性の機構: バッチサイズが変わると縮約のタイル/分割が変わり、部分和の
+    丸め順序が変わる → 同じ論理入力でも *決定論的に* 異なる結果になる（Thinking
+    Machines 2025）。tile（= バッチ依存の分割幅）ごとに部分和を fp32 で作り合算する。
+    seed は不要（run-to-run の atomic ノイズと違い、バッチが同じなら毎回同じ値）。
+    """
+    flat = parts.reshape(-1).astype(np.float32)
+    acc = np.float32(0.0)
+    for i in range(0, flat.size, max(1, tile)):
+        chunk = np.float32(0.0)
+        for v in flat[i:i + tile]:
+            chunk = np.float32(chunk + v)
+        acc = np.float32(acc + chunk)
+    return np.asarray(acc, dtype=np.float32)
+
+
+def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
+                           batch_tiles=(32, 64, 128, 256, 512)) -> dict[str, float]:
+    """同一論理入力をバッチ依存タイル群で走らせ batch-invariance 床を実測する。
+
+    run_of_batch(tile) -> 出力テンソル。バッチ変動で生じる *決定論的* な差の spread を返す。
+    run-to-run の atomic ノイズとは独立した床。実機ではバッチサイズ違いの forward を渡す。
+    本番でバッチが変動するなら、この床も等価判定に織り込むべき（実効床 = max(run-to-run,
+    batch-variance, 数値検出限界)）。
+    """
+    runs = [np.asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
+    stack = np.stack(runs)
+    spread = float((stack.max(axis=0) - stack.min(axis=0)).max())
+    mean_mag = float(np.sqrt(np.mean(stack ** 2)) + 1e-30)
+    return {"spread": spread, "rel": spread / mean_mag, "n_batches": len(batch_tiles)}
 
 
 def attribute(cross_diff: float, noise_floor: float, tol: float) -> str:

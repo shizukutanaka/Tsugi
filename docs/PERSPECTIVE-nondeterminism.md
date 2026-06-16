@@ -88,3 +88,24 @@ from tsugi.nondeterminism import (
     EQUIVALENT, DIVERGENT, INDISTINGUISHABLE,
 )
 ```
+
+## 追補（2025 研究の取り込み）— バッチ不変性という第三の床
+
+当初この視点は run-to-run の **atomic 非決定** を主因と置いた。だが 2025 の研究は、LLM 推論の
+**支配的** な非決定源が **バッチ不変性（batch invariance）** —— あるサンプルの出力が forward の
+*バッチサイズ* に依存すること —— であり、atomic 並行性ではないと示した（Thinking Machines Lab
+2025 / SC'24 arXiv:2408.05148）。バッチサイズが変わると縮約のタイル/順序が変わり丸めが変わる。
+temp=0 で同一プロンプト 1000 回が 80 種に割れ、バッチ不変な縮約カーネルで全ビット一致に戻る。
+
+取り込み:
+- `simulate_batch_variant_reduction(parts, tile)` — バッチ依存タイルの縮約（決定論的だが
+  バッチで変わる）。
+- `measure_batch_variance(run_of_batch, tiles)` — バッチ変動による床を実測。
+- **実効床 = max(run-to-run ノイズ, batch-invariance 床, 数値検出限界)。** run-to-run と違い
+  batch-variance は *決定論的*（同じバッチなら再現）だが、本番のバッチ変動で silent に効く。
+  GPU 固有でなく CPU/TPU でも生じる。クロスベンダーでは「タイルが違う＝実効バッチが違う」
+  ため、各ベンダーが個別に決定論的でも発散しうる。
+
+さらに arXiv:2511.00025 は **FP ノイズが独立ガウスでなく構造的（相関）** と示し、calibration の
+系統（RMS 比）検出が *必要* である根拠を外部から裏づける（max_abs 単独では相関誤差を見逃す）。
+出典は docs/SOURCES.md。

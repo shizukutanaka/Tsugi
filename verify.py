@@ -227,6 +227,18 @@ def main() -> int:
           empirical_cond(_sg, "reduce", axis=1)
           > empirical_cond(np.abs(_sg), "reduce", axis=1) * 3)
 
+    # 21. batch invariance（Thinking Machines 2025）: バッチ依存だが決定論的な第三の床
+    from tsugi.nondeterminism import (
+        measure_batch_variance,
+        simulate_batch_variant_reduction,
+    )
+    _bp = np.random.default_rng(0).standard_normal(4096).astype(np.float32)
+    check("batch-variant reduction is deterministic per batch, varies across batch",
+          simulate_batch_variant_reduction(_bp, 128) == simulate_batch_variant_reduction(_bp, 128)
+          and simulate_batch_variant_reduction(_bp, 128) != simulate_batch_variant_reduction(_bp, 256))
+    check("batch-invariance floor is a positive independent floor",
+          measure_batch_variance(lambda t: simulate_batch_variant_reduction(_bp, t))["spread"] > 0.0)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

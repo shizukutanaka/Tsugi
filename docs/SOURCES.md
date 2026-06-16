@@ -103,3 +103,25 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
   （tolerance.derive_tolerance の noise_floor 引数。既定 0 = 決定論仮定は誤り）。
   CPU 実装は atomic 非決定の擬似再現（明示）。実機では run_fn を実カーネルにするだけ。
   （docs/PERSPECTIVE-nondeterminism.md）
+
+## バッチ不変性（batch invariance）— LLM 推論の支配的非決定源（2025）
+
+> `tsugi.nondeterminism.measure_batch_variance`。第三の床（run-to-run とは独立・決定論的だが
+> バッチ変動で生じる）。
+
+最新研究の知見:
+- **支配的な非決定源はバッチ不変性であり、atomic 並行性ではない**。あるサンプルの出力が
+  forward の *バッチサイズ* に依存する（バッチ依存のタイル/縮約順序が丸めを変える）。
+  matmul/RMSNorm/attention が影響を受け、バッチ不変な縮約カーネルで解消できる。temp=0 で
+  同一プロンプト 1000 回 → 80 種の出力が、修正後は全ビット一致。GPU 固有でなく CPU/TPU でも生じる。
+  - Thinking Machines Lab, "Defeating Nondeterminism in LLM Inference" (2025)
+    https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/
+  - "Impacts of floating-point non-associativity on reproducibility…" SC'24 (arXiv:2408.05148)
+- **浮動小数ノイズは独立ガウスでなく構造的（相関）** — 「誤差は独立ガウス」という仮定を覆す。
+  これは calibration の系統（RMS 比）検出が *必要* である根拠を外部から裏づける。
+  - "On the Structure of Floating-Point Noise in Batch-Invariant GPU Matrix Multiplication"
+    (arXiv:2511.00025)
+
+含意（Tsugi への取り込み）: 実効床 = max(run-to-run ノイズ, **batch-invariance 床**, 数値検出限界)。
+本番でバッチが変動するなら batch-variance を等価判定に織り込む。クロスベンダーでは「タイルが
+違う＝実効バッチが違う」ため、各ベンダーが個別に決定論的でも発散しうる。

@@ -18,13 +18,33 @@ from tsugi.nondeterminism import (  # noqa: E402
     INDISTINGUISHABLE,
     attribute,
     compare_stable,
+    measure_batch_variance,
     measure_noise_floor,
+    simulate_batch_variant_reduction,
     simulate_nondeterministic_reduction,
 )
 
 
 def _parts(seed: int, K: int = 4096) -> np.ndarray:
     return np.random.default_rng(seed).standard_normal(K).astype(np.float32)
+
+
+def test_batch_variance_is_deterministic_but_batch_dependent():
+    # batch-invariance（Thinking Machines 2025）: バッチ依存タイルで結果が変わるが、
+    # 同じバッチなら毎回同じ（atomic ノイズと違い決定論的）。
+    p = _parts(0)
+    r128_a = float(simulate_batch_variant_reduction(p, 128))
+    r128_b = float(simulate_batch_variant_reduction(p, 128))
+    r256 = float(simulate_batch_variant_reduction(p, 256))
+    assert r128_a == r128_b          # 同じバッチ → 決定論的（再現する）
+    assert r128_a != r256            # バッチが違う → 結果が変わる
+
+
+def test_batch_variance_floor_is_positive():
+    p = _parts(0)
+    bv = measure_batch_variance(lambda t: simulate_batch_variant_reduction(p, t))
+    assert bv["spread"] > 0.0        # バッチ変動は独立した床を生む
+    assert bv["n_batches"] >= 2
 
 
 def test_reduction_is_nondeterministic():
@@ -84,6 +104,8 @@ def test_single_run_comparison_is_flaky():
 def main() -> int:
     ok = True
     tests = [
+        test_batch_variance_is_deterministic_but_batch_dependent,
+        test_batch_variance_floor_is_positive,
         test_reduction_is_nondeterministic,
         test_noise_floor_is_positive,
         test_attribute_three_regimes,
