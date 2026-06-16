@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .report import Risk  # 検証層共通の深刻度モデル
+
 # dtype 別の許容誤差（BENCHMARK.md §4 と整合）
 TOLERANCE = {
     "float16": dict(atol=1e-2, rtol=1e-2),
@@ -31,6 +33,20 @@ class EquivalenceReport:
     n_total: int
     atol: float
     rtol: float
+
+    # report.FindingReport は所見リスト型。等価判定はスカラ計量なので継承せず、
+    # 共通の判定インターフェース（risk/max_risk/ok）だけ揃えて第一級レポートにする。
+    @property
+    def risk(self) -> Risk:
+        return Risk.OK if self.equivalent else Risk.BLOCK
+
+    @property
+    def max_risk(self) -> Risk:
+        return self.risk
+
+    @property
+    def ok(self) -> bool:
+        return self.equivalent
 
     def to_text(self) -> str:
         status = "EQUIVALENT" if self.equivalent else "DIVERGENT"

@@ -180,7 +180,8 @@ verify.py を「CI 代替」と位置づけ。**
 ## I. API/意味の一貫性（Q44–47）
 
 **Q44.** equivalence.EquivalenceReport は report.FindingReport を継承していない（統合の取り残し）。
-→ 独自 dataclass のまま。**改善: 可能なら共通基底へ寄せるか、寄せない理由を記す。**
+→ ✅ **修正済**: 等価判定はスカラ計量で所見リスト型でないため FindingReport は継承せず（理由を
+docstring に明記）、共通の判定インターフェース `risk`/`max_risk`/`ok` を備えて第一級レポート化。
 
 **Q45.** AuditPhase.when は "static"/"runtime" だが audit_runtime は実データ層を "static" と付ける
 （意味の二重定義）。
@@ -191,7 +192,8 @@ verify.py を「CI 代替」と位置づけ。**
 → 循環回避のためだが基準が不明瞭。**改善: 遅延 import の方針を 1 行で明文化。**
 
 **Q47.** report の severity は Risk(IntEnum) だが equivalence は bool(equivalent)。粒度不一致。
-→ 二値 vs 4 段。**改善: equivalence も Risk へマップ（audit は既にやっている）。**
+→ ✅ **修正済**: EquivalenceReport.risk が equivalent→OK / divergent→BLOCK を返す。全レポートが
+`max_risk` を持つ統一インターフェースに。
 
 ## J. 主張の統計的厳密さ（Q48–50）
 
@@ -222,7 +224,7 @@ verify.py を「CI 代替」と位置づけ。**
 - ✅ Q8（修正済）: 相対増幅 op の是正＋ empirical_cond（data-driven）＋ 静的下界の WARN。
 - Q23/Q26: torch backend に静的 audit を差し込み「検証だけ先に届ける」。FX→GraphOp 写像。
 - Q18/Q20: 橋を系統/乱雑成分に分け、上界＋期待値の両方を返す。
-- Q44/Q47: equivalence を report/Risk 基盤へ寄せる。
+- ✅ Q44/Q47（修正済）: equivalence に共通 risk/max_risk/ok インターフェースを付与。
 - Q35/Q36: property test と calibration corpus 拡充（ROC）。
 
 **P2（後・要設計/実機）**

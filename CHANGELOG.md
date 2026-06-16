@@ -125,7 +125,10 @@ Keep a Changelog 形式。SemVer。
     アフィン系統成分（スケール α・切片 c）はフリップを起こさないので、bound を *残差* で評価。
     `compare_decisions` は systematic_frac を報告し、数値大でも系統的ならタスク等価と明示
     （total δ ベースの過大評価を解消・calibration の系統検出と対）
-- テスト計 108 PASS / verify 43 不変条件
+  - **equivalence を共通 Risk 基盤へ（SOCRATIC Q44/Q47）**: `EquivalenceReport` に
+    `risk`/`max_risk`/`ok`（equivalent→OK / divergent→BLOCK）。全レポートが統一インターフェース。
+    スカラ計量ゆえ FindingReport は継承せず理由を明記
+- テスト計 109 PASS / verify 44 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

@@ -56,6 +56,17 @@ def test_report_fields():
     assert rep.n_total == ref.size
 
 
+def test_uniform_risk_interface():
+    # EquivalenceReport も他レポートと同じ risk/max_risk/ok を持つ（検証層の統一）
+    from tsugi.report import Risk
+    a, b = _inputs()
+    ref = simulate_vendor_matmul(a, b)
+    eq = compare(ref, ref.copy(), "float16")
+    assert eq.ok and eq.risk is Risk.OK and eq.max_risk is Risk.OK
+    dv = compare(ref, ref + 10.0, "float16")
+    assert not dv.ok and dv.risk is Risk.BLOCK
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -63,6 +74,7 @@ def main() -> int:
         test_f32_vs_f32_within_tolerance,
         test_f16_accum_detected_as_divergent,
         test_report_fields,
+        test_uniform_risk_interface,
     ]
     for t in tests:
         try:

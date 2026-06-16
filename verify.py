@@ -249,6 +249,13 @@ def main() -> int:
           and decompose_divergence(_z, _scaled)["total"] > 0.1
           and decompose_divergence(_z, _scaled)["residual"] < 1e-3)
 
+    # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
+    from tsugi.equivalence import compare as _cmp
+    _o = np.ones((4, 4), np.float32)
+    check("equivalence exposes uniform risk/ok interface like other reports",
+          _cmp(_o, _o.copy()).risk == portability.Risk.OK
+          and _cmp(_o, _o + 10.0).risk == portability.Risk.BLOCK)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
