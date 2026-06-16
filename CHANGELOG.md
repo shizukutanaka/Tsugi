@@ -95,6 +95,8 @@ Keep a Changelog 形式。SemVer。
     静的 audit() の鏡像。真の発散は BLOCK・ノイズ未満は INDISTINGUISHABLE
   - **examples/audit_demo.py**: 両 facade を一望する実行可能デモ（GPU 不要・スモークテスト付）。
     静的=AMD 起動不能 BLOCK、実行時=max_abs 盲点に隠れる 0.5% 系統バグを BLOCK
+  - **docs/VERIFICATION.md**: 検証層の全体マップ（8 視点＋メタ＋audit・ライフサイクル図・
+    2 つの床・相補的計量の索引）。各 PERSPECTIVE doc へリンク
 - テスト計 92 PASS / verify 36 不変条件
 
 ### Changed
