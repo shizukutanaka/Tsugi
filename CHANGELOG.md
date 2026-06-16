@@ -4,6 +4,13 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **propagation 残差トポロジ対応（Q11/Q12）**: `GraphOp(residual=True)` で残差ブロック
+  y=x+f(x) を表現。skip 接続が δ_in を再増幅しないため δ_out=sqrt(δ_in²+(amp·local)²) と
+  random-walk 希釈（~√L）になり、平坦チェーンの線形累積より小さい。pre-norm transformer
+  の numpy 実測で「残差 < 平坦」を検証（test_propagation・verify 不変条件）。テスト 129 関数
+  / verify 50 不変条件。
+
 ## [0.2.0] — 2026-06-16
 検証層を 8 視点 + メタ(calibration) + 基盤(nondeterminism) + 翻訳(decision) へ拡張し、
 統合ファサード `audit`/`audit_runtime`/`audit_cross_vendor` で 1 判定に集約。最新研究

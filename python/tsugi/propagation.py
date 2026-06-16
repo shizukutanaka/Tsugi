@@ -41,6 +41,7 @@ class GraphOp:
     dtype: str = "float16"
     cond: float = 1.0   # 条件数（>1 で ill-conditioned・発散を増幅）
     safety: float = SAFETY
+    residual: bool = False   # True なら y=x+f(x) の残差ブロック（発散が希釈される）
 
 
 def local_divergence(op: GraphOp) -> float:
@@ -118,15 +119,25 @@ class PropagationReport:
 def propagate(ops: list[GraphOp], input_div: float = 0.0) -> PropagationReport:
     """op グラフ（線形列）に沿ってベンダー間相対発散を合成する。
 
-    δ_out = amp * δ_in + local を順に適用。返り値の model_divergence が
-    「モデルレベルで正当に生じうる発散」= per-model 許容の目安。
+    通常 op（出力が入力を置換）: δ_out = amp · δ_in + local（線形に累積）。
+    残差 op（y = x + f(x)）: skip 接続が x をそのまま運ぶので δ_in は *再増幅されず*、
+    ブロックの寄与 (amp·local) だけが random-walk で加わる →
+        δ_out = sqrt(δ_in² + (amp·local)²)
+    これが深い残差ネットが安定な理由（一次近似）。同じ深さでも残差は線形累積より
+    緩やかに（~√L）増え、発散が *希釈* される。pre-norm transformer の numpy 実測で
+    残差 < 平坦チェーンを確認済み（test_propagation）。
+
+    返り値の model_divergence が「モデルレベルで正当に生じうる発散」= per-model 許容の目安。
     """
     rep = PropagationReport()
     delta = input_div
     for op in ops:
         loc = local_divergence(op)
         amp = amplification(op)
-        delta = amp * delta + loc
+        if op.residual:
+            delta = math.sqrt(delta ** 2 + (amp * loc) ** 2)
+        else:
+            delta = amp * delta + loc
         rep.ops.append(OpTrace(kind=op.kind, local=loc, amp=amp, cumulative=delta))
     return rep
 

@@ -121,6 +121,10 @@ def main() -> int:
     amp = model_tolerance([GraphOp("matmul", K=128), GraphOp("softmax", cond=8.0)])
     flat = model_tolerance([GraphOp("matmul", K=128), GraphOp("softmax", cond=1.0)])
     check("ill-conditioned op amplifies divergence", amp > flat)
+    plain_chain = model_tolerance([GraphOp("matmul", K=512)] * 24)
+    resid_chain = model_tolerance([GraphOp("matmul", K=512, residual=True)] * 24)
+    check("residual topology dilutes propagated divergence vs plain chain",
+          resid_chain < plain_chain * 0.5)
 
     # 13. envelope: 認証前提の実行時逸脱を検出（静的保証の契約化・新視点5）
     import numpy as np  # noqa: F811

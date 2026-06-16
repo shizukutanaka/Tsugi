@@ -51,8 +51,12 @@ def test_ill_conditioned_op_is_dominant():
     assert rep.dominant.kind == "reduce", f"dominant should be reduce, got {rep.dominant.kind}"
 
 
-def _run_chain(L, n, K, seed=0):
-    """L 層の matmul+rmsnorm を 2 ベンダー（累積順序違い）で流し、最大絶対発散を返す。"""
+def _run_chain(L, n, K, seed=0, residual=False, relative=False):
+    """L 層の matmul+rmsnorm を 2 ベンダー（累積順序違い）で流し発散を返す。
+
+    residual=True なら pre-norm 残差ブロック x = x + matmul(rmsnorm(x), w)。
+    relative=True なら相対発散（||a-b||/||a||）、既定は最大絶対発散。
+    """
     rng = np.random.default_rng(seed)
     x_a = rng.standard_normal((n, K)).astype(np.float16)
     x_b = x_a.copy()
@@ -64,9 +68,18 @@ def _run_chain(L, n, K, seed=0):
 
     for w in weights:
         # vendor A: f32 累積 / vendor B: split-k（累積順序差）= 別ベンダー相当
-        x_a = rmsnorm(simulate_vendor_matmul(x_a.astype(np.float16), w, accum="f32"))
-        x_b = rmsnorm(simulate_vendor_matmul(x_b.astype(np.float16), w, accum="f32", split_k=8))
-    return float(np.abs(x_a.astype(np.float64) - x_b.astype(np.float64)).max())
+        if residual:  # pre-norm 残差: x = x + matmul(rmsnorm(x), w)
+            fa = simulate_vendor_matmul(rmsnorm(x_a).astype(np.float16), w, accum="f32")
+            fb = simulate_vendor_matmul(rmsnorm(x_b).astype(np.float16), w, accum="f32", split_k=8)
+            x_a = x_a.astype(np.float64) + fa
+            x_b = x_b.astype(np.float64) + fb
+        else:         # 平坦チェーン: x = rmsnorm(matmul(x, w))
+            x_a = rmsnorm(simulate_vendor_matmul(x_a.astype(np.float16), w, accum="f32"))
+            x_b = rmsnorm(simulate_vendor_matmul(x_b.astype(np.float16), w, accum="f32", split_k=8))
+    a, b = x_a.astype(np.float64), x_b.astype(np.float64)
+    if relative:
+        return float(np.linalg.norm(a - b) / (np.linalg.norm(a) + 1e-30))
+    return float(np.abs(a - b).max())
 
 
 def test_per_kernel_pass_but_model_diverges_numpy():
@@ -86,6 +99,27 @@ def test_per_kernel_pass_but_model_diverges_numpy():
     # (3) 単一カーネル許容を「12 層分」誤って流用すると過小評価になる
     single = expected_gemm_abs_error(K, "float16", scale=1.0)
     assert predicted > single, "model-level tolerance must exceed single-kernel tolerance"
+
+
+def test_residual_dilutes_model_divergence():
+    # 残差トポロジ（skip 接続）は同じ深さでも発散を希釈する（一次モデル）。
+    plain = [GraphOp("matmul", K=512) for _ in range(24)]
+    resid = [GraphOp("matmul", K=512, residual=True) for _ in range(24)]
+    mp = propagate(plain).model_divergence
+    mr = propagate(resid).model_divergence
+    assert mr < mp * 0.5            # 残差は線形累積よりずっと小さい
+    # 単一ブロックでは差が出ない（深さ効果）
+    one_p = propagate([GraphOp("matmul", K=512)]).model_divergence
+    one_r = propagate([GraphOp("matmul", K=512, residual=True)]).model_divergence
+    assert abs(one_p - one_r) < 1e-12
+
+
+def test_residual_lower_than_plain_numpy():
+    # 実 numpy（pre-norm）: 深い残差スタックの相対発散は平坦チェーンより小さい。
+    n, K, L = 16, 64, 24
+    plain = _run_chain(L, n, K, residual=False, relative=True)
+    resid = _run_chain(L, n, K, residual=True, relative=True)
+    assert resid < plain, f"residual {resid:.2e} should be < plain {plain:.2e}"
 
 
 def test_empty_graph():
@@ -132,6 +166,8 @@ def main() -> int:
         test_naive_per_kernel_underestimates,
         test_ill_conditioned_op_is_dominant,
         test_per_kernel_pass_but_model_diverges_numpy,
+        test_residual_dilutes_model_divergence,
+        test_residual_lower_than_plain_numpy,
         test_empty_graph,
         test_only_genuine_relative_amplifiers,
         test_empirical_cond_is_data_driven,
