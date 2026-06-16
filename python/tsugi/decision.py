@@ -49,6 +49,34 @@ def divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sqrt(np.mean((af - bf) ** 2)))
 
 
+def residual_divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
+    """argmax を *動かす* 成分だけの δ（per-sample アフィン系統成分を除いた残差 RMS）。
+
+    クロスベンダー発散は系統（相関）成分と乱雑成分を持つ（arXiv:2511.00025）。系統成分の
+    うち per-sample の **スケール α と切片 c**（b ≈ α·a + c）は argmax を保存する（順序不変）
+    ので判断を覆さない。各サンプルで α,c を最小二乗 fit して除いた残差が、実際にフリップを
+    起こす成分。total δ でなくこれを使うと bound が正確（系統発散の過大評価を排す）。
+    """
+    af = np.asarray(a, dtype=np.float64)
+    bf = np.asarray(b, dtype=np.float64)
+    ac = af - af.mean(axis=-1, keepdims=True)
+    bc = bf - bf.mean(axis=-1, keepdims=True)
+    alpha = (ac * bc).sum(axis=-1, keepdims=True) / ((ac * ac).sum(axis=-1, keepdims=True) + 1e-30)
+    resid = bc - alpha * ac
+    return float(np.sqrt(np.mean(resid ** 2)))
+
+
+def decompose_divergence(a: np.ndarray, b: np.ndarray) -> dict[str, float]:
+    """発散を「argmax 保存的な系統成分」と「フリップを起こす残差」に分解する。
+
+    systematic_frac=1 なら数値的に大きくても判断は不変（タスク等価）。
+    """
+    total = divergence_rms(a, b)
+    residual = residual_divergence_rms(a, b)
+    return {"total": total, "residual": residual,
+            "systematic_frac": 1.0 - residual / (total + 1e-30)}
+
+
 def predicted_flip_bound(ref_logits: np.ndarray, delta: float) -> float:
     """発散 δ が与える判断フリップ率の保守的上界 = P(margin < 2δ)。
 
@@ -79,11 +107,13 @@ class DecisionReport(FindingReport):
     flipped_margin_median: float = 0.0
     overall_margin_median: float = 0.0
     predicted_bound: float = 0.0
+    systematic_frac: float = 0.0
 
     def to_text(self) -> str:  # type: ignore[override]
         return super().to_text(
             header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
                     f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
+                    f"systematic={self.systematic_frac * 100:.0f}%, "
                     f"flipped-margin {self.flipped_margin_median:.3g} "
                     f"vs overall {self.overall_margin_median:.3g})"),
             empty="(no decision flips — task-equivalent)")
@@ -95,17 +125,20 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
 
     flip_budget: 許容する判断フリップ率（タスク予算・例 0.001 = 0.1%）。
     ref: マージン基準の logit（既定 a）。
+    bound は *残差*（argmax 保存的な系統成分を除いた成分）で評価し系統発散の過大評価を排す。
     """
     flips = decision_flips(a, b)
     ref_logits = a if ref is None else ref
     m = margin(ref_logits)
     fm = m[flips]
+    decomp = decompose_divergence(a, b)
     rep = DecisionReport(
         flip_rate=flip_rate(a, b),
         n=int(np.argmax(a, axis=-1).size),
         flipped_margin_median=float(np.median(fm)) if fm.size else 0.0,
         overall_margin_median=float(np.median(m)) if m.size else 0.0,
-        predicted_bound=predicted_flip_bound(ref_logits, divergence_rms(a, b)),
+        predicted_bound=predicted_flip_bound(ref_logits, decomp["residual"]),
+        systematic_frac=decomp["systematic_frac"],
     )
     if rep.flip_rate > flip_budget:
         risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN
@@ -120,4 +153,9 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
             rep.flipped_margin_median > 0.5 * rep.overall_margin_median:
         rep.add(Risk.WARN, "task",
                 "フリップが near-tie 裾に集中していない → 確信予測まで変化・系統的発散を疑う")
+    # 数値的に大きくても argmax 保存的な系統発散ならタスクは等価（calibration の系統検出と対）
+    if rep.systematic_frac > 0.9 and rep.flip_rate == 0.0:
+        rep.add(Risk.INFO, "task",
+                f"発散の {rep.systematic_frac * 100:.0f}% は argmax 保存的な系統成分（スケール/シフト）"
+                "→ 数値的に大きくても判断は不変（タスク等価）")
     return rep

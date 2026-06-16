@@ -120,7 +120,12 @@ Keep a Changelog 形式。SemVer。
   - **batch-invariance 床を比較経路に合流**: `compare_stable(batch_floor=)` と
     `audit_cross_vendor(run_batch=)` が実効床 = max(run-to-run, batch-invariance) を使う。
     バッチ律速のとき WARN（バッチ不変カーネルが要る）
-- テスト計 106 PASS / verify 42 不変条件
+  - **flip-bound の系統/残差分解（arXiv:2511.00025 取り込み・Q18/Q20）**:
+    `decision.decompose_divergence`/`residual_divergence_rms`。argmax 保存的な per-sample
+    アフィン系統成分（スケール α・切片 c）はフリップを起こさないので、bound を *残差* で評価。
+    `compare_decisions` は systematic_frac を報告し、数値大でも系統的ならタスク等価と明示
+    （total δ ベースの過大評価を解消・calibration の系統検出と対）
+- テスト計 108 PASS / verify 43 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

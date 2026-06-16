@@ -239,6 +239,16 @@ def main() -> int:
     check("batch-invariance floor is a positive independent floor",
           measure_batch_variance(lambda t: simulate_batch_variant_reduction(_bp, t))["spread"] > 0.0)
 
+    # 22. decision: argmax 保存的な系統発散(スケール/シフト)はタスク影響ゼロ（arXiv:2511.00025）
+    from tsugi.decision import decompose_divergence
+    from tsugi.decision import flip_rate as _flip
+    _z = np.random.default_rng(0).standard_normal((2000, 200)).astype(np.float32)
+    _scaled = (_z * 1.5).astype(np.float32)
+    check("systematic affine divergence (scale) is numerically large but flips nothing",
+          _flip(_z, _scaled) == 0.0
+          and decompose_divergence(_z, _scaled)["total"] > 0.1
+          and decompose_divergence(_z, _scaled)["residual"] < 1e-3)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

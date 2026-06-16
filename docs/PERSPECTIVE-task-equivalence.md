@@ -75,5 +75,26 @@ from tsugi.decision import (
     flip_rate,             # 判断フリップ率（スケール不変・ユーザーに見える差）
     predicted_flip_bound,  # P(margin<2δ)= 数値発散→タスク影響の保守的上界
     compare_decisions,     # タスクレベル等価判定（フリップ率 vs タスク予算）
+    decompose_divergence,  # 系統(argmax保存的)成分と残差(フリップを起こす成分)に分解
 )
 ```
+
+## 追補（arXiv:2511.00025 の取り込み）— 系統 vs 残差の分解
+
+FP ノイズは独立ガウスでなく **構造的（相関）**（arXiv:2511.00025）。この系統成分のうち
+**per-sample のスケール α と切片 c**（b ≈ α·a + c）は argmax を保存する（順序不変）ので
+判断を覆さない。ゆえにフリップ率の bound は total δ でなく **残差**（α,c を最小二乗で除いた
+成分）で評価すべき。
+
+実証（numpy）:
+```
+一様シフト       flip=0.00%  total_δ=0.51(bound 97%)  残差bound 0.0%
+純スケール×1.5   flip=0.00%  total_δ=0.50(bound 97%)  残差bound 0.0%
+乱雑0.05        flip=7.83%  total_δ=0.05(bound 26%)  残差bound 26%（上界成立）
+混合            flip=6.38%  total_δ=0.50(bound 97%)  残差bound 26%（上界かつ正確）
+```
+
+→ `decompose_divergence(a,b)` が `systematic_frac` を返し、`compare_decisions` の bound は
+残差ベースになった。**数値的に大きくても argmax 保存的な系統発散ならタスク等価**（INFO で明示）。
+これは calibration（系統バイアスを *数値* の懸念として検出）と対をなす: 同じ系統成分が
+*数値* では要注意でも *タスク* では無害でありうる —— 両層を併せて初めて正しく判断できる。

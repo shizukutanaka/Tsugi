@@ -15,9 +15,11 @@ import numpy as np  # noqa: E402
 from tsugi.decision import (  # noqa: E402
     compare_decisions,
     decision_flips,
+    decompose_divergence,
     flip_rate,
     margin,
     predicted_flip_bound,
+    residual_divergence_rms,
 )
 
 
@@ -80,6 +82,34 @@ def test_compare_decisions_blocks_high_flip_rate():
     assert not rep.ok                     # 予算超で BLOCK
 
 
+def test_systematic_affine_divergence_does_not_flip():
+    # argmax 保存的な系統発散(スケール×1.5・一様シフト)は数値大でもフリップ 0・残差 ~0
+    z = _logits(n=3000, c=300)
+    for b in (z * 1.5, z + 0.5 * np.random.default_rng(9).standard_normal((z.shape[0], 1)).astype(np.float32)):
+        b = b.astype(np.float32)
+        assert flip_rate(z, b) == 0.0
+        d = decompose_divergence(z, b)
+        assert d["total"] > 0.1                 # 数値的には大きい
+        assert d["residual"] < 1e-3             # だが argmax を動かす残差は ~0
+        assert d["systematic_frac"] > 0.99
+        rep = compare_decisions(z, b, flip_budget=0.001)
+        assert rep.ok                           # タスク等価
+
+
+def test_residual_bound_tighter_than_total_for_systematic():
+    # 系統成分を含む混合発散: 残差ベース bound は total ベースよりずっと小さく、かつ上界
+    z = _logits(n=4000, c=400)
+    shift = 0.4 * np.random.default_rng(3).standard_normal((z.shape[0], 1)).astype(np.float32)
+    rand = 0.05 * np.random.default_rng(4).standard_normal(z.shape).astype(np.float32)
+    b = (z * 1.3 + shift + rand).astype(np.float32)
+    from tsugi.decision import divergence_rms
+    total_bound = predicted_flip_bound(z, divergence_rms(z, b))
+    resid_bound = predicted_flip_bound(z, residual_divergence_rms(z, b))
+    actual = flip_rate(z, b)
+    assert resid_bound < total_bound * 0.5      # 系統発散の過大評価を排す
+    assert actual <= resid_bound + 1e-9          # 残差 bound も上界として成立
+
+
 def test_flip_bound_from_divergence_bridges_propagation_to_task():
     # propagation の相対発散 → タスクフリップ率上界。第2ベンダー無しで予測でき、
     # 同じ δ で実際に摂動したフリップ率の上界になっている（保守的）。
@@ -103,6 +133,8 @@ def main() -> int:
         test_predicted_bound_is_upper_bound,
         test_numerical_divergence_not_sufficient_for_task_divergence,
         test_compare_decisions_blocks_high_flip_rate,
+        test_systematic_affine_divergence_does_not_flip,
+        test_residual_bound_tighter_than_total_for_systematic,
         test_flip_bound_from_divergence_bridges_propagation_to_task,
     ]
     for t in tests:
