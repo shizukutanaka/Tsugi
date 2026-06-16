@@ -238,6 +238,14 @@ def main() -> int:
           and simulate_batch_variant_reduction(_bp, 128) != simulate_batch_variant_reduction(_bp, 256))
     check("batch-invariance floor is a positive independent floor",
           measure_batch_variance(lambda t: simulate_batch_variant_reduction(_bp, t))["spread"] > 0.0)
+    # robust 床は単発の外れ値に頑健（Q49）
+    _rp = np.random.default_rng(0).standard_normal((4, 16)).astype(np.float32)
+    def _orun(s):
+        g = np.random.default_rng(1000 + s).standard_normal(_rp.shape).astype(np.float32)
+        return _rp + (5e-2 if s == 0 else 1e-6) * g
+    _nf = measure_noise_floor(_orun, 16)
+    check("robust noise floor rejects a single outlier run",
+          _nf["spread_robust"] < _nf["spread"] * 1e-2)
 
     # 22. decision: argmax 保存的な系統発散(スケール/シフト)はタスク影響ゼロ（arXiv:2511.00025）
     from tsugi.decision import decompose_divergence

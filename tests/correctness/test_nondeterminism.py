@@ -40,6 +40,19 @@ def test_batch_variance_is_deterministic_but_batch_dependent():
     assert r128_a != r256            # バッチが違う → 結果が変わる
 
 
+def test_robust_floor_rejects_single_outlier():
+    # 1 回の測定グリッチで max-min 床は膨張するが robust 床（10-90%）は頑健（Q49）
+    p = _parts(0, K=64).reshape(4, 16)
+
+    def run(s):
+        g = np.random.default_rng(1000 + s).standard_normal(p.shape).astype(np.float32)
+        return p + (5e-2 if s == 0 else 1e-6) * g   # seed0 だけ外れ値
+
+    nf = measure_noise_floor(run, 16)
+    assert nf["spread_robust"] < nf["spread"] * 1e-2   # robust は外れ値で膨張しない
+    assert nf["spread"] > 1e-3                          # max-min は外れ値で膨張
+
+
 def test_batch_variance_floor_is_positive():
     p = _parts(0)
     bv = measure_batch_variance(lambda t: simulate_batch_variant_reduction(p, t))
@@ -118,6 +131,7 @@ def main() -> int:
     ok = True
     tests = [
         test_batch_variance_is_deterministic_but_batch_dependent,
+        test_robust_floor_rejects_single_outlier,
         test_batch_variance_floor_is_positive,
         test_batch_floor_folds_into_effective_floor,
         test_reduction_is_nondeterministic,

@@ -146,7 +146,10 @@ Keep a Changelog 形式。SemVer。
     `decided_phases` プロパティ（`static_phases` は後方互換エイリアス）
   - **テストサマリの正直化（SOCRATIC Q37）**: run.py 末尾に SUMMARY（CPU PASS 件数 + SKIP 件数
     列挙 + 「緑は CPU 検証可能範囲のみ」注記）。GPU 未検証を緑に紛れさせない
-- テスト計 126 関数（property 10 × 200 試行含む）/ verify 48 不変条件
+  - **外れ値頑健なノイズ床（SOCRATIC Q49）**: `measure_noise_floor`/`measure_batch_variance`
+    が `spread_robust`（10-90 パーセンタイル幅）も返し、`compare_stable(robust=True)` で選択。
+    測定グリッチ 1 個で max-min が ~4 万倍膨張するのを防ぐ（偽BLOCK 化対策）
+- テスト計 127 関数（property 10 × 200 試行含む）/ verify 49 不変条件
 
 ### Changed
 - **検証層の統合リファクタ（視点追加でなく既存層の重複排除）**: 8 検証層が各自で

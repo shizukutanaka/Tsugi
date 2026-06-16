@@ -59,19 +59,33 @@ def simulate_nondeterministic_reduction(parts: np.ndarray, seed: int) -> np.ndar
     return np.asarray(acc, dtype=np.float32)
 
 
+def _spread_stats(stack: np.ndarray) -> dict[str, float]:
+    """run スタックから spread（max-min）と robust spread（10-90 パーセンタイル幅）を出す。
+
+    max-min は保守的だが外れ値 1 個（測定グリッチ等）で過大評価される。robust 版は
+    上下 10% を切り捨て、単発の外れ値に頑健（SOCRATIC Q49）。要素ごとの最大を取る。
+    """
+    spread = float((stack.max(axis=0) - stack.min(axis=0)).max())
+    robust = float((np.percentile(stack, 90, axis=0)
+                    - np.percentile(stack, 10, axis=0)).max())
+    mean_mag = float(np.sqrt(np.mean(stack ** 2)) + 1e-30)
+    return {"spread": spread, "spread_robust": robust,
+            "std": float(stack.std(axis=0).max()), "rel": spread / mean_mag,
+            "rel_robust": robust / mean_mag}
+
+
 def measure_noise_floor(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
                         seed0: int = 0) -> dict[str, float]:
     """同一ベンダー・同一入力を n_runs 回走らせ run-to-run ノイズを実測する。
 
-    run_fn(seed) -> 出力テンソル。返り値の spread（要素ごと max-min の最大）を
-    保守的なノイズフロア（= tolerance.derive_tolerance の noise_floor）として使う。
+    run_fn(seed) -> 出力テンソル。`spread`（max-min・保守的）と `spread_robust`
+    （10-90 パーセンタイル幅・外れ値に頑健）の両方を返す。後者は測定グリッチで床が
+    過大評価され偽BLOCK 化するのを防ぐ（compare_stable(robust=True) で選択）。
     """
     runs = [np.asarray(run_fn(seed0 + i), dtype=np.float64) for i in range(n_runs)]
-    stack = np.stack(runs)
-    spread = float((stack.max(axis=0) - stack.min(axis=0)).max())
-    mean_mag = float(np.sqrt(np.mean(stack ** 2)) + 1e-30)
-    return {"spread": spread, "std": float(stack.std(axis=0).max()),
-            "rel": spread / mean_mag, "n_runs": n_runs}
+    stats = _spread_stats(np.stack(runs))
+    stats["n_runs"] = n_runs
+    return stats
 
 
 def simulate_batch_variant_reduction(parts: np.ndarray, tile: int) -> np.ndarray:
@@ -102,10 +116,9 @@ def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
     batch-variance, 数値検出限界)）。
     """
     runs = [np.asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
-    stack = np.stack(runs)
-    spread = float((stack.max(axis=0) - stack.min(axis=0)).max())
-    mean_mag = float(np.sqrt(np.mean(stack ** 2)) + 1e-30)
-    return {"spread": spread, "rel": spread / mean_mag, "n_batches": len(batch_tiles)}
+    stats = _spread_stats(np.stack(runs))
+    stats["n_batches"] = len(batch_tiles)
+    return stats
 
 
 def attribute(cross_diff: float, noise_floor: float, tol: float) -> str:
@@ -145,7 +158,7 @@ class StabilityReport(FindingReport):
 def compare_stable(run_a: Callable[[int], np.ndarray],
                    run_b: Callable[[int], np.ndarray], K: int,
                    dtype: str = "float16", n_runs: int = 16,
-                   batch_floor: float = 0.0) -> StabilityReport:
+                   batch_floor: float = 0.0, robust: bool = False) -> StabilityReport:
     """方法論的に健全なクロスベンダー比較（出力を分布として扱う）。
 
     1) 各ベンダーの run-to-run ノイズを実測 → noise_floor
@@ -153,12 +166,16 @@ def compare_stable(run_a: Callable[[int], np.ndarray],
        実測して batch_floor に渡す（2025 研究: バッチ変動が支配的非決定源）
     3) noise を織り込んだ許容を導出（決定論仮定 noise=0 を排す）
     4) クロス差を noise/tol に対し 3 状態へ帰属（INDISTINGUISHABLE を正直に出す）
+
+    robust=True で run-to-run 床に外れ値頑健な robust spread（10-90 パーセンタイル幅）を
+    使う。測定グリッチ 1 個で床が過大評価され偽BLOCK 化するのを防ぐ（SOCRATIC Q49）。
     """
     from .tolerance import derive_tolerance, expected_gemm_abs_error
 
     nf_a = measure_noise_floor(run_a, n_runs)
     nf_b = measure_noise_floor(run_b, n_runs)
-    run_to_run = max(nf_a["spread"], nf_b["spread"])
+    key = "spread_robust" if robust else "spread"
+    run_to_run = max(nf_a[key], nf_b[key])
     noise = max(run_to_run, batch_floor)
 
     a = np.asarray(run_a(0), dtype=np.float64)

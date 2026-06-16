@@ -206,7 +206,9 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 → 例示値。**改善: 複数 seed の分布（中央値±）で示し、example でなく統計と明記。**
 
 **Q49.** noise_floor は spread(max-min)。外れ値 1 つで過大評価では？
-→ max-min は外れ値敏感。**改善: ロバスト版（percentile 幅）も併記し選択可能に。**
+→ ✅ **修正済**: `measure_noise_floor`/`measure_batch_variance` が `spread_robust`（10-90
+パーセンタイル幅）も返す。`compare_stable(robust=True)` で選択。実証: 測定グリッチ 1 個で
+max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防ぐ）。
 
 **Q50.** これら検証層は「実機で正しい」ことをまだ一度も確認していない。CPU 擬似のみ。
 → 最大の未検証。**改善: 実機での最小 e2e（1 カーネルを両ベンダーで走らせ audit_cross_vendor）
