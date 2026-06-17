@@ -79,13 +79,18 @@ from tsugi.decision import (
 )
 ```
 
-## 追補2 — 生成タスク向け top-k 候補集合フリップ
+## 追補2 — 生成タスク向け top-k / top-p（nucleus）候補集合フリップ
 
 argmax は分類前提。LLM 生成は top-k/top-p から次トークンを選ぶので、argmax だけでなく
 **候補集合**の一致が重要。`topk_flip_rate(a, b, k)` は top-k インデックス集合（順不同）が
 ベンダー間で変わるサンプル率を返す。k=1 で argmax フリップ率に一致し、k で単調増加・
 スケール不変。候補が rank k と k+1 の境界を跨ぐと flip = 生成の「選択肢の安定性」を測る。
-これで決定空間の等価判定が分類（top-1）から生成（top-k）へ広がる。
+
+`nucleus_flip_rate(a, b, p, temperature)` は top-p（nucleus）集合の一致を測る。nucleus は
+集合サイズが可変で *確率依存*（softmax(logit/temp) の累積が p に達するまで）なので、argmax/
+top-k 集合と違い **スケール不変でない** —— logit スケール=温度で nucleus が伸縮する。つまり
+温度設定がベンダー間一致に効く（honest な区別。実測: x1=93.8% → x5=41.0%）。これで決定空間の
+等価判定が分類（top-1）から生成（top-k 集合・top-p 集合）へ広がる。
 
 ## 追補（arXiv:2511.00025 の取り込み）— 系統 vs 残差の分解
 

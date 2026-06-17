@@ -9,6 +9,9 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
   top-k/top-p から選ぶので候補集合の一致を測る。k=1 で argmax フリップ率に一致・k で単調・
   スケール不変。決定空間の等価判定を分類(top-1)から生成(top-k)へ拡張。
   `compare_decisions(topk=k)` に統合し DecisionReport に併記（製品経路から到達可能）。
+- **生成タスク向け top-p（nucleus）集合フリップ**: `decision.nucleus_flip_rate(a, b, p, temperature)`。
+  nucleus は確率依存ゆえ argmax/top-k と違い *スケール不変でない*（温度がベンダー間一致に効く）。
+  top-p 生成の候補安定性を測る。
 - **torch backend の静的→タスク翻訳**: `audit_fx(gm, ref_logits=)` がモデル発散を判断
   フリップ率上界 `task_flip_bound` に翻訳。backend は example 出力を代表 logit として
   best-effort 利用し、`model_divergence` でなくユーザーに見える「予測フリップ率」を warn

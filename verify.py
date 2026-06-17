@@ -261,11 +261,14 @@ def main() -> int:
           and decompose_divergence(_z, _scaled)["total"] > 0.1
           and decompose_divergence(_z, _scaled)["residual"] < 1e-3)
     # top-k 候補集合フリップ（生成タスク向け・k=1 で argmax 一致）
-    from tsugi.decision import topk_flip_rate
+    from tsugi.decision import nucleus_flip_rate, topk_flip_rate
     _zb = _z + 3e-2 * np.random.default_rng(5).standard_normal(_z.shape).astype(np.float32)
     check("topk_flip_rate generalizes argmax (k=1 equals, monotone in k)",
           abs(topk_flip_rate(_z, _zb, 1) - _flip(_z, _zb)) < 1e-12
           and topk_flip_rate(_z, _zb, 1) <= topk_flip_rate(_z, _zb, 8))
+    check("nucleus(top-p) flip is probability-dependent (not scale-invariant)",
+          nucleus_flip_rate(_z, _z, 0.9) == 0.0
+          and nucleus_flip_rate(_z, _zb, 0.9) != nucleus_flip_rate(_z * 5, _zb * 5, 0.9))
 
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp

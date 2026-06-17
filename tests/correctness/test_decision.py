@@ -18,6 +18,7 @@ from tsugi.decision import (  # noqa: E402
     decompose_divergence,
     flip_rate,
     margin,
+    nucleus_flip_rate,
     predicted_flip_bound,
     residual_divergence_rms,
     topk_flip_rate,
@@ -89,6 +90,17 @@ def test_numerical_divergence_not_sufficient_for_task_divergence():
     assert compare_decisions(a, b, flip_budget=0.01).ok  # タスク予算内で等価
 
 
+def test_nucleus_flip_rate_is_probability_dependent():
+    # top-p(nucleus)集合フリップ。生成向け。同一→0、valid [0,1]、そして argmax/top-k と違い
+    # *スケール不変でない*（温度＝logit スケールで nucleus が伸縮する）。
+    z = _logits(n=2000, c=200)
+    b = _vendor(z, 5e-2, 3)
+    assert nucleus_flip_rate(z, z, 0.9) == 0.0
+    assert 0.0 <= nucleus_flip_rate(z, b, 0.9) <= 1.0
+    # スケール（温度）で結果が変わる＝確率依存（argmax/top-k 集合は不変だった）
+    assert nucleus_flip_rate(z, b, 0.9) != nucleus_flip_rate(z * 5.0, b * 5.0, 0.9)
+
+
 def test_compare_decisions_reports_topk():
     # compare_decisions(topk=k) は top-k 集合フリップ率も併記（生成タスク向け統合）
     z = _logits()
@@ -155,6 +167,7 @@ def main() -> int:
     tests = [
         test_margin_is_top1_minus_top2,
         test_topk_flip_rate_generalizes_argmax,
+        test_nucleus_flip_rate_is_probability_dependent,
         test_decision_flips_are_scale_invariant,
         test_flips_concentrate_in_low_margin_tail,
         test_predicted_bound_is_upper_bound,

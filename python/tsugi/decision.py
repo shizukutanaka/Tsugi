@@ -61,6 +61,36 @@ def topk_flip_rate(a: np.ndarray, b: np.ndarray, k: int = 5) -> float:
     return float(np.mean(np.any(ta != tb, axis=-1))) if n else 0.0
 
 
+def _nucleus_mask(logits: np.ndarray, p: float, temperature: float) -> np.ndarray:
+    """top-p（nucleus）集合のメンバシップ真偽（vocab 軸）。softmax(logit/temp) 降順で
+    累積確率が p に達するまでの最小集合（境界トークンを含む）。"""
+    x = np.asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
+    e = np.exp(x - x.max(axis=-1, keepdims=True))
+    pr = e / e.sum(axis=-1, keepdims=True)
+    order = np.argsort(-pr, axis=-1)
+    sorted_pr = np.take_along_axis(pr, order, axis=-1)
+    csum = np.cumsum(sorted_pr, axis=-1)
+    keep_sorted = (csum - sorted_pr) < p   # この位置より前の累積 < p なら含む（境界含む）
+    mask = np.zeros_like(keep_sorted)
+    np.put_along_axis(mask, order, keep_sorted, axis=-1)
+    return mask
+
+
+def nucleus_flip_rate(a: np.ndarray, b: np.ndarray, p: float = 0.9,
+                      temperature: float = 1.0) -> float:
+    """top-p（nucleus）候補 *集合* がベンダー間で変わるサンプル率（生成タスク向け）。
+
+    最新 LLM は nucleus サンプリングが主流。集合サイズは可変で *確率依存* なので、
+    argmax/top-k 集合と違い **スケール不変でない**（logit スケール=温度で nucleus が伸縮）。
+    これは温度設定がベンダー間一致に効くことを意味する（honest な区別）。
+    """
+    if np.asarray(a).shape[0] == 0:
+        return 0.0
+    ma = _nucleus_mask(a, p, temperature)
+    mb = _nucleus_mask(b, p, temperature)
+    return float(np.mean(np.any(ma != mb, axis=-1)))
+
+
 def divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
     """ベンダー間 logit 差の典型値 δ（RMS）。"""
     af = np.asarray(a, dtype=np.float64)
