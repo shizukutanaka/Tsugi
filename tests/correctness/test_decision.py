@@ -111,6 +111,10 @@ def test_compare_decisions_reports_topk():
     assert r5.topk == 5
     assert r5.topk_flip_rate >= r5.flip_rate          # 集合は argmax より緩く変化
     assert "top-5 set flip" in r5.to_text()
+    # top_p 統合: nucleus フリップ率も併記
+    rp = compare_decisions(z, b, top_p=0.9)
+    assert rp.top_p == 0.9 and rp.nucleus_flip_rate > 0.0
+    assert "nucleus(p=0.9)" in rp.to_text()
 
 
 def test_compare_decisions_blocks_high_flip_rate():

@@ -159,21 +159,26 @@ class DecisionReport(FindingReport):
     systematic_frac: float = 0.0
     topk: int = 1
     topk_flip_rate: float = 0.0
+    top_p: float = 0.0
+    nucleus_flip_rate: float = 0.0
 
     def to_text(self) -> str:  # type: ignore[override]
         tk = (f", top-{self.topk} set flip={self.topk_flip_rate * 100:.2f}%"
               if self.topk > 1 else "")
+        tp = (f", nucleus(p={self.top_p}) flip={self.nucleus_flip_rate * 100:.2f}%"
+              if self.top_p > 0 else "")
         return super().to_text(
             header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
                     f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
-                    f"systematic={self.systematic_frac * 100:.0f}%{tk}, "
+                    f"systematic={self.systematic_frac * 100:.0f}%{tk}{tp}, "
                     f"flipped-margin {self.flipped_margin_median:.3g} "
                     f"vs overall {self.overall_margin_median:.3g})"),
             empty="(no decision flips — task-equivalent)")
 
 
 def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
-                      ref: np.ndarray | None = None, topk: int = 1) -> DecisionReport:
+                      ref: np.ndarray | None = None, topk: int = 1,
+                      top_p: float = 0.0, temperature: float = 1.0) -> DecisionReport:
     """タスクレベルの等価判定（数値でなく判断のフリップで測る）。
 
     flip_budget: 許容する判断フリップ率（タスク予算・例 0.001 = 0.1%）。
@@ -195,6 +200,8 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
         systematic_frac=decomp["systematic_frac"],
         topk=topk,
         topk_flip_rate=topk_flip_rate(a, b, topk) if topk > 1 else flip_rate(a, b),
+        top_p=top_p,
+        nucleus_flip_rate=nucleus_flip_rate(a, b, top_p, temperature) if top_p > 0 else 0.0,
     )
     if rep.flip_rate > flip_budget:
         risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN
