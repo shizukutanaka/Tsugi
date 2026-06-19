@@ -13,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 import numpy as np  # noqa: E402
 
 from tsugi.calibration import (  # noqa: E402
+    SM_DIVERGENT,
+    SM_OK,
+    SM_SHARED,
     check_systematic,
+    detect_shared_mode,
     detectability_floor,
     evaluate,
     is_equivalent_combined,
@@ -82,6 +86,23 @@ def test_max_abs_alone_is_untrustworthy_corpus():
     assert "scale" in conf.missed      # 系統スケールバグを見逃す
 
 
+def test_shared_mode_failure_is_cross_vendor_blind_spot():
+    # 共有モード障害: 両ベンダーが同じバグ→A≈B(cross-vendorは緑)だが両方 oracle と不一致。
+    # oracle 照合でのみ検出可能（cross-vendor 一致は必要十分でない）。
+    rng = np.random.default_rng(0)
+    K = 256
+    oracle = rng.standard_normal((64, 64)).astype(np.float32)
+    a = (oracle * 1.05).astype(np.float32)
+    b = (oracle * 1.05 + 1e-9).astype(np.float32)
+    # cross-vendor 単独は等価と誤判定（盲点）
+    assert is_equivalent_combined(a, b, K, "float16")
+    # oracle 照合は共有モードを暴く
+    assert detect_shared_mode(a, b, oracle, K) == SM_SHARED
+    # 通常の発散と全一致は正しく分類
+    assert detect_shared_mode((oracle * 1.5).astype(np.float32), oracle, oracle, K) == SM_DIVERGENT
+    assert detect_shared_mode(oracle, oracle.copy(), oracle, K) == SM_OK
+
+
 def test_roc_sweep_combined_catches_above_threshold():
     # 強度掃引: 合成判定は系統閾値超で偽OK=0、max_abs 単独は広範囲で偽OK（ROC 化）
     rows = roc_sweep(strengths=(0.005, 0.05), K=2048, seeds=10)
@@ -107,6 +128,7 @@ def main() -> int:
         test_systematic_check_passes_legitimate_order_divergence,
         test_combined_verifier_is_trustworthy_corpus,
         test_max_abs_alone_is_untrustworthy_corpus,
+        test_shared_mode_failure_is_cross_vendor_blind_spot,
     ]
     for t in tests:
         try:

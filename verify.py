@@ -270,6 +270,14 @@ def main() -> int:
           nucleus_flip_rate(_z, _z, 0.9) == 0.0
           and nucleus_flip_rate(_z, _zb, 0.9) != nucleus_flip_rate(_z * 5, _zb * 5, 0.9))
 
+    # shared-mode 障害: cross-vendor 一致は必要十分でない（oracle 照合で初めて見える盲点）
+    from tsugi.calibration import SM_SHARED, detect_shared_mode
+    _orc = np.random.default_rng(0).standard_normal((32, 32)).astype(np.float32)
+    _va = (_orc * 1.05).astype(np.float32)
+    check("cross-vendor agreement is blind to shared-mode failure (needs oracle)",
+          is_equivalent_combined(_va, _va.copy(), 256, "float16")
+          and detect_shared_mode(_va, _va.copy(), _orc, 256) == SM_SHARED)
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)

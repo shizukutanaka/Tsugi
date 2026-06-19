@@ -186,6 +186,36 @@ def is_equivalent_combined(a: np.ndarray, b: np.ndarray, K: int,
     return random_ok and systematic_ok
 
 
+# 共有モード（convergent）障害の検出 — cross-vendor 一致の構造的盲点 ----------
+SM_OK = "OK"
+SM_DIVERGENT = "DIVERGENT"
+SM_SHARED = "SHARED_MODE"
+
+
+def detect_shared_mode(a: np.ndarray, b: np.ndarray, oracle: np.ndarray,
+                       K: int, dtype: str = "float16") -> str:
+    """oracle がある時、cross-vendor 検証の *構造的盲点*（共有モード障害）を検出する。
+
+    cross-vendor 等価判定は A と B の *一致* を見るが、一致 ≠ 正しさ。両ベンダーが同じ
+    バグ（同一の上流ライブラリ欠陥・同じ誤った丸め・同じ flawed アルゴリズム）を持つと
+    A≈B で「等価」= 緑になるが両方とも誤り。これは cross-vendor 一致では原理的に検出不能。
+    oracle（独立な真値・例: CPU/NumPy リファレンス）と照合して初めて見える:
+
+      DIVERGENT   : A≢B            → cross-vendor が捕捉する通常の発散
+      SHARED_MODE : A≈B かつ 両方 ≢ oracle → 共有モード障害（cross-vendor は見逃す）
+      OK          : A≈B≈oracle
+
+    oracle が無い本番（audit_runtime）では SHARED_MODE は検出不能 —— cross-vendor 一致は
+    *必要条件であって十分条件でない*。CI/リファレンスのある経路で oracle 照合すべき。
+    """
+    from .equivalence import compare_gemm
+    if not compare_gemm(a, b, K, dtype).equivalent:
+        return SM_DIVERGENT
+    a_ok = compare_gemm(a, oracle, K, dtype).equivalent
+    b_ok = compare_gemm(b, oracle, K, dtype).equivalent
+    return SM_OK if (a_ok and b_ok) else SM_SHARED
+
+
 def roc_sweep(strengths=(0.001, 0.005, 0.02, 0.05, 0.1), K: int = 2048,
               dtype: str = "float16", seeds: int = 20) -> list[dict]:
     """バグ強度を連続掃引し検証器の偽OK率を測る（9 ケース corpus の ROC 化・Q36）。
