@@ -304,6 +304,13 @@ def main() -> int:
           classify_divergence(_la, _la.T.copy(), 256) == DV_LAYOUT
           and classify_divergence(_la, (_la * 1.5).astype(np.float32), 256) == DV_DIVERGENT)
 
+    # provenance: verdict は point-in-time。スタック更新で証明書は stale（再検証要）
+    from tsugi.provenance import certify, is_stale
+    _cert = certify("portable", rocm="6.0", driver="550.0")
+    check("certificate is stale after stack upgrade (point-in-time verdict)",
+          not is_stale(_cert, rocm="6.0", driver="550.0")
+          and is_stale(_cert, rocm="6.0", driver="560.0"))
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)

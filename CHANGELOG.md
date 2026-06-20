@@ -5,6 +5,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **証明書の陳腐化検出（temporal drift）**: `tsugi.provenance`。verdict は point-in-time —
+  特定スタック(ROCm/CUDA/driver/compiler/numpy)で計算される。`certify(verdict, **env)` で
+  verdict を環境フィンガープリントに束ね、`is_stale`/`changed_fields` でスタック更新時の
+  陳腐化を検出（再検証要）。「一度認証=永遠に有効」の誤りを防ぐ。docs/PERSPECTIVE-provenance.md。
 - **outlier feature 検出（単一スケール仮定の破綻）**: `envelope.check_outlier_features` /
   `channel_scale_spread`。実 LLM 活性は一部チャネルが 100–1000x 大（massive activations）。
   tolerance/envelope/floor の単一 global scale 仮定が破綻し outlier チャネルが誤許容で判定される。

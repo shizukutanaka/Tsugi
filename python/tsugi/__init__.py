@@ -26,6 +26,7 @@ from . import (
     oracle_check,
     portability,
     propagation,
+    provenance,
     tile,
     tolerance,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "nondeterminism",
     "decision",
     "oracle_check",
+    "provenance",
     "audit",
     "audit_runtime",
     "audit_cross_vendor",
