@@ -36,6 +36,18 @@ def decision_flips(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.argmax(a, axis=-1) != np.argmax(b, axis=-1)
 
 
+def tie_rate(logits: np.ndarray, eps: float = 0.0) -> float:
+    """top1 と top2 が同点（差 ≤ eps）なサンプル率。
+
+    同点では argmax は *規約* で決まる（np は先頭 index）。2 ベンダーが異なる規約
+    （first/last）を使うと、数値が完全一致でも判断がフリップする —— ハード発散でなく
+    tie-break 規約の差。量子化(int8/fp8)・マスク(-inf)で多発。tie_rate が高い領域では
+    flip_rate の「発散」への帰属は信頼できない（規約依存）ことを示す診断。
+    """
+    m = margin(logits)
+    return float(np.mean(m <= eps)) if m.size else 0.0
+
+
 def flip_rate(a: np.ndarray, b: np.ndarray) -> float:
     """判断フリップ率（ユーザーに見える差・スケール不変）。"""
     f = decision_flips(a, b)
@@ -161,16 +173,18 @@ class DecisionReport(FindingReport):
     topk_flip_rate: float = 0.0
     top_p: float = 0.0
     nucleus_flip_rate: float = 0.0
+    tie_rate: float = 0.0
 
     def to_text(self) -> str:  # type: ignore[override]
         tk = (f", top-{self.topk} set flip={self.topk_flip_rate * 100:.2f}%"
               if self.topk > 1 else "")
         tp = (f", nucleus(p={self.top_p}) flip={self.nucleus_flip_rate * 100:.2f}%"
               if self.top_p > 0 else "")
+        ti = f", tie={self.tie_rate * 100:.1f}%" if self.tie_rate > 0 else ""
         return super().to_text(
             header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
                     f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
-                    f"systematic={self.systematic_frac * 100:.0f}%{tk}{tp}, "
+                    f"systematic={self.systematic_frac * 100:.0f}%{tk}{tp}{ti}, "
                     f"flipped-margin {self.flipped_margin_median:.3g} "
                     f"vs overall {self.overall_margin_median:.3g})"),
             empty="(no decision flips — task-equivalent)")
@@ -202,7 +216,12 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
         topk_flip_rate=topk_flip_rate(a, b, topk) if topk > 1 else flip_rate(a, b),
         top_p=top_p,
         nucleus_flip_rate=nucleus_flip_rate(a, b, top_p, temperature) if top_p > 0 else 0.0,
+        tie_rate=tie_rate(ref_logits),
     )
+    if rep.tie_rate > 0.01:
+        rep.add(Risk.WARN, "task",
+                f"同点率 {rep.tie_rate * 100:.1f}%: argmax が規約依存（量子化/マスク）。"
+                "ベンダー間の tie-break 規約差で数値発散ゼロでもフリップしうる（誤帰属に注意）")
     if rep.flip_rate > flip_budget:
         risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN
         rep.add(risk, "task",

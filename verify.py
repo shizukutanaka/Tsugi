@@ -269,6 +269,11 @@ def main() -> int:
     check("nucleus(top-p) flip is probability-dependent (not scale-invariant)",
           nucleus_flip_rate(_z, _z, 0.9) == 0.0
           and nucleus_flip_rate(_z, _zb, 0.9) != nucleus_flip_rate(_z * 5, _zb * 5, 0.9))
+    # tie_rate: 量子化 logit の同点（argmax 規約依存）を露出し flip 誤帰属を警告
+    from tsugi.decision import tie_rate
+    _q = np.round(np.random.default_rng(0).standard_normal((1000, 40)) * 3).astype(np.float32)
+    check("tie_rate exposes convention-dependent decisions (quantized ties)",
+          tie_rate(_q) > 0.1 and tie_rate(_z) < 0.01)
 
     # shared-mode 障害: cross-vendor 一致は必要十分でない（oracle 照合で初めて見える盲点）
     from tsugi.calibration import SM_SHARED, detect_shared_mode

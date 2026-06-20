@@ -79,6 +79,17 @@ from tsugi.decision import (
 )
 ```
 
+## 追補3 — 同点（tie-break 規約）による偽フリップ
+
+`flip_rate` は argmax の変化を「ベンダー発散」と帰属する。だが np.argmax は同点で先頭
+index を返す *規約*。2 ベンダーが異なる規約（first/last）を使うと、**数値が完全一致でも**
+判断がフリップする —— ハード発散でなく tie-break 規約の差。量子化（int8/fp8）・マスク（-inf）で
+多発する（実測: 整数 logit で同点率 29.5%、数値一致なのに規約差で flip 29.5%）。
+
+`tie_rate(logits, eps)` が top1==top2（差 ≤ eps）の率を露出し、`compare_decisions` は
+同点率が高いと WARN する。tie_rate が高い領域では flip_rate の「発散」への帰属は信頼できない
+（規約依存）—— この区別を明示するのが honest。
+
 ## 追補2 — 生成タスク向け top-k / top-p（nucleus）候補集合フリップ
 
 argmax は分類前提。LLM 生成は top-k/top-p から次トークンを選ぶので、argmax だけでなく

@@ -21,6 +21,7 @@ from tsugi.decision import (  # noqa: E402
     nucleus_flip_rate,
     predicted_flip_bound,
     residual_divergence_rms,
+    tie_rate,
     topk_flip_rate,
 )
 
@@ -36,6 +37,19 @@ def _vendor(z, eps, seed):
 def test_margin_is_top1_minus_top2():
     x = np.array([[1.0, 5.0, 3.0]])
     assert abs(float(margin(x)[0]) - 2.0) < 1e-9   # 5 - 3
+
+
+def test_tie_rate_flags_convention_dependent_decisions():
+    # 量子化 logit は同点多発 → argmax は規約依存（tie-break）。tie_rate がそれを露出。
+    rng = np.random.default_rng(0)
+    quant = np.round(rng.standard_normal((4000, 50)) * 3).astype(np.float32)  # 整数=同点多発
+    assert tie_rate(quant) > 0.1                      # 同点が顕著
+    cont = rng.standard_normal((4000, 50)).astype(np.float32)                 # 連続値=同点ほぼ無
+    assert tie_rate(cont) < 0.01
+    # compare_decisions は同点率が高いと警告を立てる（誤帰属の注意喚起）
+    rep = compare_decisions(quant, quant.copy())
+    assert rep.tie_rate > 0.1
+    assert any("tie-break" in f.message or "同点" in f.message for f in rep.findings)
 
 
 def test_topk_flip_rate_generalizes_argmax():
@@ -170,6 +184,7 @@ def main() -> int:
     ok = True
     tests = [
         test_margin_is_top1_minus_top2,
+        test_tie_rate_flags_convention_dependent_decisions,
         test_topk_flip_rate_generalizes_argmax,
         test_nucleus_flip_rate_is_probability_dependent,
         test_decision_flips_are_scale_invariant,
