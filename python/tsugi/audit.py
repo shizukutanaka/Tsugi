@@ -36,11 +36,22 @@ class AuditPhase:
 @dataclass
 class Audit:
     phases: list[AuditPhase] = field(default_factory=list)
+    certificate: object = None   # provenance.Certificate（verdict を環境に束ねる・陳腐化検出用）
 
     @property
     def decided_phases(self) -> list[AuditPhase]:
         """verdict に算入する層（実データで決定済み）。pending（実機待ち）は除く。"""
         return [p for p in self.phases if p.when == "decided"]
+
+    def is_stale(self, **env: str) -> bool:
+        """この verdict が計算されたスタックと現在の環境が違えば True（再検証要）。
+
+        証明書が無ければ False（未スタンプ＝陳腐化判定不能）。
+        """
+        if self.certificate is None:
+            return False
+        from .provenance import is_stale
+        return is_stale(self.certificate, **env)
 
     # 後方互換エイリアス（旧名）。
     @property
@@ -56,12 +67,20 @@ class Audit:
     def portable(self) -> bool:
         return self.max_risk < Risk.BLOCK
 
+    def stamp(self, **env: str) -> "Audit":
+        """verdict を環境フィンガープリントに束ねる（provenance）。再検証の起点。"""
+        from .provenance import certify
+        self.certificate = certify("portable" if self.portable else "blocked", **env)
+        return self
+
     def to_text(self) -> str:
         lines = ["=== Tsugi audit（検証層の統合判定）==="]
         for p in self.phases:
             lines.append(p.to_text())
         verdict = "移植可（要注意点あり）" if self.portable else "移植ブロッカーあり"
         lines.append(f"\n判定（静的層）: {verdict} [max_risk={self.max_risk.name}]")
+        if self.certificate is not None:
+            lines.append("  " + self.certificate.to_text())
         return "\n".join(lines)
 
 
@@ -109,7 +128,7 @@ def _graph_ops(module: ir.Module, cfg):
 
 
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
-          block_dims=None, ref_logits=None) -> Audit:
+          block_dims=None, ref_logits=None, provenance=None) -> Audit:
     """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。
 
     ref_logits を渡すと、propagation のモデル発散を decision に橋渡しして、第2ベンダーを
@@ -216,12 +235,13 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         "→ 実データがあれば audit_runtime(...) でこれらを実行し 1 判定に束ねる",
     ]
     a.phases.append(rt)
+    a.stamp(**(provenance or {}))
     return a
 
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
-                  flip_budget: float = 0.001, oracle=None) -> Audit:
+                  flip_budget: float = 0.001, oracle=None, provenance=None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
@@ -303,6 +323,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             cp.lines.append("a≈b≈oracle: portability かつ correctness")
         ad.phases.append(cp)
 
+    ad.stamp(**(provenance or {}))
     return ad
 
 

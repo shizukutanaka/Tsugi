@@ -5,6 +5,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **verdict の provenance スタンプ**: `Audit.certificate`/`is_stale(**env)`/`stamp()`。
+  `audit`/`audit_runtime`/`audit_cross_vendor` が `provenance={...}`（cuda/rocm/driver 等）で
+  verdict を環境フィンガープリントに束ね、スタック更新で stale（再検証要）を自動判定。
+  provenance 層を facade に統合（「一度認証=永遠に有効」を排す）。
 - **docs/SPEC-verification.md**: 検証 API の規範仕様（全関数の契約・判定意味論・保証/盲点・
   検証連鎖の接地構造）。仕様化で `audit_runtime` の correctness 欠落が判明し下記を実装。
 - **audit_runtime の correctness 層**: `audit_runtime(..., oracle=)`。oracle を渡すと

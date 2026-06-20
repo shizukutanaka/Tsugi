@@ -221,6 +221,11 @@ def main() -> int:
     check("audit_runtime with oracle catches shared-mode (correctness, not just portability)",
           not audit_runtime(_sb, _sb.copy(), K=256, oracle=_ora).portable
           and audit_runtime(_ora, _ora.copy(), K=256, oracle=_ora).portable)
+    # verdict は provenance スタンプされ、スタック更新で stale（再検証要）
+    _av = audit_runtime(_a, _a + 1e-4, K=256, provenance={"driver": "550"})
+    check("audit verdict is provenance-stamped and goes stale on stack change",
+          _av.certificate is not None and not _av.is_stale(driver="550")
+          and _av.is_stale(driver="560"))
 
     # 19. audit_cross_vendor: ノイズ実測→監査の実機経路（擬似 run で配線を検証）
     from tsugi.audit import audit_cross_vendor

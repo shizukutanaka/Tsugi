@@ -77,6 +77,19 @@ def test_audit_without_cfg_still_runs_portability():
     assert "feasibility" not in names   # cfg 無しでは起動可能性は判定不可
 
 
+def test_audit_verdict_is_provenance_stamped():
+    # verdict は環境フィンガープリントに束ねられ、スタック更新で stale（再検証要）になる
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((32, 32)).astype(np.float32)
+    ad = audit_runtime(a, a + 1e-4, K=256, provenance={"rocm": "6.0", "driver": "550"})
+    assert ad.certificate is not None
+    assert not ad.is_stale(rocm="6.0", driver="550")    # 同一スタック
+    assert ad.is_stale(rocm="6.0", driver="560")        # driver 更新 → 再検証要
+    # 静的 audit も stamp される
+    mod, block, cfg = _demo_module()
+    assert audit(mod, cfg, block_dims=block).certificate is not None
+
+
 def test_audit_runtime_oracle_catches_shared_mode():
     # oracle を渡すと correctness 層が働く: a≈b でも両方 oracle と不一致なら BLOCK（共有モード）
     rng = np.random.default_rng(0)
@@ -169,6 +182,7 @@ def main() -> int:
         test_runtime_phase_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
         test_audit_without_cfg_still_runs_portability,
+        test_audit_verdict_is_provenance_stamped,
         test_audit_runtime_oracle_catches_shared_mode,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,

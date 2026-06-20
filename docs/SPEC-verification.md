@@ -150,7 +150,9 @@
 - 実機入口: 各ベンダーの noise/batch 床を実測 → audit_runtime。`run_*` は seed/tile → 出力 callable。
 
 `Audit`: `phases`（各 `AuditPhase(name, when∈{decided,pending}, max_risk, lines)`）・`max_risk`
-（decided 層のみ）・`portable`・`to_text`（検証ライフサイクルを一望）。
+（decided 層のみ）・`portable`・`to_text`（検証ライフサイクルを一望）・`certificate`（provenance
+スタンプ）・`is_stale(**env)`（スタック更新で再検証要を判定）。各 facade は `provenance={...}` で
+cuda/rocm/driver 等を渡すと verdict をそのスタックに束ねる（§5.1 と接続）。
 
 ---
 
