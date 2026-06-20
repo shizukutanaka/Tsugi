@@ -84,3 +84,13 @@
 - 「本番でも両ベンダー走らせて突き合わせる」: コスト 2 倍・実運用非現実的。却下。
   本視点の単一ベンダー検査が安価な代替。
 - 「全入力を f32 にする」: 性能・メモリを捨てる。エンベロープ検査で必要時のみ昇格が筋。保留。
+
+## 追補（ソクラテス問答続行）— outlier feature と単一スケール仮定の破綻
+
+tolerance/envelope/detectability floor は単一の scale（global RMS）を仮定する。だが実 LLM
+活性は **outlier feature** を持つ —— 一部チャネルが 100–1000x 大きい（massive activations・
+LLM.int8 / SmoothQuant が示す通り）。すると global scale は outlier チャネルを過小評価し、
+そこでの発散が誤った許容で判定される。検証は標準正規データで較正されてきたが、本番は
+そうでない。`envelope.check_outlier_features` がチャネル scale 広がり（max/median channel-RMS）で
+これを検出し WARN（per-channel 許容/検証が必要）。実測: N(0,1) は広がり ~1、outlier feature
+（数チャネル 200x）は ~208。これも「検証の前提（入力分布）が本番と一致するか」を正直にする一歩。

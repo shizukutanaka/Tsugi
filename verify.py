@@ -137,6 +137,13 @@ def main() -> int:
     big_logit = np.array([[0.0, 12.5]], np.float32)   # > ln(65504)=11.09
     check("envelope flags fp16 softmax overflow",
           not check_softmax_input(big_logit, env).in_envelope)
+    # outlier feature(massive activations): 単一 scale 仮定の破綻を検出
+    from tsugi.envelope import channel_scale_spread, check_outlier_features
+    _ol = np.random.default_rng(0).standard_normal((32, 128)).astype(np.float32)
+    _ol[:, 3] *= 200
+    check("envelope flags outlier features breaking single-scale assumption",
+          check_outlier_features(_ol).max_risk == portability.Risk.WARN
+          and channel_scale_spread(_ol) > 50.0)
 
     # 14. calibration: 検証器そのものを検証（偽OK の非対称コストと検出限界・新視点6）
     from tsugi.calibration import (

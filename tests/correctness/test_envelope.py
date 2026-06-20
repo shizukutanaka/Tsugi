@@ -14,6 +14,8 @@ import numpy as np  # noqa: E402
 
 from tsugi.envelope import (  # noqa: E402
     certify_gemm,
+    channel_scale_spread,
+    check_outlier_features,
     check_softmax_input,
     check_tensor,
     dtype_limits,
@@ -82,6 +84,20 @@ def test_real_fp16_overflow_actually_happens():
     assert 11.0 < lim.exp_overflow < 11.2
 
 
+def test_outlier_features_break_single_scale():
+    # outlier feature(massive activations): 数チャネルだけ巨大→単一 scale 仮定が破綻し WARN
+    rng = np.random.default_rng(0)
+    normal = rng.standard_normal((64, 256)).astype(np.float32)
+    outlier = rng.standard_normal((64, 256)).astype(np.float32)
+    outlier[:, 5] *= 200
+    outlier[:, 100] *= 150
+    assert channel_scale_spread(normal) < 3.0          # near-uniform は ~1
+    assert channel_scale_spread(outlier) > 50.0        # outlier は桁違い
+    assert check_outlier_features(normal).max_risk == Risk.OK
+    assert check_outlier_features(outlier).max_risk == Risk.WARN
+    assert any("outlier" in f.op for f in check_outlier_features(outlier).findings)
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -92,6 +108,7 @@ def main() -> int:
         test_nan_is_block,
         test_fp16_softmax_logit_overflow,
         test_real_fp16_overflow_actually_happens,
+        test_outlier_features_break_single_scale,
     ]
     for t in tests:
         try:

@@ -5,6 +5,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **outlier feature 検出（単一スケール仮定の破綻）**: `envelope.check_outlier_features` /
+  `channel_scale_spread`。実 LLM 活性は一部チャネルが 100–1000x 大（massive activations）。
+  tolerance/envelope/floor の単一 global scale 仮定が破綻し outlier チャネルが誤許容で判定される。
+  チャネル scale 広がりで検出し per-channel 検証要を WARN（実測: N(0,1) ~1 / outlier ~208）。
 - **レイアウト不一致 vs 数値発散の分類**: `equivalence.classify_divergence(a, b, K)`。
   cross-vendor は同じ論理テンソルを異なるレイアウト(転置/タイル順)で書きうる。素朴な
   element-wise は転置-but-equal を BLOCK と誤判定するが、レイアウト不一致は値の多重集合を

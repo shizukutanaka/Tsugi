@@ -151,3 +151,35 @@ def check_softmax_input(logits: np.ndarray, env: Envelope) -> EnvelopeReport:
             f"max|logit|={max_logit:.2f} が exp-overflow {lim.exp_overflow:.2f} に近接 "
             "→ max-subtract 必須・ベンダー差が出やすい")
     return rep
+
+
+def channel_scale_spread(x: np.ndarray, axis: int = -1) -> float:
+    """チャネル別 RMS の広がり = max(channel RMS) / median(channel RMS)。
+
+    outlier feature（数チャネルだけ巨大＝LLM の massive activations）で桁違いに大きくなる。
+    near-uniform-scale なら ~1。
+    """
+    xf = np.asarray(x, dtype=np.float64)
+    if xf.ndim < 2:
+        return 1.0
+    chan = np.sqrt(np.mean(xf ** 2, axis=tuple(i for i in range(xf.ndim) if i != axis % xf.ndim)))
+    med = float(np.median(chan))
+    return float(chan.max() / (med + 1e-30)) if med > 0 else 1.0
+
+
+def check_outlier_features(x: np.ndarray, axis: int = -1,
+                           spread_warn: float = 10.0) -> EnvelopeReport:
+    """outlier feature を検出し、単一スケール（global RMS）仮定の破綻を警告する。
+
+    tolerance/envelope/detectability floor は単一の scale を仮定する。だが実 LLM 活性は
+    一部チャネルが 100–1000x 大きい（massive activations・LLM.int8/SmoothQuant が示す通り）。
+    その場合 global scale は outlier チャネルを過小評価し、そこでの発散が誤った許容で
+    判定される。チャネル scale 広がりが大きければ per-channel 検証が要ると警告する。
+    """
+    rep = EnvelopeReport()
+    spread = channel_scale_spread(x, axis)
+    if spread > spread_warn:
+        rep.add(Risk.WARN, "outlier",
+            f"チャネル scale 広がり {spread:.0f}× → outlier feature 検出。"
+            "global scale 単一仮定が破綻（per-channel 許容/検証が必要・massive activations）")
+    return rep
