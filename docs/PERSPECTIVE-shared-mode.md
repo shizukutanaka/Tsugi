@@ -47,3 +47,20 @@
 from tsugi.calibration import detect_shared_mode, SM_OK, SM_DIVERGENT, SM_SHARED
 verdict = detect_shared_mode(vendor_a, vendor_b, oracle, K, dtype)
 ```
+
+## 続く問答 — では誰がオラクルを検証するのか？（無限後退）
+
+**Q.** shared-mode 検出はオラクルを真値として信頼する。だがオラクル（CPU/NumPy =
+`runtime_ref`）も *実装* で、NumPy は BLAS を呼ぶ。オラクルが間違っていたら？
+
+**A.** それは「privileged な別ベンダー」にすぎず、検証は後退する。断ち切るのは
+**実装非依存の証拠** —— 任意の正しい実装が満たす **メタモルフィック関係**（matmul 恒等
+A@I=A・分配則・sum(ones)=n・exp(a+b)=exp(a)exp(b)・softmax が 1 に和し shift 不変・
+rsqrt(x)²x=1）と **高精度（float64）再計算** との一致。第二オラクル無しでオラクルを検証する。
+
+`tsugi.oracle_check.verify_oracle()` がこれを実装。緑は「このプラットフォームのオラクルは
+数学的性質を満たす」を意味する（病的 BLAS・ビルド不良なら赤）。`rtol=0` にすると f32 丸めが
+恒等を満たさず必ず赤になる＝「常に緑」でなく実際に逸脱を捕まえる能力を持つことを担保。
+
+これで検証の連鎖が地に足を着ける: cross-vendor 一致（portability）→ oracle 照合（correctness・
+shared-mode 検出）→ メタモルフィック検証（oracle 自体の信頼性）。各段が下の段に錨を下ろす。

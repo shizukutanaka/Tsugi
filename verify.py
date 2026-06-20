@@ -278,6 +278,13 @@ def main() -> int:
           is_equivalent_combined(_va, _va.copy(), 256, "float16")
           and detect_shared_mode(_va, _va.copy(), _orc, 256) == SM_SHARED)
 
+    # オラクル自体をメタモルフィック関係で検証（無限後退を断つ・第二オラクル不要）
+    from tsugi.oracle_check import oracle_is_trustworthy, verify_oracle
+    check("oracle is verified by metamorphic relations (not asserted)",
+          oracle_is_trustworthy())
+    check("oracle check can actually flag deviation (not always-green)",
+          not verify_oracle(rtol=0.0).ok)
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)
