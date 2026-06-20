@@ -290,6 +290,13 @@ def main() -> int:
     check("oracle check can actually flag deviation (not always-green)",
           not verify_oracle(rtol=0.0).ok)
 
+    # レイアウト不一致(値正しい・位置違い)を真の数値発散と区別（element-wise 比較の盲点）
+    from tsugi.equivalence import DV_DIVERGENT, DV_LAYOUT, classify_divergence
+    _la = np.random.default_rng(0).standard_normal((48, 48)).astype(np.float32)
+    check("layout mismatch (transpose) distinguished from numerical divergence",
+          classify_divergence(_la, _la.T.copy(), 256) == DV_LAYOUT
+          and classify_divergence(_la, (_la * 1.5).astype(np.float32), 256) == DV_DIVERGENT)
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)

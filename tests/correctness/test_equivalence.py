@@ -11,7 +11,14 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-from tsugi.equivalence import compare, simulate_vendor_matmul  # noqa: E402
+from tsugi.equivalence import (  # noqa: E402
+    DV_DIVERGENT,
+    DV_EQUIVALENT,
+    DV_LAYOUT,
+    classify_divergence,
+    compare,
+    simulate_vendor_matmul,
+)
 
 
 def _inputs(M=128, N=128, K=512):
@@ -67,6 +74,22 @@ def test_uniform_risk_interface():
     assert not dv.ok and dv.risk is Risk.BLOCK
 
 
+def test_classify_layout_vs_numerical_divergence():
+    # element-wise 不一致を レイアウト不一致(値正しい) vs 真の数値発散 に区別
+    rng = np.random.default_rng(0)
+    K = 256
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    assert classify_divergence(a, a.copy(), K) == DV_EQUIVALENT
+    # 転置・置換は値の多重集合を保存 → LAYOUT（数値は正しい・整列バグ）
+    assert classify_divergence(a, a.T.copy(), K) == DV_LAYOUT
+    shuffled = rng.permutation(a.reshape(-1)).reshape(64, 64).astype(np.float32)
+    assert classify_divergence(a, shuffled, K) == DV_LAYOUT
+    # 真のスケール発散は multiset も崩す → DIVERGENT
+    assert classify_divergence(a, (a * 1.5).astype(np.float32), K) == DV_DIVERGENT
+    # 要素数が違えば layout ではありえない → DIVERGENT
+    assert classify_divergence(a, a[:, :32].copy(), K) == DV_DIVERGENT
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -75,6 +98,7 @@ def main() -> int:
         test_f16_accum_detected_as_divergent,
         test_report_fields,
         test_uniform_risk_interface,
+        test_classify_layout_vs_numerical_divergence,
     ]
     for t in tests:
         try:

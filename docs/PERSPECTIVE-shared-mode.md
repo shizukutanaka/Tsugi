@@ -64,3 +64,15 @@ rsqrt(x)²x=1）と **高精度（float64）再計算** との一致。第二オ
 
 これで検証の連鎖が地に足を着ける: cross-vendor 一致（portability）→ oracle 照合（correctness・
 shared-mode 検出）→ メタモルフィック検証（oracle 自体の信頼性）。各段が下の段に錨を下ろす。
+
+## さらに続く問答 — element-wise 比較は位置の対応を仮定していないか？
+
+**Q.** 全比較は `|a[i,j] - b[i,j]|`。A と B が同じ位置に同じ論理値を持つ前提。cross-vendor で
+保証されるか？
+
+**A.** されない。ベンダーは同じ論理テンソルを異なる *レイアウト*（row/col-major・タイル順・
+転置）で書きうる。素朴な element-wise は転置-but-equal を巨大発散=BLOCK と誤判定する。だが
+レイアウト不一致は値の *多重集合* を保存する → `equivalence.classify_divergence` が区別:
+EQUIVALENT / LAYOUT（値は正しく位置だけ違う＝整列バグ）/ DIVERGENT（multiset も崩れる＝真の発散）。
+LAYOUT は transpose/再タイルで修正可能で、数値検証でなく codegen の整列問題。これも
+「検証器が何を見ているか」を正直にする一歩（BLOCK の *原因* を区別する）。
