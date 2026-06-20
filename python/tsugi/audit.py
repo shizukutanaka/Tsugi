@@ -221,7 +221,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
-                  flip_budget: float = 0.001) -> Audit:
+                  flip_budget: float = 0.001, oracle=None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
@@ -229,7 +229,12 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
       - calibration.check_systematic（max_abs の盲点に隠れる系統バイアス）
       - equivalence + nondeterminism（noise_floor を織り込んだ 3 状態帰属）
       - logits があれば decision.compare_decisions（タスク判断フリップ）
+      - oracle があれば correctness 層: oracle_check（oracle 自体の信頼性）＋
+        detect_shared_mode（a≈b でも両方 oracle と不一致＝共有モード障害）
     すべて実データで *決定済み* なので静的 verdict に算入する（when="decided"）。
+
+    oracle 無しでは a≈b（portability）しか言えず correctness は未確定 —— shared-mode は
+    原理的に検出不能（SPEC-verification §4.1）。oracle があって初めて正しさを問える。
     """
     import numpy as np
 
@@ -278,6 +283,25 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
                         f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
         ad.phases.append(dp)
+
+    # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。
+    if oracle is not None:
+        from .calibration import SM_DIVERGENT, SM_SHARED, detect_shared_mode
+        from .oracle_check import verify_oracle
+        cp = AuditPhase("correctness oracle 照合", "decided", Risk.OK)
+        if not verify_oracle().ok:
+            cp.max_risk = Risk.BLOCK
+            cp.lines.append("oracle 自体がメタモルフィック検証に失敗 → 真値として使えない")
+        sm = detect_shared_mode(af, bf, np.asarray(oracle), K, dtype)
+        if sm == SM_SHARED:
+            cp.max_risk = Risk.BLOCK
+            cp.lines.append("SHARED_MODE: a≈b だが両方 oracle と不一致＝両ベンダー同一バグ"
+                            "（cross-vendor 一致では検出不能・oracle 照合で発覚）")
+        elif sm == SM_DIVERGENT:
+            cp.lines.append("a≢b（cross-vendor が捕捉済み）")
+        else:
+            cp.lines.append("a≈b≈oracle: portability かつ correctness")
+        ad.phases.append(cp)
 
     return ad
 

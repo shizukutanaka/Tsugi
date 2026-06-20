@@ -77,6 +77,22 @@ def test_audit_without_cfg_still_runs_portability():
     assert "feasibility" not in names   # cfg 無しでは起動可能性は判定不可
 
 
+def test_audit_runtime_oracle_catches_shared_mode():
+    # oracle を渡すと correctness 層が働く: a≈b でも両方 oracle と不一致なら BLOCK（共有モード）
+    rng = np.random.default_rng(0)
+    oracle = rng.standard_normal((64, 64)).astype(np.float32)
+    a = (oracle * 1.05).astype(np.float32)
+    b = (oracle * 1.05 + 1e-9).astype(np.float32)
+    bad = audit_runtime(a, b, K=256, oracle=oracle)
+    assert not bad.portable                            # 共有モード障害を検出
+    assert any(p.name.startswith("correctness") for p in bad.phases)
+    good = audit_runtime(oracle, oracle.copy(), K=256, oracle=oracle)
+    assert good.portable                               # a≈b≈oracle
+    # oracle 無しでは correctness は問えない（portability のみ）
+    no_oracle = audit_runtime(a, b, K=256)
+    assert not any(p.name.startswith("correctness") for p in no_oracle.phases)
+
+
 def test_audit_runtime_passes_equivalent_within_noise():
     # 真に等価(微小差)・ノイズ床込み → ブロッカー無し（INDISTINGUISHABLE/EQ は OK 寄り）
     rng = np.random.default_rng(0)
@@ -153,6 +169,7 @@ def main() -> int:
         test_runtime_phase_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
         test_audit_without_cfg_still_runs_portability,
+        test_audit_runtime_oracle_catches_shared_mode,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,

@@ -91,7 +91,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
                                                                 └ ROCDL → AMDGCN
 ```
 
-詳細: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / 仕様: [docs/SPEC.md](docs/SPEC.md) / 検証層の全体マップ: [docs/VERIFICATION.md](docs/VERIFICATION.md)
+詳細: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / 仕様: [docs/SPEC.md](docs/SPEC.md)（DSL/コンパイラ）・[docs/SPEC-verification.md](docs/SPEC-verification.md)（検証 API）/ 検証層の全体マップ: [docs/VERIFICATION.md](docs/VERIFICATION.md)
 
 
 ## 実装状況（正直な現在地・主張と実装の一致）

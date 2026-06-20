@@ -215,6 +215,12 @@ def main() -> int:
                         noise_floor=1e-3).portable)
     check("audit_runtime blocks a real systematic divergence (5% scale)",
           not audit_runtime(_a, _a * 1.05, K=256, noise_floor=1e-3).portable)
+    # oracle を渡すと correctness 層が共有モード障害(a≈b だが両方 oracle 不一致)を BLOCK
+    _ora = np.random.default_rng(1).standard_normal((64, 64)).astype(np.float32)
+    _sb = (_ora * 1.05).astype(np.float32)
+    check("audit_runtime with oracle catches shared-mode (correctness, not just portability)",
+          not audit_runtime(_sb, _sb.copy(), K=256, oracle=_ora).portable
+          and audit_runtime(_ora, _ora.copy(), K=256, oracle=_ora).portable)
 
     # 19. audit_cross_vendor: ノイズ実測→監査の実機経路（擬似 run で配線を検証）
     from tsugi.audit import audit_cross_vendor

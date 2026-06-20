@@ -5,6 +5,11 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **docs/SPEC-verification.md**: 検証 API の規範仕様（全関数の契約・判定意味論・保証/盲点・
+  検証連鎖の接地構造）。仕様化で `audit_runtime` の correctness 欠落が判明し下記を実装。
+- **audit_runtime の correctness 層**: `audit_runtime(..., oracle=)`。oracle を渡すと
+  oracle_check（oracle 自体の信頼性）＋ detect_shared_mode を回し、a≈b でも両方 oracle と
+  不一致なら共有モード障害として BLOCK。oracle 無しは portability のみ（correctness は未確定と明示）。
 - **証明書の陳腐化検出（temporal drift）**: `tsugi.provenance`。verdict は point-in-time —
   特定スタック(ROCm/CUDA/driver/compiler/numpy)で計算される。`certify(verdict, **env)` で
   verdict を環境フィンガープリントに束ね、`is_stale`/`changed_fields` でスタック更新時の
