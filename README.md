@@ -99,10 +99,10 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 
 | マイルストーン | 状態 | 検証 |
 |--------------|------|------|
-| 完成形ファイル（仕様/ADR/README/FAQ/Benchmark） | ✅ 完了 | — |
-| リファレンス実装（CPU/NumPy・正しさの真値） | ✅ 完了 | 17テストPASS |
-| 上流コンパイラ（DSL→tsugi.tile IR→各社intrinsic写像） | ✅ 完了 | tracer/lowering/compile テスト |
-| 不変条件 verify | ✅ 完了 | 10/10 invariants |
+| 完成形ファイル（仕様/ADR/README/FAQ/Benchmark/SPEC-verification） | ✅ 完了 | — |
+| リファレンス実装（CPU/NumPy・正しさの真値） | ✅ 完了 | test_reference（数値真値） |
+| 上流コンパイラ（DSL→tsugi.tile IR→各社intrinsic写像） | ✅ 完了 | DSL 全14opにlowering同期（drift不変条件）・tracer/compile テスト |
+| 不変条件 verify | ✅ 完了 | verify.py 63/63 invariants・全22スイート147テスト関数PASS |
 | 移植性検証層（portability・新視点） | ✅ 完了 | warp/MMA/bf16/累積順序 リスク検出 |
 | 数値等価性層（equivalence・新視点） | ✅ 完了 | 擬似ベンダーで発散検出を実証 |
 | 占有率推定（occupancy） | ✅ 完了 | 一次情報源HW値・同一構成のベンダー差 |
@@ -113,7 +113,9 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 検証器の較正（calibration・新視点6） | ✅ 完了 | max_abs単独は偽OK 3/6・合成判定で偽OK 0/6・検出限界 K=2048で8.8% |
 | 非決定性の考慮（nondeterminism・新視点7） | ✅ 完了 | run-to-run ノイズ実測・出力を分布として3状態判定・単一run比較のフレーク実証 |
 | タスクレベル等価（decision・新視点8） | ✅ 完了 | 判断フリップ率はスケール不変・abs誤差10倍でも同一・P(margin<2δ)上界を実証 |
+| oracle 健全性検査（oracle_check） | ✅ 完了 | a≈b≈oracle で共有モード障害（両ベンダー同一バグ）を検出 |
 | 統合監査（audit・運用統合） | ✅ 完了 | 静的層を1判定に集約・実行時チェックリスト併記・portcheck は audit へ委譲 |
+| verdict 鮮度保証（provenance・時間軸統合） | ✅ 完了 | verdict を環境fingerprintに束ね・スタック更新で is_stale 自動判定 |
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
