@@ -3,7 +3,7 @@
 > 仕様が実装を駆動する（C11）。本書は `tsugi` の **検証 API** の規範仕様。各関数の契約
 > （入力・出力・判定意味論）と、**保証すること / しないこと（盲点）** を定める。
 > コンパイラ/DSL の仕様は [SPEC.md](SPEC.md)、全体マップは [VERIFICATION.md](VERIFICATION.md)。
-> 不変条件は `verify.py`（60+）、実行可能な真値は `tests/correctness/`（144 関数）。
+> 不変条件は `verify.py`（63）、実行可能な真値は `tests/correctness/`（148 関数）。
 
 状態: v0.x（API 未凍結）。CPU リファレンスで動作・検証済み。GPU 実行は未検証（要実機）。
 
