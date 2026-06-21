@@ -78,7 +78,10 @@ empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 → envelope は dtype 別だが scale 推定は一律。**改善: scale 推定に dtype 別の下限（denormal）考慮。**
 
 **Q17.** 全 scale 既定 1.0 は「とりあえず動く」値。テストも scale~1 のデータばかりでは？
-→ そう。**改善: scale≫1 / scale≪1 のテストを追加し、tolerance/envelope の追従を確認。**
+→ ✅ **修正済**: `test_tolerance_tracks_scale_across_extremes` が scale=1e-3/1.0/1e3 で
+(a) 導出 atol が scale に厳密線形追従、(b) 正当なクロスベンダー順序差が両極で過剰検出されない
+（envelope/tolerance が data scale に追従）、(c) scale 比例の 1% 系統バグを fail-safe
+（`is_equivalent_combined`）が両極で捕捉（RMS 比ゆえ scale 不変）を実証。
 
 ## D. 橋の分布仮定（propagation→decision）（Q18–22）
 

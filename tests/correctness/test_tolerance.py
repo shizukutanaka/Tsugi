@@ -73,6 +73,33 @@ def test_noise_floor_widens_tolerance():
     assert t1["atol"] >= t0["atol"]
 
 
+def test_tolerance_tracks_scale_across_extremes():
+    # Q17: テストが scale~1 に偏る盲点を塞ぐ。scale≪1 と scale≫1 で
+    # (a) 導出 atol は scale に線形追従し、(b) 正当なクロスベンダー差は両極で
+    # 過剰検出されない（envelope/tolerance が data scale に追従する）。
+    from tsugi.calibration import is_equivalent_combined
+
+    # (a) atol ∝ scale（厳密）
+    base = derive_tolerance(512, "float16", scale=1.0)["atol"]
+    assert abs(derive_tolerance(512, "float16", scale=1e3)["atol"] - base * 1e3) < base * 1e-6
+    assert abs(derive_tolerance(512, "float16", scale=1e-3)["atol"] - base * 1e-3) < base * 1e-6
+
+    for s in (1e-3, 1.0, 1e3):
+        rng = np.random.default_rng(0)
+        lhs = (rng.standard_normal((64, 256)).astype(np.float32) * s).astype(np.float16)
+        rhs = rng.standard_normal((256, 64)).astype(np.float16)
+        nv = simulate_vendor_matmul(lhs, rhs, accum="f32", split_k=1)
+        amd = simulate_vendor_matmul(lhs, rhs, accum="f32", split_k=8)   # 正当な順序差
+        out_rms = float(np.sqrt(np.mean(nv.astype(np.float64) ** 2)))
+        # (b) 正当差は両極で等価（小 scale で過敏・大 scale で鈍化しない）
+        assert compare_gemm(nv, amd, K=256, dtype="float16", scale=out_rms).equivalent, \
+            f"legit divergence flagged at scale={s}"
+        # (c) scale 比例の 1% 系統バグは fail-safe(check_systematic)が両極で捕捉（scale 不変）
+        bug = (nv.astype(np.float64) * 1.01).astype(np.float32)
+        assert not is_equivalent_combined(nv, bug, K=256, dtype="float16"), \
+            f"1% systematic bug missed at scale={s}"
+
+
 def test_safety_is_single_source():
     # SAFETY は constants に集約され、各層の既定がそれを参照する（Q1/Q2）
     from tsugi.constants import SAFETY
@@ -94,6 +121,7 @@ def main() -> int:
         test_derived_reclassifies_largeK_case,
         test_derived_still_catches_real_divergence,
         test_noise_floor_widens_tolerance,
+        test_tolerance_tracks_scale_across_extremes,
     ]
     for t in tests:
         try:
