@@ -153,6 +153,21 @@ def test_audit_cross_vendor_folds_batch_variance_floor():
     assert ad.portable
 
 
+def test_audit_cross_vendor_forwards_provenance():
+    # 実機入口も verdict を実 GPU スタックに束ねる（provenance 素通し・drift 回帰防止）
+    base = np.random.default_rng(0).standard_normal((4, 16)).astype(np.float32)
+
+    def run(s):
+        g = np.random.default_rng(7777 + s).standard_normal(base.shape).astype(np.float32)
+        return base + 1e-6 * g
+
+    ad = audit_cross_vendor(run, run, K=256, n_runs=4,
+                            provenance={"rocm": "6.0", "driver": "550"})
+    assert ad.certificate is not None
+    assert not ad.is_stale(rocm="6.0", driver="550")
+    assert ad.is_stale(rocm="6.0", driver="560")
+
+
 def test_audit_demo_runs_end_to_end():
     # examples/audit_demo.py が両 facade を回し、系統バグを BLOCK にすることを保証
     import contextlib
@@ -188,6 +203,7 @@ def main() -> int:
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
         test_audit_cross_vendor_folds_batch_variance_floor,
+        test_audit_cross_vendor_forwards_provenance,
         test_audit_demo_runs_end_to_end,
     ]
     for t in tests:

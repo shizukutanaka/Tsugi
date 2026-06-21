@@ -139,15 +139,18 @@
 
 ## 6. 統合ファサード
 
-`audit(module, cfg, *, targets, block_dims, ref_logits=None) -> Audit`
+`audit(module, cfg, *, targets, block_dims, ref_logits=None, provenance=None) -> Audit`
 - 静的層（portability/feasibility/occupancy/tolerance+envelope+detectability_floor/propagation）を
   まとめ 1 判定に集約。`ref_logits` でタスクフリップ率上界も併記。実行時層は pending として列挙。
+  `provenance={...}` で verdict を環境 fingerprint に束ねる（§5.1・`Audit.is_stale`）。
 
-`audit_runtime(a_out, b_out, K, *, dtype, env, noise_floor, logits_a, logits_b, flip_budget) -> Audit`
+`audit_runtime(a_out, b_out, K, *, dtype, env, noise_floor, logits_a, logits_b, flip_budget, oracle=None, provenance=None) -> Audit`
 - 実データで envelope/equivalence(+noise 3 状態)/systematic/decision を回し 1 判定に。
+  `oracle` を渡すと correctness 層（detect_shared_mode）も算入。`provenance={...}` で verdict をスタンプ。
 
-`audit_cross_vendor(run_a, run_b, K, *, ..., run_batch=None, batch_tiles) -> Audit`
+`audit_cross_vendor(run_a, run_b, K, *, ..., run_batch=None, batch_tiles, provenance=None) -> Audit`
 - 実機入口: 各ベンダーの noise/batch 床を実測 → audit_runtime。`run_*` は seed/tile → 出力 callable。
+  `provenance={...}`（実 GPU の rocm/cuda/driver）を audit_runtime へ素通し、実機 verdict を束ねる。
 
 `Audit`: `phases`（各 `AuditPhase(name, when∈{decided,pending}, max_risk, lines)`）・`max_risk`
 （decided 層のみ）・`portable`・`to_text`（検証ライフサイクルを一望）・`certificate`（provenance
