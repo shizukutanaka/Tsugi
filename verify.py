@@ -67,6 +67,10 @@ def main() -> int:
     from tsugi.lowering import VENDOR_LOWERING
     check("dot→wmma (NVIDIA, ADR-004)", "wmma" in VENDOR_LOWERING["dot"]["nvidia"])
     check("dot→mfma (AMD CDNA, ADR-004)", "mfma" in VENDOR_LOWERING["dot"]["amd_cdna"])
+    # DSL が emit しうる全 op に実ターゲット lowering が定義済み（spec が DSL に同期）
+    from tsugi.lowering import unlowered_ops
+    check("lowering covers every emittable DSL op (nvidia/amd, no drift)",
+          all(not unlowered_ops(t) for t in ("nvidia", "amd_cdna", "amd_rdna")))
 
     # 7. machine-code emission は正直に未実装
     import tsugi

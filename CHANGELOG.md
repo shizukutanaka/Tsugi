@@ -5,6 +5,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **lowering spec を DSL 全 op に同期**: `VENDOR_LOWERING` を 6→14 op に拡張
+  （`sub`/`mul`/`div`/`max`/`exp`/`sqrt`/`rsqrt`/`reduce` を追加）。softmax/attention/
+  norm 系カーネルが silently `<UNSUPPORTED>` に落ちる穴を塞ぐ。`lowering.unlowered_ops(target)`
+  と `tracer.EMITTABLE_OPS`（唯一の出所）で DSL↔lowering の drift を不変条件として検出。
 - **verdict の provenance スタンプ**: `Audit.certificate`/`is_stale(**env)`/`stamp()`。
   `audit`/`audit_runtime`/`audit_cross_vendor` が `provenance={...}`（cuda/rocm/driver 等）で
   verdict を環境フィンガープリントに束ね、スタック更新で stale（再検証要）を自動判定。

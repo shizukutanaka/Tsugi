@@ -20,6 +20,15 @@ from .runtime_ref import _arr
 
 _trace = threading.local()
 
+# このトレーサが emit しうる全 op 種。lowering テーブル（lowering.py）との同期検証の
+# 唯一の出所（single source of truth）。DSL に op を足したらここに追加し、lowering も
+# 追従させる（unlowered_ops 不変条件が drift を CI で捕える）。
+EMITTABLE_OPS: frozenset[str] = frozenset({
+    "add", "sub", "mul", "div", "max",          # 算術（__add__/__sub__/__mul__/__truediv__/maximum）
+    "cast", "zeros", "load", "store", "dot",     # 構造・メモリ・行列コア
+    "reduce", "exp", "sqrt", "rsqrt",            # 縮約・超越関数（softmax/norm 系）
+})
+
 
 def _tt_of(data: np.ndarray) -> str:
     """numpy 配列から MLIR 風テンソル型文字列を作る。"""
