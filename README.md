@@ -35,6 +35,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **非決定性の考慮** — `tsugi.nondeterminism` が GPU の run-to-run ノイズを実測し、出力を分布として比較。クロス差がノイズ未満なら INDISTINGUISHABLE と正直に判定（単一 run 比較のフレークを排す・新視点7）
 - **タスクレベル等価** — `tsugi.decision` が数値発散でなく判断フリップ率（argmax/選択トークンの変化）で等価を測る。フリップ率 ≤ P(margin<2δ)・タスク許容はマージン分布（新視点8）
 - **統合監査** — `tsugi.audit` が 8 視点＋メタ＋基盤を 1 つの判定に束ね、静的層の verdict と実行時チェックリスト（実機データが要る層）をライフサイクル順に一望（運用統合）
+- **verdict の鮮度保証** — `tsugi.provenance` が監査結果を環境フィンガープリント（python/numpy/driver/rocm/cuda）に束ね、スタック更新で `is_stale` を自動判定。「一度 OK＝永遠に OK」を排す（時間軸の統合）
 - **permissive のみ** — 依存は全て MIT/Apache-2.0 系
 
 ## Installation

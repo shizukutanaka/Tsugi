@@ -57,15 +57,23 @@ def main() -> int:
 
     print("\n############  実行時 audit_runtime（健全な AMD）  ############")
     good = audit_runtime(nvidia, amd_ok, K, env=env, noise_floor=1e-3,
-                         logits_a=logits, logits_b=logits_b, flip_budget=0.05)
+                         logits_a=logits, logits_b=logits_b, flip_budget=0.05,
+                         provenance={"rocm": "6.0", "driver": "550.54"})
     print(good.to_text())
 
     print("\n############  実行時 audit_runtime（0.5% 系統バグの AMD）  ############")
     bad = audit_runtime(nvidia, amd_bug, K, env=env, noise_floor=1e-3)
     print(bad.to_text())
 
+    # --- 3. provenance: verdict は永遠でない。スタック更新で再検証要を自動判定 ---
+    print("\n############  provenance（この verdict はいつ陳腐化するか）  ############")
+    print(f"同一スタックで再利用可? {not good.is_stale(rocm='6.0', driver='550.54')}")
+    print(f"driver 550.54→560.35 に更新したら stale（再検証要）? "
+          f"{good.is_stale(rocm='6.0', driver='560.35')}")
+
     print("\n要点: 静的監査は実機前に移植ブロッカーを、実行時監査は max_abs の盲点に"
-          "隠れる系統バグ（0.5%）を捕まえる。実機では simulate を実 GPU 出力に置換するだけ。")
+          "隠れる系統バグ（0.5%）を捕まえ、provenance は verdict をスタックに束ねて"
+          "「一度 OK＝永遠に OK」を排す。実機では simulate を実 GPU 出力に置換するだけ。")
     return 0
 
 
