@@ -8,10 +8,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 import numpy as np  # noqa: E402
 
+import tsugi  # noqa: E402
+from tsugi import tile  # noqa: E402
 from tsugi.audit import _graph_ops, audit, audit_cross_vendor, audit_runtime  # noqa: E402
+from tsugi.autotune import TileConfig  # noqa: E402
 from tsugi.envelope import certify_gemm  # noqa: E402
 from tsugi.portcheck import _demo_module  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
+
+
+@tsugi.jit
+def _softmax_row(x, out, N, BN):
+    """増幅 op（reduce/exp）を含む実カーネル（Q10 の attention/norm 系代表）。"""
+    p = tsugi.program_id(0)
+    row = tile.load(x, (p * BN, 0), (BN, N))
+    m = tile.reduce(row, 1, "max")
+    e = tile.exp(row - m)
+    s = tile.reduce(e, 1, "sum")
+    tile.store(out, (p * BN, 0), (e / s).to(tsugi.float16))
 
 
 def test_audit_aggregates_all_static_phases():
@@ -30,6 +44,25 @@ def test_graph_ops_collapses_kloop_dots_into_one_matmul():
     matmuls = [o for o in gops if o.kind == "matmul"]
     assert len(matmuls) == 1
     assert matmuls[0].K == 256   # 4 dots × block_k 64
+
+
+def test_audit_propagates_amplification_through_traced_softmax():
+    # Q10: 増幅 op（reduce/exp）を出す実カーネルを trace → audit に通し、propagation 層が
+    # 実グラフから増幅 op を拾い「静的 cond=1 は下界」と過小評価を WARN することを保証。
+    x = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    mod = tsugi.trace(_softmax_row, (x, x.copy(), 16, 16), {}, (0,))
+    cfg = TileConfig(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
+
+    # 実グラフから増幅 op が抽出される（dot のみだった頃は空回りしていた経路）
+    kinds = {o.kind for o in _graph_ops(mod, cfg)}
+    assert {"reduce", "exp"} <= kinds, kinds
+
+    a = audit(mod, cfg, block_dims=(16,))
+    prop = next(p for p in a.phases if "propagation" in p.name.lower())
+    text = prop.to_text()
+    # 静的 cond=1 の過小評価を隠さず WARN（empirical_cond/audit_runtime へ誘導）
+    assert prop.max_risk >= Risk.WARN
+    assert "下界" in text and ("exp" in text or "reduce" in text)
 
 
 def test_propagation_phase_runs_on_module():
@@ -192,6 +225,7 @@ def main() -> int:
     tests = [
         test_audit_aggregates_all_static_phases,
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
+        test_audit_propagates_amplification_through_traced_softmax,
         test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,
         test_runtime_phase_excluded_from_verdict,

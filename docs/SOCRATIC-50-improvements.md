@@ -43,12 +43,15 @@ exp=max|x|）。(3) audit は増幅 op があるのに静的 cond=1 を当てる
 empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 
 **Q9.** 現トレーサは reduce/exp/softmax を IR に出すか？
-→ 出さない（dot/load/store/cast/add/zeros のみ）。よって audit の propagation は実質常に
-単一 matmul。**改善: 増幅 op を IR に表現できないと perspective4 が空回り。tracer の op 語彙拡張。**
+→ ✅ **修正済**: トレーサは `reduce`/`exp`/`sqrt`/`rsqrt`/`max` を含む全 14 op を IR に出す
+（`tracer.EMITTABLE_OPS`）。`audit._graph_ops` が `_AMPLIFY_KINDS`（reduce/exp/rsqrt/div 等）を
+実グラフから拾い、propagation 層が空回りせず増幅 op を算入する。
 
 **Q10.** つまり「発散が深さで ~2000倍」の実証は audit 経路では再現されないのでは？
-→ その通り。standalone propagate では出るが、audit に流れる実グラフでは出ない。
-**改善: 多 op を出すカーネル例（rmsnorm/attention）を trace して audit に通す統合テスト。**
+→ ✅ **修正済**: softmax カーネル（reduce×2/exp/div を出す）を trace → `audit()` に通す統合テスト
+（`test_audit_propagates_amplification_through_traced_softmax`）。propagation 層が実グラフから
+増幅 op を抽出し「静的 cond=1 は *下界*（過小評価）」と WARN、empirical_cond/audit_runtime へ誘導
+することを固定（過小評価を隠さない）。
 
 **Q11.** model_divergence は相対だが、各 op の scale 変化（正規化層）を追えているか？
 → 追っていない（amp≈1 と単純化）。**改善: scale を伝播する版（正規化で発散がリセットされる
