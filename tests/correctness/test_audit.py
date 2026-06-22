@@ -187,6 +187,20 @@ def test_audit_runtime_adds_rollout_phase_when_gen_length_given():
     assert rp_long.max_risk >= rp_short.max_risk
 
 
+def test_audit_rollout_is_fail_safe_with_zero_observed_flips():
+    # 改善: facade の rollout も点推定でなく上側信頼限界を使う。完全一致 logit
+    # （フリップ 0 観測）でも長い生成では survival を 100% と過信しない（fail-safe 整合）。
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((48, 48)).astype(np.float32)
+    la = rng.standard_normal((300, 64)).astype(np.float32)
+    ad = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=la.copy(),
+                       gen_length=10**6)
+    rp = next(p for p in ad.phases if p.name.startswith("rollout"))
+    # 0 フリップ観測でも p>0 の上側限界を計上 → 巨大 L で安全と言い切らない
+    assert rp.max_risk >= Risk.WARN
+    assert any("上側限界" in ln for ln in rp.lines)
+
+
 def test_audit_cross_vendor_folds_batch_variance_floor():
     # run_batch を渡すと batch-invariance 床が実効床に合流する（2025 研究の取り込み）
     from tsugi.nondeterminism import simulate_batch_variant_reduction
@@ -254,6 +268,7 @@ def main() -> int:
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
         test_audit_runtime_adds_rollout_phase_when_gen_length_given,
+        test_audit_rollout_is_fail_safe_with_zero_observed_flips,
         test_audit_cross_vendor_folds_batch_variance_floor,
         test_audit_cross_vendor_forwards_provenance,
         test_audit_demo_runs_end_to_end,

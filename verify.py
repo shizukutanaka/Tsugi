@@ -341,6 +341,13 @@ def main() -> int:
     check("rollout does not mistake zero observed flips for zero flip rate (fail-safe)",
           rollout_from_logits(_ident, _ident.copy(), 10**6, conservative=True).survival < 1.0
           and rollout_from_logits(_ident, _ident.copy(), 10**6, conservative=False).survival == 1.0)
+    # rollout はデコード方式に整合: サンプリング集合フリップ ≥ greedy argmax フリップ
+    # （argmax 同一でも候補集合は分岐しうる → サンプリング生成の発散を過小評価しない）
+    _da = np.random.default_rng(3).standard_normal((1500, 80)).astype(np.float32)
+    _db = _da + 5e-2 * np.random.default_rng(4).standard_normal(_da.shape).astype(np.float32)
+    check("rollout per-token flip rate honors decode mode (sampling ≥ greedy)",
+          rollout_from_logits(_da, _db, 256, decode="nucleus", top_p=0.9).flip_rate
+          >= rollout_from_logits(_da, _db, 256, decode="greedy").flip_rate)
 
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp

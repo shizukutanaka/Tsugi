@@ -3,7 +3,7 @@
 > 仕様が実装を駆動する（C11）。本書は `tsugi` の **検証 API** の規範仕様。各関数の契約
 > （入力・出力・判定意味論）と、**保証すること / しないこと（盲点）** を定める。
 > コンパイラ/DSL の仕様は [SPEC.md](SPEC.md)、全体マップは [VERIFICATION.md](VERIFICATION.md)。
-> 不変条件は `verify.py`（63）、実行可能な真値は `tests/correctness/`（148 関数）。
+> 不変条件は `verify.py`（66）、実行可能な真値は `tests/correctness/`（151 関数）。
 
 状態: v0.x（API 未凍結）。CPU リファレンスで動作・検証済み。GPU 実行は未検証（要実機）。
 
@@ -108,11 +108,14 @@
 （=1/p）/ `safe_generation_length(p, confidence=0.99) -> int` / `divergence_step_quantile(p, q)` /
 `flip_rate_upper_bound(flips, n, confidence=0.95) -> float`（Wilson 片側上限）/
 `analyze_rollout(p, target_length, *, confidence=0.99) -> RolloutReport` /
-`rollout_from_logits(a, b, target_length, *, confidence=0.99, conservative=True)` /
+`rollout_from_logits(a, b, target_length, *, confidence=0.99, conservative=True, decode="greedy", topk=5, top_p=0.9, temperature=1.0)` /
 `simulate_rollout(p, length, trials, seed) -> float`
 - 規約: per-token フリップ率 p を生成長 L に合成。シーケンス一致確率 survival=(1−p)^L、初回発散
   期待位置 1/p。verdict は safe_len 内=OK / survival≥0.5=WARN / 未満=BLOCK。`rollout_from_logits`
-  は既定で p の上側信頼限界を使い小標本の過信を防ぐ（fail-safe）。
+  は既定で p の上側信頼限界を使い小標本の過信を防ぐ（fail-safe）。`decode` で運用のデコード方式に
+  p を整合（greedy=argmax / topk・nucleus=候補集合フリップ）—— サンプリング生成では候補集合の分岐が
+  per-token 発散になり、greedy argmax フリップ率は過小評価しうる。`audit_runtime` の rollout 層も
+  同じ上側信頼限界 p を使う（点推定でなく fail-safe）。
 - 保証: per-token 許容 ⇏ per-sequence 許容（複利増幅）を露出。**しない**: survival は *完全一致*
   の確率（意味等価でない・厳しい側）。フリップ率の定常性を仮定（位置非依存）。propagation の自己回帰版。
 

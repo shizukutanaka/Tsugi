@@ -61,5 +61,18 @@ analyze_rollout(0.01, L):
   「発散」に数えるので、task 等価より厳しい。意味等価まで測るには別途タスクモデルが要る。
 - **フリップ率の定常性を仮定**（位置非依存）。実際は near-tie の多寡で位置依存しうる。
 
+## 改善（現段階の洗い出し）
+
+- **デコード方式への整合**: 当初 `rollout_from_logits` は greedy argmax フリップ率だけを
+  生成長へ合成していた。だが実 LLM はサンプリング生成（top-k / nucleus）が主流で、候補
+  *集合* が分岐すれば argmax が同じでも生成分布は分かれる —— greedy フリップ率は
+  サンプリング生成の per-token 発散を過小評価する。`decode={greedy,topk,nucleus}` を
+  追加し、decision 層の集合フリップ率（`topk_flip_rate`/`nucleus_flip_rate`）を再利用して
+  運用デコードに p を整合させた（集合フリップ ≥ argmax フリップ＝honest に厳しい側）。
+- **facade の fail-safe 整合**: `audit_runtime(gen_length>0)` の rollout 層は点推定
+  `flip_rate` を使っており、standalone で入れた上側信頼限界（0 フリップ観測≠p=0）を
+  バイパスしていた。完全一致 logit でも巨大 L で survival=100% と過信する穴。facade も
+  `flip_rate_upper_bound` を通すよう修正し、standalone と fail-safe を一致させた。
+
 これでセッションの検証連鎖に *生成長* の次元が加わる: 数値（equivalence）→ タスク
 （decision）→ シーケンス（rollout）と、ユーザーに見える単位へ段階的に引き上がる。

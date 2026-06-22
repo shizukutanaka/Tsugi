@@ -307,11 +307,15 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 
         # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）
         if gen_length > 0:
-            from .rollout import analyze_rollout
-            rr = analyze_rollout(dr.flip_rate, gen_length)
+            from .rollout import analyze_rollout, flip_rate_upper_bound
+            # fail-safe: 点推定 dr.flip_rate でなく上側信頼限界を使う。0 フリップ観測でも
+            # p=0 と過信せず、複利増幅した survival を過大評価しない（rollout_from_logits と整合）。
+            p_safe = flip_rate_upper_bound(round(dr.flip_rate * dr.n), dr.n)
+            rr = analyze_rollout(p_safe, gen_length)
             rp = AuditPhase("rollout 自己回帰的等価", "decided", rr.max_risk)
             rp.lines.append(f"L={gen_length}: survival={rr.survival * 100:.2f}%・"
-                            f"safe_len={rr.safe_length}（per-token 許容 ⇏ per-sequence 許容）")
+                            f"safe_len={rr.safe_length}・p≤{p_safe * 100:.3f}%/tok(上側限界)"
+                            f"（per-token 許容 ⇏ per-sequence 許容）")
             ad.phases.append(rp)
 
     # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。

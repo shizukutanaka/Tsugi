@@ -107,6 +107,29 @@ def test_zero_observed_flips_is_not_false_confidence():
     assert safe.max_risk >= point.max_risk                        # fail-safe 側
 
 
+def test_decode_mode_matches_generation_sampling():
+    # 改善: 生成は argmax だけでない。サンプリング生成では候補集合の分岐が per-token
+    # 発散になる。nucleus/top-k の集合フリップ率は greedy argmax フリップ率以上になりうる
+    # （argmax が同じでも候補集合は分岐しうる）→ サンプリング生成の発散を過小評価しない。
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal((1500, 80)).astype(np.float32)
+    b = a + 5e-2 * rng.standard_normal(a.shape).astype(np.float32)
+    greedy = rollout_from_logits(a, b, target_length=256, decode="greedy")
+    nucleus = rollout_from_logits(a, b, target_length=256, decode="nucleus",
+                                  top_p=0.9, temperature=1.0)
+    topk = rollout_from_logits(a, b, target_length=256, decode="topk", topk=5)
+    # 集合フリップは argmax フリップ以上 → survival は greedy 以下（より厳しい/honest）
+    assert nucleus.flip_rate >= greedy.flip_rate
+    assert topk.flip_rate >= greedy.flip_rate
+    assert nucleus.survival <= greedy.survival + 1e-12
+    # 未知のデコード方式は弾く
+    try:
+        rollout_from_logits(a, b, target_length=10, decode="beam")
+        raise AssertionError("unknown decode mode should raise")
+    except ValueError:
+        pass
+
+
 def test_upper_bound_properties():
     # rule of three 近傍: 0/n の上限 ~ 3/n オーダー、標本増で縮小、点推定以上
     assert flip_rate_upper_bound(0, 0) == 1.0                     # データ無し=最大不確実
@@ -127,6 +150,7 @@ def main() -> int:
         test_verdict_flips_with_generation_length,
         test_rollout_from_logits_uses_per_token_flip_rate,
         test_zero_observed_flips_is_not_false_confidence,
+        test_decode_mode_matches_generation_sampling,
         test_upper_bound_properties,
     ]
     for t in tests:

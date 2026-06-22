@@ -146,25 +146,55 @@ def analyze_rollout(flip_rate: float, target_length: int, *,
     return rep
 
 
+def _per_token_flips(logits_a: np.ndarray, logits_b: np.ndarray, decode: str,
+                     topk: int, top_p: float, temperature: float) -> tuple[int, int]:
+    """デコード方式に整合した per-token フリップ (n_samples, n_flips) を返す。
+
+    生成は argmax だけでない: top-k / nucleus サンプリングでは候補 *集合* が分岐すれば
+    生成分布が分かれる。decision 層の集合フリップ率を再利用し、生成長へ合成する素材にする。
+    """
+    from .decision import decision_flips, nucleus_flip_rate, topk_flip_rate
+
+    a = np.asarray(logits_a)
+    b = np.asarray(logits_b)
+    if decode == "greedy":
+        flips = decision_flips(a, b)
+        return int(flips.size), int(flips.sum())
+    n = int(a.shape[0]) if a.ndim >= 1 else 0
+    if decode == "topk":
+        rate = topk_flip_rate(a, b, topk)
+    elif decode == "nucleus":
+        rate = nucleus_flip_rate(a, b, top_p, temperature)
+    else:
+        raise ValueError(f"unknown decode mode: {decode!r} (greedy/topk/nucleus)")
+    return n, int(round(rate * n))
+
+
 def rollout_from_logits(logits_a: np.ndarray, logits_b: np.ndarray,
                         target_length: int, *, confidence: float = 0.99,
                         conservative: bool = True,
-                        sample_confidence: float = 0.95) -> RolloutReport:
+                        sample_confidence: float = 0.95,
+                        decode: str = "greedy", topk: int = 5,
+                        top_p: float = 0.9, temperature: float = 1.0) -> RolloutReport:
     """代表 logit 群から per-token フリップ率を測り、生成長 L へ合成する。
 
     `conservative=True`（既定）: 観測フリップ率の点推定でなく **上側信頼限界**
     （`flip_rate_upper_bound`）を p に使う。小標本・0 フリップ観測で survival を 100% と
     誤報し移植可を過信する事故を防ぐ（fail-safe）。`conservative=False` で点推定。
 
+    `decode`: 運用のデコード方式に per-token フリップ率を整合させる（改善: 既定の
+    greedy argmax フリップ率は *サンプリング* 生成の per-token 発散を過小評価しうる
+    —— 候補集合が分岐すれば argmax が同じでも生成分布は分かれる）。
+      - "greedy" : argmax フリップ率（貪欲デコード）
+      - "topk"   : top-k 候補集合フリップ率（k=`topk`）
+      - "nucleus": top-p 集合フリップ率（`top_p`/`temperature`・確率依存）
+
     仮定: 渡した logit は生成中の代表的ステップ群で、フリップ率は定常（位置に依らず一定）。
     分布シフト時は再評価が要る（provenance/decision と同じ前提）。
     `survival` は *完全トークン一致* の確率（厳格な下界）であり、意味的に等価な別文は
     「発散」に数える —— task 等価より厳しい側に倒す指標である点に注意。
     """
-    from .decision import decision_flips
-    flips = decision_flips(np.asarray(logits_a), np.asarray(logits_b))
-    n = int(flips.size)
-    k = int(flips.sum())
+    n, k = _per_token_flips(logits_a, logits_b, decode, topk, top_p, temperature)
     p = flip_rate_upper_bound(k, n, sample_confidence) if conservative else (k / n if n else 0.0)
     return analyze_rollout(p, target_length, confidence=confidence)
 
