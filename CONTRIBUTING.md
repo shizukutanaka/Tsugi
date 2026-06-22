@@ -14,6 +14,8 @@ ruff check python/ tests/ examples/
 > （`.gitignore` 除外）されており、**GitHub Actions は実際には走らない**。当面の CI 代替は
 > 上記ローカルの `run.py`（末尾 SUMMARY に CPU PASS 件数と SKIP 件数を表示）+ `verify.py`。
 > GPU 二ベンダー照合は実機が要るため常に SKIP（緑は CPU 検証可能範囲のみを意味する）。
+> CI 定義の正本は追跡可能な [`docs/ci-reference.yml`](docs/ci-reference.yml)。管理者が
+> GitHub UI で `.github/workflows/ci.yml` に反映する（lint 範囲・examples スモークはローカルと一致）。
 
 ### GPU バックエンド層（要実機）
 - LLVM/MLIR（NVPTX + AMDGPU target 有効化ビルド）
