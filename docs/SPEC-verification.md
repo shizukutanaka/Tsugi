@@ -106,13 +106,15 @@
 ### 3.4 rollout — 自己回帰的等価（生成単位・新視点9）
 `sequence_survival(p, length) -> float`（=(1−p)^length）/ `expected_divergence_step(p) -> float`
 （=1/p）/ `safe_generation_length(p, confidence=0.99) -> int` / `divergence_step_quantile(p, q)` /
+`flip_rate_upper_bound(flips, n, confidence=0.95) -> float`（Wilson 片側上限）/
 `analyze_rollout(p, target_length, *, confidence=0.99) -> RolloutReport` /
-`rollout_from_logits(a, b, target_length, *, confidence=0.99)` /
+`rollout_from_logits(a, b, target_length, *, confidence=0.99, conservative=True)` /
 `simulate_rollout(p, length, trials, seed) -> float`
 - 規約: per-token フリップ率 p を生成長 L に合成。シーケンス一致確率 survival=(1−p)^L、初回発散
-  期待位置 1/p。verdict は safe_len 内=OK / survival≥0.5=WARN / 未満=BLOCK。
-- 保証: per-token 許容 ⇏ per-sequence 許容（複利増幅）を露出。**しない**: フリップ率の定常性を
-  仮定（位置非依存）。分布シフト時は再評価が要る（propagation の自己回帰版）。
+  期待位置 1/p。verdict は safe_len 内=OK / survival≥0.5=WARN / 未満=BLOCK。`rollout_from_logits`
+  は既定で p の上側信頼限界を使い小標本の過信を防ぐ（fail-safe）。
+- 保証: per-token 許容 ⇏ per-sequence 許容（複利増幅）を露出。**しない**: survival は *完全一致*
+  の確率（意味等価でない・厳しい側）。フリップ率の定常性を仮定（位置非依存）。propagation の自己回帰版。
 
 ---
 

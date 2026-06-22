@@ -17,6 +17,7 @@ from tsugi.report import Risk  # noqa: E402
 from tsugi.rollout import (  # noqa: E402
     analyze_rollout,
     expected_divergence_step,
+    flip_rate_upper_bound,
     rollout_from_logits,
     safe_generation_length,
     sequence_survival,
@@ -91,6 +92,30 @@ def test_rollout_from_logits_uses_per_token_flip_rate():
     assert longr.flip_rate == short.flip_rate                   # 同じ p を別長へ合成
 
 
+def test_zero_observed_flips_is_not_false_confidence():
+    # 改善: 0 フリップ観測でも p=0 と過信しない（fail-safe）。
+    # 点推定なら survival=100%/safe_len=∞ だが、保守版は上限 p>0 で有限に倒す。
+    rng = np.random.default_rng(0)
+    # 完全一致 logit（フリップ 0）を少標本で
+    a = rng.standard_normal((200, 50)).astype(np.float32)
+    b = a.copy()
+    point = rollout_from_logits(a, b, target_length=10**6, conservative=False)
+    safe = rollout_from_logits(a, b, target_length=10**6, conservative=True)
+    assert point.flip_rate == 0.0 and point.survival == 1.0       # 点推定は過信
+    assert safe.flip_rate > 0.0                                   # 保守版は不確実性を計上
+    assert safe.survival < 1.0                                    # 過信しない
+    assert safe.max_risk >= point.max_risk                        # fail-safe 側
+
+
+def test_upper_bound_properties():
+    # rule of three 近傍: 0/n の上限 ~ 3/n オーダー、標本増で縮小、点推定以上
+    assert flip_rate_upper_bound(0, 0) == 1.0                     # データ無し=最大不確実
+    ub_small = flip_rate_upper_bound(0, 100)
+    ub_large = flip_rate_upper_bound(0, 10000)
+    assert 0.0 < ub_large < ub_small < 0.1                        # n↑ で上限縮小
+    assert flip_rate_upper_bound(5, 100) >= 5 / 100               # 点推定以上（保守）
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -101,6 +126,8 @@ def main() -> int:
         test_monte_carlo_confirms_analytic_survival,
         test_verdict_flips_with_generation_length,
         test_rollout_from_logits_uses_per_token_flip_rate,
+        test_zero_observed_flips_is_not_false_confidence,
+        test_upper_bound_properties,
     ]
     for t in tests:
         try:

@@ -22,10 +22,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from statistics import NormalDist
 
 import numpy as np
 
 from .report import FindingReport, Risk
+
+_INF_LEN = 2 ** 62   # safe_generation_length の実質 ∞（int で扱える上限・p=0 用）
 
 
 def sequence_survival(flip_rate: float, length: int) -> float:
@@ -50,11 +53,32 @@ def safe_generation_length(flip_rate: float, confidence: float = 0.99) -> int:
     """
     p = min(max(flip_rate, 0.0), 1.0)
     if p <= 0.0:
-        return 2 ** 62                       # 実質 ∞（int で扱える上限）
+        return _INF_LEN                      # 実質 ∞
     if p >= 1.0:
         return 0
     c = min(max(confidence, 0.0), 1.0 - 1e-12)
     return int(math.floor(math.log(c) / math.log(1.0 - p)))
+
+
+def flip_rate_upper_bound(flips: int, n_samples: int, confidence: float = 0.95) -> float:
+    """観測フリップ数からの p の片側上側信頼限界（Wilson）。
+
+    盲点の修正: 点推定 p̂=flips/n は小標本で過小評価する。特に 0 フリップ観測でも
+    p=0 を意味しない（rule of three: p ≲ 3/n）。移植可を *過信* するのは calibration
+    （新視点6）の偽OK と同じ致命傷ゆえ、rollout は既定で上限を使い fail-safe に倒す。
+
+    n=0（データ無し）は 1.0（最大不確実＝最も保守的）を返す。
+    """
+    if n_samples <= 0:
+        return 1.0
+    k = min(max(int(flips), 0), int(n_samples))
+    phat = k / n_samples
+    z = NormalDist().inv_cdf(min(max(confidence, 0.5), 1.0 - 1e-12))   # 片側
+    z2 = z * z
+    denom = 1.0 + z2 / n_samples
+    center = phat + z2 / (2.0 * n_samples)
+    margin = z * math.sqrt(phat * (1.0 - phat) / n_samples + z2 / (4.0 * n_samples ** 2))
+    return min(1.0, (center + margin) / denom)
 
 
 def divergence_step_quantile(flip_rate: float, q: float = 0.5) -> float:
@@ -123,14 +147,25 @@ def analyze_rollout(flip_rate: float, target_length: int, *,
 
 
 def rollout_from_logits(logits_a: np.ndarray, logits_b: np.ndarray,
-                        target_length: int, *, confidence: float = 0.99) -> RolloutReport:
+                        target_length: int, *, confidence: float = 0.99,
+                        conservative: bool = True,
+                        sample_confidence: float = 0.95) -> RolloutReport:
     """代表 logit 群から per-token フリップ率を測り、生成長 L へ合成する。
+
+    `conservative=True`（既定）: 観測フリップ率の点推定でなく **上側信頼限界**
+    （`flip_rate_upper_bound`）を p に使う。小標本・0 フリップ観測で survival を 100% と
+    誤報し移植可を過信する事故を防ぐ（fail-safe）。`conservative=False` で点推定。
 
     仮定: 渡した logit は生成中の代表的ステップ群で、フリップ率は定常（位置に依らず一定）。
     分布シフト時は再評価が要る（provenance/decision と同じ前提）。
+    `survival` は *完全トークン一致* の確率（厳格な下界）であり、意味的に等価な別文は
+    「発散」に数える —— task 等価より厳しい側に倒す指標である点に注意。
     """
-    from .decision import flip_rate as _flip_rate
-    p = _flip_rate(logits_a, logits_b)
+    from .decision import decision_flips
+    flips = decision_flips(np.asarray(logits_a), np.asarray(logits_b))
+    n = int(flips.size)
+    k = int(flips.sum())
+    p = flip_rate_upper_bound(k, n, sample_confidence) if conservative else (k / n if n else 0.0)
     return analyze_rollout(p, target_length, confidence=confidence)
 
 

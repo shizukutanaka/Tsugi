@@ -30,8 +30,10 @@ p=1% は 1 トークンでは 99% 一致だが、L=100 で survival=37%、L=1000
 - `divergence_step_quantile(p, q)`: 初回発散位置の q 分位（中央値など）。
 - `analyze_rollout(p, target_length, *, confidence)`: 生成長へ合成して verdict
   （safe_len 内=OK / survival≥0.5=WARN / それ未満=BLOCK）。
-- `rollout_from_logits(a, b, target_length)`: 代表 logit から decision.flip_rate で p を
-  測り合成（定常フリップ率を仮定・分布シフト時は再評価）。
+- `rollout_from_logits(a, b, target_length, *, conservative=True)`: 代表 logit から p を測り
+  合成。既定で `flip_rate_upper_bound` を使い小標本での過信を防ぐ（下記 fail-safe）。
+- `flip_rate_upper_bound(flips, n, confidence)`: 観測フリップ数からの p の片側上側信頼限界
+  （Wilson）。0/n でも p≲3/n（rule of three）を計上する。
 - `simulate_rollout(p, length, trials)`: Monte Carlo で survival を実測し解析式を確認。
 
 ```
@@ -49,6 +51,15 @@ analyze_rollout(0.01, L):
 - safe_generation_length は運用ガイドになる：「このベンダー対では N トークンまで同一
   生成が confidence で保証される」。N が目標生成長より短ければ移植は task 的に未達。
 - audit_runtime に `gen_length` を渡すと rollout 層が verdict に算入される（facade 統合）。
+
+## 限界（正直に）
+
+- **fail-safe な p 推定**: 観測フリップ率の点推定は小標本で過小評価し、0 フリップ観測でも
+  p=0 ではない。移植可を過信するのは calibration（新視点6）の偽OK と同じ致命傷ゆえ、
+  `rollout_from_logits` は既定で上側信頼限界 p を使う（過信より過検出に倒す）。
+- **survival は完全トークン一致の確率**＝厳格な下界。意味的に等価な別文（同義語・語順）も
+  「発散」に数えるので、task 等価より厳しい。意味等価まで測るには別途タスクモデルが要る。
+- **フリップ率の定常性を仮定**（位置非依存）。実際は near-tie の多寡で位置依存しうる。
 
 これでセッションの検証連鎖に *生成長* の次元が加わる: 数値（equivalence）→ タスク
 （decision）→ シーケンス（rollout）と、ユーザーに見える単位へ段階的に引き上がる。

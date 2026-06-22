@@ -327,10 +327,20 @@ def main() -> int:
           and is_stale(_cert, rocm="6.0", driver="560.0"))
 
     # rollout: per-token フリップは自己回帰生成長で複利増幅（per-token 許容 ⇏ per-sequence）
-    from tsugi.rollout import analyze_rollout, sequence_survival, simulate_rollout
+    from tsugi.rollout import (
+        analyze_rollout,
+        rollout_from_logits,
+        sequence_survival,
+        simulate_rollout,
+    )
     check("per-token flip compounds over rollout length (token-OK ⇏ sequence-OK)",
           analyze_rollout(0.01, 1).max_risk < analyze_rollout(0.01, 1000).max_risk
           and abs(sequence_survival(0.01, 100) - simulate_rollout(0.01, 100, 20000, 1)) < 0.02)
+    # rollout fail-safe: 0 フリップ観測でも survival=100% と過信しない（小標本の上限を使う）
+    _ident = np.random.default_rng(0).standard_normal((200, 50)).astype(np.float32)
+    check("rollout does not mistake zero observed flips for zero flip rate (fail-safe)",
+          rollout_from_logits(_ident, _ident.copy(), 10**6, conservative=True).survival < 1.0
+          and rollout_from_logits(_ident, _ident.copy(), 10**6, conservative=False).survival == 1.0)
 
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
