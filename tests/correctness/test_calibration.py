@@ -70,6 +70,29 @@ def test_systematic_check_passes_legitimate_order_divergence():
     assert abs(systematic_divergence(va, vb)) < 1e-3
 
 
+def test_systematic_threshold_is_sensitive_to_safety_constant():
+    # Q6: 定数 SAFETY が判定境界を *実際に* 支配することを境界±で固定する。
+    # 閾値 thresh=SAFETY·u 直上で BLOCK、直下で WAR(>0.5·thresh)、0.5·thresh 直下で OK。
+    # SAFETY を変えれば閾値も動く（thresh を定数から算出して bias を構成）ので、
+    # この境界反転が壊れたら定数の意味が変わったと分かる（silent drift の番人）。
+    from tsugi.constants import SAFETY
+    from tsugi.report import Risk
+    from tsugi.tolerance import unit_roundoff
+
+    a = np.random.default_rng(0).standard_normal((128, 128)).astype(np.float32)
+    thresh = SAFETY * unit_roundoff("float16")
+
+    def risk_at(bias: float) -> Risk:
+        b = (a.astype(np.float64) * (1.0 + bias)).astype(np.float32)
+        return check_systematic(a, b, K=2048, dtype="float16").max_risk
+
+    # 検出限界（K=2048 で ~8.8%）の遥か下でも、境界は定数どおりに反転する
+    assert risk_at(thresh * 1.01) == Risk.BLOCK     # 直上 → fail-safe で BLOCK
+    assert risk_at(thresh * 0.99) == Risk.WARN      # 直下 → WARN 帯
+    assert risk_at(thresh * 0.60) == Risk.WARN      # 0.5·thresh より上 → WARN
+    assert risk_at(thresh * 0.40) == Risk.OK        # 0.5·thresh 未満 → OK
+
+
 def test_combined_verifier_is_trustworthy_corpus():
     # 合成判定（max_abs + 系統）はコーパスで偽OK ゼロ＝信頼に足る
     corpus = make_corpus(seed=0)
@@ -126,6 +149,7 @@ def main() -> int:
         test_max_abs_misses_subfloor_scale_bug,
         test_systematic_check_catches_what_max_abs_misses,
         test_systematic_check_passes_legitimate_order_divergence,
+        test_systematic_threshold_is_sensitive_to_safety_constant,
         test_combined_verifier_is_trustworthy_corpus,
         test_max_abs_alone_is_untrustworthy_corpus,
         test_shared_mode_failure_is_cross_vendor_blind_spot,
