@@ -170,6 +170,23 @@ def test_audit_runtime_includes_decision_when_logits_given():
     assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
 
 
+def test_audit_runtime_adds_rollout_phase_when_gen_length_given():
+    # gen_length を渡すと per-token フリップを生成長へ合成する rollout 層が増える（新視点9）
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    la = rng.standard_normal((2000, 100)).astype(np.float32)
+    lb = la + 3e-3 * rng.standard_normal(la.shape).astype(np.float32)  # 小さな per-token 差
+    short = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=lb, gen_length=1)
+    long = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=lb, gen_length=4000)
+    # gen_length 無しでは rollout 層は付かない
+    base = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=lb)
+    assert not any(p.name.startswith("rollout") for p in base.phases)
+    rp_long = next(p for p in long.phases if p.name.startswith("rollout"))
+    rp_short = next(p for p in short.phases if p.name.startswith("rollout"))
+    # 同じ per-token 差でも長い生成では risk が上がる（複利増幅）
+    assert rp_long.max_risk >= rp_short.max_risk
+
+
 def test_audit_cross_vendor_folds_batch_variance_floor():
     # run_batch を渡すと batch-invariance 床が実効床に合流する（2025 研究の取り込み）
     from tsugi.nondeterminism import simulate_batch_variant_reduction
@@ -236,6 +253,7 @@ def main() -> int:
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
+        test_audit_runtime_adds_rollout_phase_when_gen_length_given,
         test_audit_cross_vendor_folds_batch_variance_floor,
         test_audit_cross_vendor_forwards_provenance,
         test_audit_demo_runs_end_to_end,

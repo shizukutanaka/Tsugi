@@ -326,6 +326,12 @@ def main() -> int:
           not is_stale(_cert, rocm="6.0", driver="550.0")
           and is_stale(_cert, rocm="6.0", driver="560.0"))
 
+    # rollout: per-token フリップは自己回帰生成長で複利増幅（per-token 許容 ⇏ per-sequence）
+    from tsugi.rollout import analyze_rollout, sequence_survival, simulate_rollout
+    check("per-token flip compounds over rollout length (token-OK ⇏ sequence-OK)",
+          analyze_rollout(0.01, 1).max_risk < analyze_rollout(0.01, 1000).max_risk
+          and abs(sequence_survival(0.01, 100) - simulate_rollout(0.01, 100, 20000, 1)) < 0.02)
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)

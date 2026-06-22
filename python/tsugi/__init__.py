@@ -27,6 +27,7 @@ from . import (
     portability,
     propagation,
     provenance,
+    rollout,
     tile,
     tolerance,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "calibration",
     "nondeterminism",
     "decision",
+    "rollout",
     "oracle_check",
     "provenance",
     "audit",

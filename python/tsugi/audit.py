@@ -241,7 +241,8 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
-                  flip_budget: float = 0.001, oracle=None, provenance=None) -> Audit:
+                  flip_budget: float = 0.001, oracle=None, provenance=None,
+                  gen_length: int = 0) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
@@ -303,6 +304,15 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
                         f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
         ad.phases.append(dp)
+
+        # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）
+        if gen_length > 0:
+            from .rollout import analyze_rollout
+            rr = analyze_rollout(dr.flip_rate, gen_length)
+            rp = AuditPhase("rollout 自己回帰的等価", "decided", rr.max_risk)
+            rp.lines.append(f"L={gen_length}: survival={rr.survival * 100:.2f}%・"
+                            f"safe_len={rr.safe_length}（per-token 許容 ⇏ per-sequence 許容）")
+            ad.phases.append(rp)
 
     # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。
     if oracle is not None:

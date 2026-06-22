@@ -103,6 +103,17 @@
 - 保証: 数値発散をタスク影響に翻訳。**しない**: 同点（`tie_rate` 高）では argmax は規約依存＝
   フリップ誤帰属に注意（WARN）。
 
+### 3.4 rollout — 自己回帰的等価（生成単位・新視点9）
+`sequence_survival(p, length) -> float`（=(1−p)^length）/ `expected_divergence_step(p) -> float`
+（=1/p）/ `safe_generation_length(p, confidence=0.99) -> int` / `divergence_step_quantile(p, q)` /
+`analyze_rollout(p, target_length, *, confidence=0.99) -> RolloutReport` /
+`rollout_from_logits(a, b, target_length, *, confidence=0.99)` /
+`simulate_rollout(p, length, trials, seed) -> float`
+- 規約: per-token フリップ率 p を生成長 L に合成。シーケンス一致確率 survival=(1−p)^L、初回発散
+  期待位置 1/p。verdict は safe_len 内=OK / survival≥0.5=WARN / 未満=BLOCK。
+- 保証: per-token 許容 ⇏ per-sequence 許容（複利増幅）を露出。**しない**: フリップ率の定常性を
+  仮定（位置非依存）。分布シフト時は再評価が要る（propagation の自己回帰版）。
+
 ---
 
 ## 4. メタ層（検証器・oracle の信頼性）
@@ -144,9 +155,10 @@
   まとめ 1 判定に集約。`ref_logits` でタスクフリップ率上界も併記。実行時層は pending として列挙。
   `provenance={...}` で verdict を環境 fingerprint に束ねる（§5.1・`Audit.is_stale`）。
 
-`audit_runtime(a_out, b_out, K, *, dtype, env, noise_floor, logits_a, logits_b, flip_budget, oracle=None, provenance=None) -> Audit`
+`audit_runtime(a_out, b_out, K, *, dtype, env, noise_floor, logits_a, logits_b, flip_budget, oracle=None, provenance=None, gen_length=0) -> Audit`
 - 実データで envelope/equivalence(+noise 3 状態)/systematic/decision を回し 1 判定に。
   `oracle` を渡すと correctness 層（detect_shared_mode）も算入。`provenance={...}` で verdict をスタンプ。
+  `gen_length>0` かつ logits 指定で rollout 層（per-token→生成長合成・新視点9）も算入。
 
 `audit_cross_vendor(run_a, run_b, K, *, ..., run_batch=None, batch_tiles, provenance=None) -> Audit`
 - 実機入口: 各ベンダーの noise/batch 床を実測 → audit_runtime。`run_*` は seed/tile → 出力 callable。

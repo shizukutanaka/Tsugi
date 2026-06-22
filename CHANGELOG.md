@@ -5,6 +5,11 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **新視点9: 自己回帰的等価（`tsugi.rollout`）**: per-token フリップ率 p を生成長 L へ合成。
+  自己回帰生成は一度ズレたら戻らず survival=(1−p)^L で複利減衰（p=1% でも L=100 で 37%）。
+  `sequence_survival`/`expected_divergence_step`/`safe_generation_length`/`analyze_rollout`/
+  `rollout_from_logits`/`simulate_rollout`(Monte Carlo 確認)。`audit_runtime(gen_length=L)` で
+  rollout 層を verdict に算入。propagation（per-kernel⇏per-model）の自己回帰版。
 - **lowering spec を DSL 全 op に同期**: `VENDOR_LOWERING` を 6→14 op に拡張
   （`sub`/`mul`/`div`/`max`/`exp`/`sqrt`/`rsqrt`/`reduce` を追加）。softmax/attention/
   norm 系カーネルが silently `<UNSUPPORTED>` に落ちる穴を塞ぐ。`lowering.unlowered_ops(target)`
