@@ -3,7 +3,7 @@
 > 仕様が実装を駆動する（C11）。本書は `tsugi` の **検証 API** の規範仕様。各関数の契約
 > （入力・出力・判定意味論）と、**保証すること / しないこと（盲点）** を定める。
 > コンパイラ/DSL の仕様は [SPEC.md](SPEC.md)、全体マップは [VERIFICATION.md](VERIFICATION.md)。
-> 不変条件は `verify.py`（67）、実行可能な真値は `tests/correctness/`（155 関数）。
+> 不変条件は `verify.py`（69）、実行可能な真値は `tests/correctness/`（161 関数）。
 
 状態: v0.x（API 未凍結）。CPU リファレンスで動作・検証済み。GPU 実行は未検証（要実機）。
 
@@ -124,6 +124,19 @@
   同じ上側信頼限界 p を使う（点推定でなく fail-safe）。
 - 保証: per-token 許容 ⇏ per-sequence 許容（複利増幅）を露出。**しない**: survival は *完全一致*
   の確率（意味等価でない・厳しい側）。フリップ率の定常性を仮定（位置非依存）。propagation の自己回帰版。
+
+### 3.5 worstcase — 最悪ケース発散探索（能動探索・新視点10）
+`divergence(fn_a, fn_b, x, *, relative=True) -> float` /
+`search_worst_input(fn_a, fn_b, x0, *, radius=1.0, steps=400, seed=0, restarts=4, bounds=None) -> (x_worst, div_worst)` /
+`analyze_worst_case(fn_a, fn_b, samples, *, tol, radius=1.0, steps=400, seed=0, bounds=None) -> WorstCaseReport`
+- 規約: 既存層が *代表データ上の率* を測る受動検証なのに対し、box 制約（＝認証エンベロープ）内で
+  発散を最大化する入力を微分フリー探索（黒箱・勾配なし・ランダム再開ヒルクライム）。verdict は
+  worst > tol（エンベロープ内に許容超過の反例）=BLOCK / worst ≤ tol だが典型の ×10 以上=WARN /
+  それ以外=OK。返す `x_worst` は seed 固定で再現する監査可能な反例。
+- 保証: 平均ケース等価 ⇏ 最悪ケース等価（代表データが良性でも踏みうる反例）を露出。envelope と
+  閉ループ（envelope が領域を定義し、worstcase がその内部を突く）。**しない**: 反例生成であって
+  健全性証明でない（見つからない＝等価の証明ではない・探索の網羅性依存）。ヒルクライムは局所最適に
+  嵌りうる（薄い manifold は取り逃す）。box の与え方が結論を左右（envelope の認証領域と一致させる）。
 
 ---
 

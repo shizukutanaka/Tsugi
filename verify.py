@@ -359,6 +359,30 @@ def main() -> int:
           rollout_from_logits(_da, _db, 256, decode="nucleus", top_p=0.9).flip_rate
           >= rollout_from_logits(_da, _db, 256, decode="greedy").flip_rate)
 
+    # 新視点10 worstcase: 平均ケース等価 ⇏ 最悪ケース等価（能動探索が代表を超える反例を発見）
+    from tsugi.worstcase import analyze_worst_case
+
+    def _wc_fp16(x):
+        acc = np.float16(0.0)
+        for v in np.asarray(x, dtype=np.float16):
+            acc = np.float16(acc + np.float16(v * v))
+        return np.array([acc], dtype=np.float64)
+
+    def _wc_fp32(x):
+        return np.array([np.sum(np.asarray(x, dtype=np.float32) ** 2)], dtype=np.float64)
+
+    _wc_samples = [np.random.default_rng(0).standard_normal(64) for _ in range(16)]
+    _wc = analyze_worst_case(_wc_fp16, _wc_fp32, _wc_samples, tol=1e-3,
+                             bounds=(-30.0, 30.0), steps=900, seed=1)
+    check("worst-case search finds in-envelope counterexample average-case verification misses",
+          _wc.typical_divergence < _wc.tol < _wc.worst_divergence
+          and _wc.max_risk == portability.Risk.BLOCK
+          and _wc.x_worst is not None)
+    # 同一ベンダーには偽陽性を出さない（探索しても発散 0）
+    check("worst-case search has no false positive on identical vendors",
+          analyze_worst_case(_wc_fp16, _wc_fp16, _wc_samples, tol=1e-6,
+                             steps=200, seed=0).worst_divergence == 0.0)
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)

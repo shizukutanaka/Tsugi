@@ -43,8 +43,11 @@ QA 文化）、クロスベンダー QA そのものが差別化になる。
 | 6 | `calibration` | 検証器自身は信頼できるか | 偽OK が致命（非対称）。検出限界 safety·√K·u 未満のバグは不可視 | [link](PERSPECTIVE-verifier-calibration.md) |
 | 7 | `nondeterminism` | 出力は再現するか | atomic 非決定で出力は分布。クロス差 ≤ ノイズは INDISTINGUISHABLE | [link](PERSPECTIVE-nondeterminism.md) |
 | 8 | `decision` | ユーザーに見える差は何か | 判断フリップ率（スケール不変）。タスク許容＝マージン分布 | [link](PERSPECTIVE-task-equivalence.md) |
+| 9 | `rollout` | 生成 1 本で一致するか | per-token フリップ率を生成長へ合成。survival=(1−p)^L で複利減衰。per-token 許容 ⇏ per-sequence 許容 | [link](PERSPECTIVE-rollout.md) |
+| 10 | `worstcase` | 最悪入力でも一致するか | 認証エンベロープ内で発散最大化入力を能動探索。平均ケース等価 ⇏ 最悪ケース等価 | [link](PERSPECTIVE-worstcase.md) |
 
 補助: `occupancy`（ベンダー別占有率）・`equivalence`（2 出力の等価判定）・
+`provenance`（verdict の鮮度）・`oracle_check`（oracle 自体の検証）・
 `report`（共通の Risk/Finding/FindingReport）・`audit`（統合ファサード）。
 
 ## 2 つの床（検証器の実効分解能）

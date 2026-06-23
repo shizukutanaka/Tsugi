@@ -66,6 +66,12 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
   / verify 50 不変条件。
 
 ### Added
+- **新視点10: 最悪ケース発散探索（`tsugi.worstcase`）**: 既存全視点は *代表データ上の率* を測る
+  受動検証だが、本番入力を選ぶのはユーザー（時に敵対者）。認証エンベロープ（box 制約）内で発散を
+  最大化する入力を微分フリー探索（黒箱・ランダム再開ヒルクライム）し、平均ケース等価 ⇏ 最悪ケース
+  等価を露出。許容超過の反例がエンベロープ内に見つかれば BLOCK（envelope が緩い）。`x_worst` は
+  seed 固定で再現する監査可能な反例。`divergence`/`search_worst_input`/`analyze_worst_case`。
+  envelope（領域を定義）と閉ループ（worstcase がその内部を突く）。ML の adversarial/fuzzing の移植版。
 - **propagation の DAG 対応（Q12 完了）**: `propagate_dag(nodes, *, correlated=)` ＋
   `merge_divergence(divs, *, correlated=)`。線形列だけだった伝播をフォーク→合流へ一般化し、
   attention 並列ヘッド・残差・concat の series-parallel DAG を表現。合流則は独立(√Σδ²・希釈)/
@@ -82,7 +88,7 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 - **facade の rollout fail-safe 漏れ**: `audit_runtime(gen_length>0)` の rollout 層が点推定
   `flip_rate` を使い、standalone に入れた上側信頼限界（0 フリップ観測≠p=0）をバイパスしていた。
   完全一致 logit でも巨大 L で survival=100% と過信する穴を塞ぎ、facade も `flip_rate_upper_bound`
-  を通すよう修正（standalone と fail-safe を一致）。テスト 155 関数 / verify 67 不変条件。
+  を通すよう修正（standalone と fail-safe を一致）。テスト 161 関数 / verify 69 不変条件。
 
 ## [0.2.0] — 2026-06-16
 検証層を 8 視点 + メタ(calibration) + 基盤(nondeterminism) + 翻訳(decision) へ拡張し、

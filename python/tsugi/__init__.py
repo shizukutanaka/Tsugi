@@ -30,6 +30,7 @@ from . import (
     rollout,
     tile,
     tolerance,
+    worstcase,
 )
 from .audit import Audit, audit, audit_cross_vendor, audit_runtime
 from .compile import compile  # noqa: A004
@@ -52,6 +53,7 @@ __all__ = [
     "nondeterminism",
     "decision",
     "rollout",
+    "worstcase",
     "oracle_check",
     "provenance",
     "audit",
