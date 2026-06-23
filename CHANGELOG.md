@@ -5,6 +5,15 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
+- **DRY 再発防止 + 残存マジック数の排除（第3回）**:
+  1. **`_LayerProfileMixin` で `spike_name`/`onset_name` を一元化**: `AttributionReport` と
+     `DiagnosisReport` が同一の層名解決ロジックを別々に実装しており、片方がメソッド・片方が
+     `@property` に drift した（第2回で修正）。共有ミックスインに集約し、両クラスが継承する
+     ことで構造的に再発を防止。重複 ~20 行を削減。
+  2. **attribution.py の `tol * 10` を `_BLOCK_DIV_RATIO = 10.0` 定数化**: `attribute()` と
+     `diagnose()` に残っていた 2 箇所のマジック数を排除。blame の `_BLOCK_DIST_RATIO` と同一論拠を
+     docstring に明記し、診断チェーン全体で同じ閾値を使うことを示した。
+
 - **5つの弱点を修正（長所短所分析→改良・第2回）**:
   1. **API 一貫性**: `AttributionReport.spike_name`/`onset_name` をメソッドから `@property` に変換。
      `DiagnosisReport` はすでに `@property` だったため、両クラスの呼び出し規約が一致した。

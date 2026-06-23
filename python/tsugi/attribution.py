@@ -40,6 +40,11 @@ import numpy as np
 
 from .report import FindingReport, Risk
 
+# 最終発散が tol の何倍を超えたら WARN → BLOCK に格上げするか。
+# blame._BLOCK_DIST_RATIO と同じ論拠（tolerance は safety·√K·u マージン込みで、その 10× 超は
+# 安全マージンを考慮してもなお大幅超過 = 系統誤り）。診断チェーン全体で同一の閾値を使う。
+_BLOCK_DIV_RATIO: float = 10.0
+
 
 def layer_divergences(layers_a, layers_b, x, *, relative: bool = True) -> list[float]:
     """各層を通過した後の 2 ベンダー発散を測る（prefix scan）。
@@ -89,8 +94,34 @@ def find_spike(divs: list[float]) -> int | None:
     return int(np.argmax(deltas))
 
 
+class _LayerProfileMixin:
+    """spike/onset の層名解決を共有する（AttributionReport と DiagnosisReport で同一実装）。
+
+    self.spike / self.onset / self.layer_names を前提とする。両レポートで別々に実装すると
+    片方だけメソッド・片方だけ @property のように規約が drift する（実際に起きた）ため一元化。
+    """
+
+    layer_names: list[str]
+    spike: int | None
+    onset: int | None
+
+    @property
+    def spike_name(self) -> str:
+        if self.spike is None or self.spike >= len(self.layer_names):
+            return f"layer[{self.spike}]"
+        return self.layer_names[self.spike]
+
+    @property
+    def onset_name(self) -> str:
+        if self.onset is None:
+            return "(none)"
+        if self.onset >= len(self.layer_names):
+            return f"layer[{self.onset}]"
+        return self.layer_names[self.onset]
+
+
 @dataclass
-class AttributionReport(FindingReport):
+class AttributionReport(_LayerProfileMixin, FindingReport):
     """per-layer 発散プロファイルと onset/spike の所見。"""
 
     layer_names: list[str] = field(default_factory=list)
@@ -106,20 +137,6 @@ class AttributionReport(FindingReport):
     @property
     def final_divergence(self) -> float:
         return self.divs[-1] if self.divs else 0.0
-
-    @property
-    def spike_name(self) -> str:
-        if self.spike is None or self.spike >= len(self.layer_names):
-            return f"layer[{self.spike}]"
-        return self.layer_names[self.spike]
-
-    @property
-    def onset_name(self) -> str:
-        if self.onset is None:
-            return "(none)"
-        if self.onset >= len(self.layer_names):
-            return f"layer[{self.onset}]"
-        return self.layer_names[self.onset]
 
     def to_text(self) -> str:  # type: ignore[override]
         return super().to_text(
@@ -163,7 +180,7 @@ def attribute(layers_a, layers_b, x, *, tol: float, names=None,
     else:
         final = divs[-1]
         spike_delta = (divs[spike] - (divs[spike - 1] if spike > 0 else 0.0)) if spike is not None else 0.0
-        risk = Risk.BLOCK if final > tol * 10 else Risk.WARN
+        risk = Risk.BLOCK if final > tol * _BLOCK_DIV_RATIO else Risk.WARN
         rep.add(risk, "attribution",
                 f"発散 onset={rep.onset_name} (div={divs[onset]:.2e}) | "
                 f"dominant spike={rep.spike_name} (Δ={spike_delta:.2e}) | "
@@ -179,7 +196,7 @@ def attribute(layers_a, layers_b, x, *, tol: float, names=None,
 
 
 @dataclass
-class DiagnosisReport(FindingReport):
+class DiagnosisReport(_LayerProfileMixin, FindingReport):
     """attribution + blame の統合診断レポート。
 
     「どの層か」（onset/spike）と「どちらのベンダーか」（spike 層での blame）を1回で返す。
@@ -194,20 +211,6 @@ class DiagnosisReport(FindingReport):
     spike_dist_a: float = 0.0    # spike 層での A の oracle 距離
     spike_dist_b: float = 0.0    # spike 層での B の oracle 距離
     spike_closer: str = "TIED"   # "A" / "B" / "TIED"（spike 層の責帰）
-
-    @property
-    def spike_name(self) -> str:
-        if self.spike is None or self.spike >= len(self.layer_names):
-            return f"layer[{self.spike}]"
-        return self.layer_names[self.spike]
-
-    @property
-    def onset_name(self) -> str:
-        if self.onset is None:
-            return "(none)"
-        if self.onset >= len(self.layer_names):
-            return f"layer[{self.onset}]"
-        return self.layer_names[self.onset]
 
     def to_text(self) -> str:  # type: ignore[override]
         blamed = "B" if self.spike_closer == "A" else ("A" if self.spike_closer == "B" else "?")
@@ -257,7 +260,7 @@ def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
     else:
         final = divs[-1]
         spike_delta = (divs[spike] - (divs[spike - 1] if spike > 0 else 0.0)) if spike is not None else 0.0
-        risk = Risk.BLOCK if final > tol * 10 else Risk.WARN
+        risk = Risk.BLOCK if final > tol * _BLOCK_DIV_RATIO else Risk.WARN
         rep.add(risk, "diagnosis",
                 f"onset={rep.onset_name} (div={divs[onset]:.2e}) | "
                 f"spike={rep.spike_name} (Δ={spike_delta:.2e}) | "
