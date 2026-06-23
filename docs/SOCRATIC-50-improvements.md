@@ -139,10 +139,12 @@ propagation GraphOp へ写す（duck-typed・torch 不要でテスト）。実 t
 ## F. タスクモデルの狭さ（decision）（Q29–32）
 
 **Q29.** decision は分類 argmax 前提。回帰・生成・検出は？
-→ argmax 固定。**改善: task 種別を抽象化（分類/回帰しきい値/生成トークン）。**
+→ ✅修正済（新視点11）: `compare_task(task=regression/binary/ranking)` 追加。
+  回帰は `|a-b|>atol+rtol·|a|`、バイナリは threshold 跨ぎ、ランキングは top-k 集合変化。
 
 **Q30.** margin = top1−top2 は多クラス前提。2 値 sigmoid（しきい値 0.5）では？
-→ 別定義（|logit−threshold|）。**改善: 2 値タスクのマージン定義を追加。**
+→ ✅修正済（新視点11）: `binary_margin(a, threshold=0.5)` = |a − threshold| を追加。
+  near-tie（threshold 付近）での flakiness が見えるようになった。
 
 **Q31.** flip は「正しさ」でなく「一致」を測る。両ベンダーとも同じく誤るケースは？
 → flip=0 でも両方間違いはある。**改善: oracle がある検証集合では accuracy 差も併記。**
@@ -253,6 +255,7 @@ max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防
 **P2（後・要設計/実機）**
 - ✅ Q12（修正済）: propagation の DAG 対応（`propagate_dag`＋`merge_divergence`・series-parallel）。
   残 Q11: scale 伝播（正規化での発散リセット）と一般 DAG の交差辺。
+- ✅ Q29/Q30（修正済）: 新視点11 `compare_task(task=regression/binary/ranking)` で argmax 外のタスクを対応。
 - Q29–32: decision の task 多様性（回帰/生成/サンプリング）。
 - Q50: 実機 e2e（最重要だが GPU 必須）。
 

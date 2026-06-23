@@ -45,6 +45,7 @@ QA 文化）、クロスベンダー QA そのものが差別化になる。
 | 8 | `decision` | ユーザーに見える差は何か | 判断フリップ率（スケール不変）。タスク許容＝マージン分布 | [link](PERSPECTIVE-task-equivalence.md) |
 | 9 | `rollout` | 生成 1 本で一致するか | per-token フリップ率を生成長へ合成。survival=(1−p)^L で複利減衰。per-token 許容 ⇏ per-sequence 許容 | [link](PERSPECTIVE-rollout.md) |
 | 10 | `worstcase` | 最悪入力でも一致するか | 認証エンベロープ内で発散最大化入力を能動探索。平均ケース等価 ⇏ 最悪ケース等価 | [link](PERSPECTIVE-worstcase.md) |
+| 11 | `decision`（拡張） | 分類以外のタスクでも一致するか | 回帰/バイナリ/ランキングのフリップ率。argmax を非分類タスクに使うと静かに誤計算する | [link](PERSPECTIVE-task-diversity.md) |
 
 補助: `occupancy`（ベンダー別占有率）・`equivalence`（2 出力の等価判定）・
 `provenance`（verdict の鮮度）・`oracle_check`（oracle 自体の検証）・

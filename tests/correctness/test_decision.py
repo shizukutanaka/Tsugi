@@ -13,13 +13,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 import numpy as np  # noqa: E402
 
 from tsugi.decision import (  # noqa: E402
+    binary_flip_rate,
+    binary_margin,
     compare_decisions,
+    compare_task,
     decision_flips,
     decompose_divergence,
     flip_rate,
     margin,
     nucleus_flip_rate,
     predicted_flip_bound,
+    ranking_flip_rate,
+    regression_flip_rate,
     residual_divergence_rms,
     tie_rate,
     topk_flip_rate,
@@ -166,6 +171,88 @@ def test_residual_bound_tighter_than_total_for_systematic():
     assert actual <= resid_bound + 1e-9          # 残差 bound も上界として成立
 
 
+def test_regression_flip_rate_matches_value_closeness():
+    # 新視点11: 回帰タスクの判断は「値が近いか」。rtol 以内は flip しない。
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal(2000).astype(np.float32)
+    # 全サンプルで |a-b| = 0.1 * |a|（ちょうど rtol=0.1 の境界）
+    b_on = a * (1.0 + 1e-9)           # < rtol=0.1 → no flip
+    b_over = a * 1.2                   # 20% 差 > rtol=0.1 → 全 flip
+    assert regression_flip_rate(a, b_on, rtol=0.1) == 0.0
+    assert regression_flip_rate(a, b_over, rtol=0.1) == 1.0
+    # atol 絶対値で clamp: 小値は atol に守られる
+    tiny = np.full(100, 1e-6, dtype=np.float64)
+    assert regression_flip_rate(tiny, tiny + 1e-7, atol=1e-5, rtol=0.0) == 0.0
+
+
+def test_binary_flip_rate_detects_threshold_crossing():
+    # バイナリ分類: sigmoid 出力が threshold 0.5 を跨ぐ率。
+    # 大きなマージン（>0.3）では発散があっても threshold 跨がない。near-tie で跨ぐ。
+    a = np.array([0.9, 0.7, 0.6, 0.5, 0.4, 0.3, 0.1])
+    b = a + np.array([-0.05, -0.1, -0.2, 0.2, 0.2, 0.1, 0.05])
+    fr = binary_flip_rate(a, b)
+    # threshold 跨ぎ: 0.4 + 0.2 = 0.6 (positive), 0.3+0.1=0.4→0.3 (ここだけ-側 to -側=same)
+    # index 4: 0.4 → 0.6 (跨ぎ: neg→pos = flip)  index 5: 0.3→0.4 (neg→neg, no flip)
+    assert 0.0 < fr < 1.0
+    # 全部同値なら flip 0
+    assert binary_flip_rate(a, a.copy()) == 0.0
+    # 全部 threshold 反対側なら flip 1
+    high = np.full(5, 0.9)
+    low = np.full(5, 0.1)
+    assert binary_flip_rate(high, low) == 1.0
+    # margin: threshold から遠いほど大きい
+    m = binary_margin(np.array([0.9, 0.5, 0.1]))
+    assert m[0] > m[1] and m[2] > m[1]
+
+
+def test_ranking_flip_rate_measures_top_k_set_change():
+    # 上位 k 集合が変わるサンプル率。argmax フリップと topk_flip_rate の listwise 版。
+    rng = np.random.default_rng(1)
+    docs = 100
+    scores_a = rng.standard_normal(docs)
+    # 極めて小さな摂動: top-10 集合は変わらない（境界付近の値が無ければ順位不変）
+    scores_b_close = scores_a + 1e-9 * rng.standard_normal(docs)
+    # 大きな摂動（独立乱数）: top-10 は壊れやすい
+    scores_b_far = rng.standard_normal(docs)
+    assert ranking_flip_rate(scores_a, scores_b_close, k=10) == 0.0  # ランキング不変
+    assert ranking_flip_rate(scores_a, scores_b_far, k=10) == 1.0    # ほぼ確実に壊れる
+    # 完全同一は 0
+    assert ranking_flip_rate(scores_a, scores_a.copy(), k=10) == 0.0
+    # バッチ形式
+    A = np.vstack([scores_a] * 10)
+    B = np.vstack([scores_b_far] * 10)
+    assert 0.0 < ranking_flip_rate(A, B, k=10) <= 1.0
+
+
+def test_compare_task_regression_blocks_large_value_drift():
+    # compare_task は回帰フリップ率が予算を超えれば BLOCK する
+    rng = np.random.default_rng(2)
+    a = rng.standard_normal(1000).astype(np.float32)
+    b = a + 5.0 * rng.standard_normal(1000).astype(np.float32)
+    rep = compare_task(a, b, task="regression", flip_budget=0.05, rtol=0.01)
+    assert rep.flip_rate > 0.0
+    assert rep.max_risk.value >= 2   # WARN or BLOCK
+    assert compare_task(a, a.copy(), task="regression", rtol=0.01).max_risk.value == 0
+
+
+def test_compare_task_binary_ok_for_large_margin():
+    # binary タスクの大マージン出力はベンダー差があっても flip しない
+    a = np.array([0.95, 0.05, 0.9, 0.1] * 100)
+    b = a + 0.02 * np.random.default_rng(3).standard_normal(len(a))
+    rep = compare_task(a, b, task="binary", flip_budget=0.01)
+    assert rep.flip_rate == 0.0
+    assert rep.max_risk.value == 0   # OK
+
+
+def test_compare_task_unknown_raises():
+    # 未知タスク種別は ValueError を投げる（静かに誤計算しない）
+    try:
+        compare_task(np.ones(10), np.ones(10), task="segmentation")
+        raise AssertionError("should raise")
+    except ValueError:
+        pass
+
+
 def test_flip_bound_from_divergence_bridges_propagation_to_task():
     # propagation の相対発散 → タスクフリップ率上界。第2ベンダー無しで予測でき、
     # 同じ δ で実際に摂動したフリップ率の上界になっている（保守的）。
@@ -196,6 +283,12 @@ def main() -> int:
         test_systematic_affine_divergence_does_not_flip,
         test_residual_bound_tighter_than_total_for_systematic,
         test_flip_bound_from_divergence_bridges_propagation_to_task,
+        test_regression_flip_rate_matches_value_closeness,
+        test_binary_flip_rate_detects_threshold_crossing,
+        test_ranking_flip_rate_measures_top_k_set_change,
+        test_compare_task_regression_blocks_large_value_drift,
+        test_compare_task_binary_ok_for_large_margin,
+        test_compare_task_unknown_raises,
     ]
     for t in tests:
         try:

@@ -161,6 +161,136 @@ def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float) ->
     return predicted_flip_bound(ref_logits, rel_divergence * scale)
 
 
+# ── 新視点11: タスク多様性 — argmax ⇏ 全タスク ─────────────────────────────────
+# argmax フリップ率は多クラス分類専用。回帰・バイナリ・ランキングへ拡張する。
+
+def regression_flip_rate(a: np.ndarray, b: np.ndarray, *,
+                         atol: float = 0.0, rtol: float = 1e-3) -> float:
+    """回帰タスクの判断フリップ率: 出力値が atol+rtol·|a| を超えて乖離するサンプル率。
+
+    argmax は回帰に意味がない——値そのものが判断。許容は入力規模に相対的な rtol と
+    絶対的な atol の組み合わせ（numpy allclose と整合）。
+    スケール不変でないため rtol の設定はタスク依存（例: 価格予測では 0.1%, 物理シミュは 1e-5）。
+    """
+    a_ = np.asarray(a, dtype=np.float64).ravel()
+    b_ = np.asarray(b, dtype=np.float64).ravel()
+    if a_.size == 0:
+        return 0.0
+    tol = atol + rtol * np.abs(a_)
+    return float(np.mean(np.abs(a_ - b_) > tol))
+
+
+def binary_flip_rate(a: np.ndarray, b: np.ndarray, *,
+                     threshold: float = 0.5) -> float:
+    """バイナリ分類の判断フリップ率: sigmoid 出力が threshold を跨ぐサンプル率。
+
+    argmax よりもマージン（= |出力 − threshold|）が支配する:
+    大きなマージンで同じ判断・0 付近でフリップしやすい（argmax の margin と類似の役割）。
+    量子化（int8）や dtype 変換で threshold 付近の出力が揺れやすい（tie_rate と対応）。
+    """
+    a_ = np.asarray(a, dtype=np.float64).ravel()
+    b_ = np.asarray(b, dtype=np.float64).ravel()
+    if a_.size == 0:
+        return 0.0
+    return float(np.mean((a_ >= threshold) != (b_ >= threshold)))
+
+
+def binary_margin(a: np.ndarray, *, threshold: float = 0.5) -> np.ndarray:
+    """バイナリ出力の決定境界からのマージン（= |a − threshold|）。
+
+    argmax タスクの margin(logit) に相当。小さいほど near-tie（フリップしやすい）。
+    """
+    return np.abs(np.asarray(a, dtype=np.float64).ravel() - threshold)
+
+
+def ranking_flip_rate(scores_a: np.ndarray, scores_b: np.ndarray, *, k: int = 10) -> float:
+    """ランキングタスクの判断フリップ率: top-k アイテム集合がベンダー間で変わる率。
+
+    検索/推薦システムでは「上位 k 件が同じか」がユーザーに見える差。スコア値自体の
+    乖離より集合一致が重要（argmax の topk_flip_rate と同じ思想・ndim=1 の listwise 版）。
+    """
+    a_ = np.asarray(scores_a, dtype=np.float64)
+    b_ = np.asarray(scores_b, dtype=np.float64)
+    if a_.ndim == 1:
+        kk = min(k, a_.size)
+        ta = set(np.argpartition(a_, -kk)[-kk:])
+        tb = set(np.argpartition(b_, -kk)[-kk:])
+        return 0.0 if ta == tb else 1.0
+    n = a_.shape[0]
+    kk = min(k, a_.shape[-1])
+    ta = np.argpartition(a_, -kk, axis=-1)[:, -kk:]
+    tb = np.argpartition(b_, -kk, axis=-1)[:, -kk:]
+    ta.sort(axis=-1)
+    tb.sort(axis=-1)
+    return float(np.mean(np.any(ta != tb, axis=-1))) if n else 0.0
+
+
+@dataclass
+class TaskReport(FindingReport):
+    """非分類タスク（回帰/バイナリ/ランキング）の判断フリップ所見。
+
+    DecisionReport は argmax 分類専用。TaskReport はタスク種別に応じた flip_rate を持つ。
+    """
+
+    task: str = "regression"     # "regression" / "binary" / "ranking"
+    flip_rate: float = 0.0
+    n: int = 0
+    threshold: float = 0.5       # binary のみ
+    k: int = 10                  # ranking のみ
+    atol: float = 0.0            # regression のみ
+    rtol: float = 1e-3           # regression のみ
+
+    def to_text(self) -> str:  # type: ignore[override]
+        detail = ""
+        if self.task == "binary":
+            detail = f", threshold={self.threshold}"
+        elif self.task == "ranking":
+            detail = f", k={self.k}"
+        elif self.task == "regression":
+            detail = f", atol={self.atol:.1e}, rtol={self.rtol:.1e}"
+        return super().to_text(
+            header=(f"task={self.task} flip_rate={self.flip_rate * 100:.2f}% "
+                    f"(n={self.n}{detail})"),
+            empty=f"(no {self.task} decision flips — task-equivalent)")
+
+
+def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
+                 flip_budget: float = 0.0, threshold: float = 0.5, k: int = 10,
+                 atol: float = 0.0, rtol: float = 1e-3) -> TaskReport:
+    """非分類タスク（回帰/バイナリ/ランキング）のタスクレベル等価判定。
+
+    task: "regression"（値の許容乖離）/ "binary"（sigmoid+threshold）/
+          "ranking"（top-k 集合一致）。
+    分類は compare_decisions へ（argmax は多クラス専用）。
+
+    これにより decision 層が非分類タスクの出荷判断を持てる:
+      - regression モデル（価格/物理量/埋め込み距離）
+      - バイナリ分類（医療診断/スパム/異常検知）
+      - 検索・推薦（上位 k 件が変わるか）
+    """
+    a_ = np.asarray(a, dtype=np.float64)
+    b_ = np.asarray(b, dtype=np.float64)
+    n = int(a_.ravel().size)
+    if task == "regression":
+        fr = regression_flip_rate(a_, b_, atol=atol, rtol=rtol)
+    elif task == "binary":
+        fr = binary_flip_rate(a_, b_, threshold=threshold)
+    elif task == "ranking":
+        fr = ranking_flip_rate(a_, b_, k=k)
+    else:
+        raise ValueError(f"unknown task: {task!r} (regression/binary/ranking)")
+    rep = TaskReport(task=task, flip_rate=fr, n=n,
+                     threshold=threshold, k=k, atol=atol, rtol=rtol)
+    if fr > flip_budget:
+        risk = Risk.BLOCK if fr > max(10 * flip_budget, 0.01) else Risk.WARN
+        rep.add(risk, "task",
+                f"{task} フリップ率 {fr * 100:.2f}% > 予算 {flip_budget * 100:.2f}%"
+                " → ベンダー間でユーザーに見える判断が変わる")
+    elif fr > 0.0:
+        rep.add(Risk.INFO, "task", f"{task} フリップ {fr * 100:.2f}%（予算内）")
+    return rep
+
+
 @dataclass
 class DecisionReport(FindingReport):
     flip_rate: float = 0.0

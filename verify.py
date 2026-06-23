@@ -306,7 +306,21 @@ def main() -> int:
     _q = np.round(np.random.default_rng(0).standard_normal((1000, 40)) * 3).astype(np.float32)
     check("tie_rate exposes convention-dependent decisions (quantized ties)",
           tie_rate(_q) > 0.1 and tie_rate(_z) < 0.01)
-
+    # 新視点11 タスク多様性: regression/binary/ranking は argmax と独立に flip を測れる
+    from tsugi.decision import (binary_flip_rate, ranking_flip_rate,
+                                regression_flip_rate)
+    _r_a = np.random.default_rng(9).standard_normal(1000)
+    check("regression_flip_rate respects rtol boundary (0 below, 1 above)",
+          regression_flip_rate(_r_a, _r_a * 1.0 + 1e-9, rtol=0.01) == 0.0
+          and regression_flip_rate(_r_a, _r_a * 2.0, rtol=0.01) == 1.0)
+    _b_a = np.clip(np.random.default_rng(10).standard_normal(500) * 0.3 + 0.5, 0, 1)
+    check("binary_flip_rate: identical outputs have no flips",
+          binary_flip_rate(_b_a, _b_a.copy()) == 0.0
+          and binary_flip_rate(np.full(100, 0.9), np.full(100, 0.1)) == 1.0)
+    _rk = np.random.default_rng(11).standard_normal(100)
+    check("ranking_flip_rate: negligible perturbation preserves top-k set",
+          ranking_flip_rate(_rk, _rk + 1e-9, k=10) == 0.0
+          and ranking_flip_rate(_rk, np.random.default_rng(12).standard_normal(100), k=10) == 1.0)
     # shared-mode 障害: cross-vendor 一致は必要十分でない（oracle 照合で初めて見える盲点）
     from tsugi.calibration import SM_SHARED, detect_shared_mode
     _orc = np.random.default_rng(0).standard_normal((32, 32)).astype(np.float32)

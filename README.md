@@ -35,6 +35,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **非決定性の考慮** — `tsugi.nondeterminism` が GPU の run-to-run ノイズを実測し、出力を分布として比較。クロス差がノイズ未満なら INDISTINGUISHABLE と正直に判定（単一 run 比較のフレークを排す・新視点7）
 - **タスクレベル等価** — `tsugi.decision` が数値発散でなく判断フリップ率（argmax/選択トークンの変化）で等価を測る。フリップ率 ≤ P(margin<2δ)・タスク許容はマージン分布（新視点8）
 - **自己回帰的等価** — `tsugi.rollout` が per-token フリップ率を生成長へ合成。自己回帰生成では一度ズレたら戻らず survival=(1−p)^L で複利減衰（p=1% でも L=100 で 37%）。per-token 許容 ⇏ per-sequence 許容（propagation の自己回帰版・新視点9）
+- **タスク多様性** — `tsugi.decision` の `compare_task` が回帰（値の相対/絶対許容）・バイナリ（sigmoid+threshold 跨ぎ）・ランキング（top-k 集合変化）のフリップ率を測る。argmax を非分類タスクに使うと flip_rate=0 に固まる静かな誤用を防ぐ（新視点11）
 - **最悪ケース発散探索** — `tsugi.worstcase` が認証エンベロープ内で発散を最大化する入力を能動探索（黒箱・微分フリー）。代表データ上は良性でも、許容超過の反例がエンベロープ内に在れば BLOCK。平均ケース等価 ⇏ 最悪ケース等価（受動測定への能動反証・envelope と閉ループ・新視点10）
 - **統合監査** — `tsugi.audit` が 8 視点＋メタ＋基盤を 1 つの判定に束ね、静的層の verdict と実行時チェックリスト（実機データが要る層）をライフサイクル順に一望（運用統合）
 - **verdict の鮮度保証** — `tsugi.provenance` が監査結果を環境フィンガープリント（python/numpy/driver/rocm/cuda）に束ね、スタック更新で `is_stale` を自動判定。「一度 OK＝永遠に OK」を排す（時間軸の統合）
@@ -104,7 +105,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 完成形ファイル（仕様/ADR/README/FAQ/Benchmark/SPEC-verification） | ✅ 完了 | — |
 | リファレンス実装（CPU/NumPy・正しさの真値） | ✅ 完了 | test_reference（数値真値） |
 | 上流コンパイラ（DSL→tsugi.tile IR→各社intrinsic写像） | ✅ 完了 | DSL 全14opにlowering同期（drift不変条件）・tracer/compile テスト |
-| 不変条件 verify | ✅ 完了 | verify.py 69/69 invariants・全24スイート161テスト関数PASS |
+| 不変条件 verify | ✅ 完了 | verify.py 72/72 invariants・全24スイート167テスト関数PASS |
 | 移植性検証層（portability・新視点） | ✅ 完了 | warp/MMA/bf16/累積順序 リスク検出 |
 | 数値等価性層（equivalence・新視点） | ✅ 完了 | 擬似ベンダーで発散検出を実証 |
 | 占有率推定（occupancy） | ✅ 完了 | 一次情報源HW値・同一構成のベンダー差 |

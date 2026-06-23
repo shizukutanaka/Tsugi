@@ -3,7 +3,7 @@
 > 仕様が実装を駆動する（C11）。本書は `tsugi` の **検証 API** の規範仕様。各関数の契約
 > （入力・出力・判定意味論）と、**保証すること / しないこと（盲点）** を定める。
 > コンパイラ/DSL の仕様は [SPEC.md](SPEC.md)、全体マップは [VERIFICATION.md](VERIFICATION.md)。
-> 不変条件は `verify.py`（69）、実行可能な真値は `tests/correctness/`（161 関数）。
+> 不変条件は `verify.py`（72）、実行可能な真値は `tests/correctness/`（167 関数）。
 
 状態: v0.x（API 未凍結）。CPU リファレンスで動作・検証済み。GPU 実行は未検証（要実機）。
 
@@ -103,8 +103,13 @@
 ### 3.3 decision — タスクレベル等価（最終単位）
 `flip_rate(a,b)` / `topk_flip_rate(a,b,k)` / `nucleus_flip_rate(a,b,p,temperature)` /
 `tie_rate(logits,eps)` / `margin(logits)` / `predicted_flip_bound(ref,delta)` /
-`compare_decisions(a,b,*,flip_budget,ref,topk,top_p,temperature) -> DecisionReport`
-- 規約: 判断（argmax/top-k 集合/top-p 集合）のフリップ率で測る。スケール不変（argmax/top-k）/
+`compare_decisions(a,b,*,flip_budget,ref,topk,top_p,temperature) -> DecisionReport` /
+`regression_flip_rate(a,b,*,atol,rtol)` / `binary_flip_rate(a,b,*,threshold)` /
+`binary_margin(a,*,threshold)` / `ranking_flip_rate(scores_a,scores_b,*,k)` /
+`compare_task(a,b,*,task,flip_budget,...) -> TaskReport`（新視点11）
+- 規約: 多クラス分類は argmax フリップ率（スケール不変）。**非分類タスク（新視点11）**: 回帰は
+  |a-b|>atol+rtol·|a|、バイナリ sigmoid は threshold 跨ぎ、ランキングは top-k 集合変化。
+  未知タスク種別は ValueError で弾く（静かに誤計算しない）。スケール不変（argmax/top-k）/
   確率依存（nucleus）。bound は残差（argmax 保存的アフィン系統成分を除く）で評価。
 - 保証: 数値発散をタスク影響に翻訳。**しない**: 同点（`tie_rate` 高）では argmax は規約依存＝
   フリップ誤帰属に注意（WARN）。

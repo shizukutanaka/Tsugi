@@ -5,6 +5,12 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **新視点11: タスク多様性 — argmax ⇏ 全タスク（`tsugi.decision` 拡張）**: argmax 分類専用だった
+  decision 層を非分類タスクへ拡張（Q29/Q30）。`regression_flip_rate`（値の相対/絶対許容乖離）・
+  `binary_flip_rate`（sigmoid+threshold 跨ぎ）・`binary_margin`（決定境界距離）・
+  `ranking_flip_rate`（top-k 集合変化・listwise）・`compare_task(task=regression/binary/ranking)`。
+  バイナリ sigmoid に argmax を適用すると flip_rate = 0 に固まり何も測れていなかった（静かな誤用）。
+  未知 task 種別は ValueError で弾き、静かな誤計算を防ぐ（fail-safe）。
 - **新視点9: 自己回帰的等価（`tsugi.rollout`）**: per-token フリップ率 p を生成長 L へ合成。
   自己回帰生成は一度ズレたら戻らず survival=(1−p)^L で複利減衰（p=1% でも L=100 で 37%）。
   `sequence_survival`/`expected_divergence_step`/`safe_generation_length`/`analyze_rollout`/
@@ -88,7 +94,7 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 - **facade の rollout fail-safe 漏れ**: `audit_runtime(gen_length>0)` の rollout 層が点推定
   `flip_rate` を使い、standalone に入れた上側信頼限界（0 フリップ観測≠p=0）をバイパスしていた。
   完全一致 logit でも巨大 L で survival=100% と過信する穴を塞ぎ、facade も `flip_rate_upper_bound`
-  を通すよう修正（standalone と fail-safe を一致）。テスト 161 関数 / verify 69 不変条件。
+  を通すよう修正（standalone と fail-safe を一致）。テスト 167 関数 / verify 72 不変条件。
 
 ## [0.2.0] — 2026-06-16
 検証層を 8 視点 + メタ(calibration) + 基盤(nondeterminism) + 翻訳(decision) へ拡張し、
