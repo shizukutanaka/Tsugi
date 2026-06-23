@@ -171,6 +171,113 @@ def attribute(layers_a, layers_b, x, *, tol: float, names=None,
     return rep
 
 
+@dataclass
+class DiagnosisReport(FindingReport):
+    """attribution + blame の統合診断レポート。
+
+    「どの層か」（onset/spike）と「どちらのベンダーか」（spike 層での blame）を1回で返す。
+    spike_closer = "A" → vendor B を直す / "B" → vendor A を直す / "TIED" → 方向不明。
+    """
+
+    layer_names: list[str] = field(default_factory=list)
+    divs: list[float] = field(default_factory=list)
+    onset: int | None = None
+    spike: int | None = None
+    tol: float = 0.0
+    spike_dist_a: float = 0.0    # spike 層での A の oracle 距離
+    spike_dist_b: float = 0.0    # spike 層での B の oracle 距離
+    spike_closer: str = "TIED"   # "A" / "B" / "TIED"（spike 層の責帰）
+
+    @property
+    def spike_name(self) -> str:
+        if self.spike is None or self.spike >= len(self.layer_names):
+            return f"layer[{self.spike}]"
+        return self.layer_names[self.spike]
+
+    @property
+    def onset_name(self) -> str:
+        if self.onset is None:
+            return "(none)"
+        if self.onset >= len(self.layer_names):
+            return f"layer[{self.onset}]"
+        return self.layer_names[self.onset]
+
+    def to_text(self) -> str:  # type: ignore[override]
+        blamed = "B" if self.spike_closer == "A" else ("A" if self.spike_closer == "B" else "?")
+        return super().to_text(
+            header=(f"diagnosis ({len(self.divs)} layers, tol={self.tol:.2e}, "
+                    f"onset={self.onset_name}, spike={self.spike_name}, "
+                    f"spike_closer={self.spike_closer}→fix vendor {blamed})"),
+            empty="(all layers within tolerance — no divergence found)")
+
+
+def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
+             relative: bool = True) -> DiagnosisReport:
+    """attribution + blame を 1 回で実行する統合診断。
+
+    「どの層か」（onset/spike）と「その層でどちらのベンダーが oracle から遠いか（責帰）」を
+    同時に返す。layers_oracle が None の場合は attribution のみ（blame なし）。
+
+    spike_closer="A" → vendor B の実装を優先修正。
+    spike_closer="B" → vendor A の実装を優先修正。
+    spike_closer="TIED" → 差が小さく方向不明（両実装を疑う）。
+
+    layers_oracle: oracle（CPU float64 参照）の各層 callable。なければ blame スキップ。
+    """
+    from .blame import layer_blame
+
+    divs = layer_divergences(layers_a, layers_b, x, relative=relative)
+    onset = find_onset(divs, tol)
+    spike = find_spike(divs)
+    _names = list(names) if names is not None else [f"layer[{i}]" for i in range(len(divs))]
+
+    rep = DiagnosisReport(
+        layer_names=_names, divs=divs, onset=onset, spike=spike, tol=tol,
+    )
+
+    if not divs:
+        rep.add(Risk.INFO, "diagnosis", "レイヤーが空 — 測定対象が無い")
+        return rep
+
+    if onset is None:
+        rep.add(Risk.OK, "diagnosis",
+                f"全 {len(divs)} 層で発散 ≤ tol {tol:.2e}（移植 clean）")
+    else:
+        final = divs[-1]
+        spike_delta = (divs[spike] - (divs[spike - 1] if spike > 0 else 0.0)) if spike is not None else 0.0
+        risk = Risk.BLOCK if final > tol * 10 else Risk.WARN
+        rep.add(risk, "diagnosis",
+                f"onset={rep.onset_name} (div={divs[onset]:.2e}) | "
+                f"spike={rep.spike_name} (Δ={spike_delta:.2e}) | "
+                f"final={final:.2e}")
+
+    # blame: spike 層での per-layer oracle 距離を比較（layers_oracle が必要）
+    if layers_oracle is not None and spike is not None:
+        blame_dists = layer_blame(layers_a, layers_b, layers_oracle, x, relative=relative)
+        if spike < len(blame_dists):
+            da, db = blame_dists[spike]
+            rep.spike_dist_a = da
+            rep.spike_dist_b = db
+            eps = 1e-30
+            ratio = max(da, db) / (min(da, db) + eps)
+            if ratio < 2.0:
+                rep.spike_closer = "TIED"
+            elif da < db:
+                rep.spike_closer = "A"
+            else:
+                rep.spike_closer = "B"
+
+            blamed = "B" if rep.spike_closer == "A" else ("A" if rep.spike_closer == "B" else "?")
+            rep.add(Risk.INFO, "diagnosis",
+                    f"spike 層 {rep.spike_name} の責帰: vendor {rep.spike_closer} が oracle に近い "
+                    f"(A={da:.2e}/B={db:.2e}) → vendor {blamed} の実装を優先修正")
+    elif layers_oracle is None:
+        rep.add(Risk.INFO, "diagnosis",
+                "layers_oracle=None — blame スキップ（oracle なし）")
+
+    return rep
+
+
 def bisect_onset(fn_prefix_a, fn_prefix_b, x, n_layers: int, *,
                  tol: float, relative: bool = True) -> int | None:
     """onset を binary search で O(log L) で特定する（層数が多い時の効率化）。

@@ -45,6 +45,12 @@ import numpy as np
 
 from .report import FindingReport, Risk
 
+# tol の何倍を超えたら WARN → BLOCK に格上げするか。
+# 論拠: tolerance.derive_tolerance がすでに safety·√K·u の安全マージンを含む（保守的）。
+# そのさらに 10× 超過は「安全マージンを考慮してもなお大幅に超えている = 系統的な誤り」を意味し、
+# WARN（要注意）でなく BLOCK（修正必須）と判断する。calibration の検出限界スケールと整合。
+_BLOCK_DIST_RATIO: float = 10.0
+
 
 def accuracy_relative(out, oracle, *, eps: float = 1e-30) -> float:
     """output の oracle に対する相対距離。max|out − oracle| / (max|oracle| + ε)。"""
@@ -125,14 +131,14 @@ def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = 2.0,
         return rep
 
     if a_ok and not b_ok:
-        risk = Risk.BLOCK if dist_b > tol * 10 else Risk.WARN
+        risk = Risk.BLOCK if dist_b > tol * _BLOCK_DIST_RATIO else Risk.WARN
         rep.add(risk, "blame",
                 f"A は oracle 内 (dist={dist_a:.2e} ≤ tol) / "
                 f"B は超過 (dist={dist_b:.2e}) → vendor B の実装を優先修正")
         return rep
 
     if b_ok and not a_ok:
-        risk = Risk.BLOCK if dist_a > tol * 10 else Risk.WARN
+        risk = Risk.BLOCK if dist_a > tol * _BLOCK_DIST_RATIO else Risk.WARN
         rep.add(risk, "blame",
                 f"B は oracle 内 (dist={dist_b:.2e} ≤ tol) / "
                 f"A は超過 (dist={dist_a:.2e}) → vendor A の実装を優先修正")
@@ -149,7 +155,7 @@ def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = 2.0,
         blame_side = "B" if closer == "A" else "A"
         farther = dist_b if closer == "A" else dist_a
         nearer = dist_a if closer == "A" else dist_b
-        risk = Risk.BLOCK if farther > tol * 10 else Risk.WARN
+        risk = Risk.BLOCK if farther > tol * _BLOCK_DIST_RATIO else Risk.WARN
         rep.add(risk, "blame",
                 f"closer=vendor {closer} (dist={nearer:.2e}) / "
                 f"farther=vendor {blame_side} (dist={farther:.2e}, ratio={ratio:.1f}x) "

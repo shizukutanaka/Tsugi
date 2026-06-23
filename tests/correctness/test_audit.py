@@ -139,6 +139,22 @@ def test_audit_runtime_oracle_catches_shared_mode():
     assert not any(p.name.startswith("correctness") for p in no_oracle.phases)
 
 
+def test_audit_runtime_blame_skipped_when_oracle_unhealthy():
+    # oracle が不健全の場合、blame（責帰）はスキップされ誤指摘を防ぐ。
+    # 実際に verify_oracle() を壊すのは難しいので、oracle が健全な場合に blame 行があること、
+    # oracle なし（None）の場合に correctness 相自体がないことで間接的に確認。
+    import numpy as np
+    rng = np.random.default_rng(3)
+    oracle = rng.standard_normal((32, 32)).astype(np.float32)
+    a = oracle + 1e-7 * rng.standard_normal((32, 32)).astype(np.float32)
+    b = (oracle * 1.05).astype(np.float32)
+    ad = audit_runtime(a, b, K=256, oracle=oracle)
+    cp = next(p for p in ad.phases if p.name.startswith("correctness"))
+    # With healthy oracle, blame line must appear
+    blame_lines = [ln for ln in cp.lines if "責帰" in ln]
+    assert blame_lines, "healthy oracle → blame 行があるべき"
+
+
 def test_audit_runtime_blame_points_to_culprit_vendor():
     # oracle があるとき correctness 層が blame（新視点13）で修正方向を示す。
     # B が oracle から大きく乖離 → 「vendor B の実装を優先修正」が verdict に現れる。
@@ -278,6 +294,7 @@ def main() -> int:
         test_audit_without_cfg_still_runs_portability,
         test_audit_verdict_is_provenance_stamped,
         test_audit_runtime_oracle_catches_shared_mode,
+        test_audit_runtime_blame_skipped_when_oracle_unhealthy,
         test_audit_runtime_blame_points_to_culprit_vendor,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,

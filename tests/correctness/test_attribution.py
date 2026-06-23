@@ -337,6 +337,60 @@ def test_attribution_spike_vs_propagation_dominant():
     assert theory_dominant.kind == rep.spike_name().split("_")[0]
 
 
+# --- diagnose (combined attribution + blame) ---------------------------------
+
+def _oracle_id(x):
+    return np.asarray(x, dtype=np.float64)
+
+
+def test_diagnose_no_oracle_attribution_only():
+    from tsugi.attribution import diagnose
+    layers_a = [_identity, _identity, _identity]
+    layers_b = [_identity, lambda x: np.asarray(x, dtype=np.float64) + 0.1, _identity]
+    x = np.array([1.0, 2.0])
+    rep = diagnose(layers_a, layers_b, None, x, tol=0.05, relative=False,
+                   names=["L0", "L1", "L2"])
+    assert rep.onset == 1
+    assert rep.spike == 1
+    assert rep.spike_closer == "TIED"  # no oracle → no blame
+    assert any("oracle なし" in f.message for f in rep.findings)
+
+
+def test_diagnose_with_oracle_blames_b():
+    from tsugi.attribution import diagnose
+    oracle_layers = [_oracle_id, _scale(2.0), _oracle_id]
+    layers_a = [_oracle_id, _scale(2.0), _oracle_id]           # A matches oracle
+    layers_b = [_oracle_id, lambda x: x * 2.0 + 0.5, _oracle_id]  # B diverges at layer 1
+    x = np.array([1.0])
+    rep = diagnose(layers_a, layers_b, oracle_layers, x, tol=0.05, relative=False,
+                   names=["L0", "L1", "L2"])
+    assert rep.spike == 1
+    assert rep.spike_closer == "A", f"A matches oracle → spike_closer should be A, got {rep.spike_closer}"
+    assert rep.spike_dist_a < rep.spike_dist_b
+
+
+def test_diagnose_all_clean_no_findings():
+    from tsugi.attribution import diagnose
+    layers = [_oracle_id, _oracle_id]
+    x = np.array([1.0, 2.0])
+    rep = diagnose(layers, layers, layers, x, tol=1e-6)
+    assert rep.onset is None
+    assert any(f.risk == 0 for f in rep.findings)  # Risk.OK == 0
+
+
+def test_diagnose_to_text_contains_chain_info():
+    from tsugi.attribution import diagnose
+    oracle_layers = [_oracle_id, _oracle_id]
+    layers_a = [_oracle_id, _oracle_id]
+    layers_b = [_oracle_id, lambda x: np.asarray(x, dtype=np.float64) + 0.5]
+    x = np.array([1.0])
+    rep = diagnose(layers_a, layers_b, oracle_layers, x, tol=0.01, relative=False,
+                   names=["embed", "proj"])
+    text = rep.to_text()
+    assert "diagnosis" in text
+    assert "fix vendor" in text
+
+
 def main():
     tests = [
         test_layer_divergences_identical_vendors,
@@ -366,6 +420,10 @@ def main():
         test_attribute_risk_block_when_large_final_divergence,
         test_attribute_to_text,
         test_attribution_spike_vs_propagation_dominant,
+        test_diagnose_no_oracle_attribution_only,
+        test_diagnose_with_oracle_blames_b,
+        test_diagnose_all_clean_no_findings,
+        test_diagnose_to_text_contains_chain_info,
     ]
     passed = failed = 0
     for t in tests:

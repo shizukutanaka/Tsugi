@@ -329,7 +329,8 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         from .oracle_check import verify_oracle
         oref = np.asarray(oracle, dtype=np.float64)
         cp = AuditPhase("correctness oracle 照合", "decided", Risk.OK)
-        if not verify_oracle().ok:
+        oracle_healthy = verify_oracle().ok
+        if not oracle_healthy:
             cp.max_risk = Risk.BLOCK
             cp.lines.append("oracle 自体がメタモルフィック検証に失敗 → 真値として使えない")
         sm = detect_shared_mode(af, bf, oref, K, dtype)
@@ -341,20 +342,23 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             cp.lines.append("a≢b（cross-vendor が捕捉済み）")
         else:
             cp.lines.append("a≈b≈oracle: portability かつ correctness")
-        # blame: oracle があるなら「どちらを直すか」を示す（診断チェーンを製品経路で閉じる・新視点13）
-        bl = compare_accuracy(af, bf, oref, tol=eq.atol)
-        cp.max_risk = max(cp.max_risk, bl.max_risk)
-        if bl.max_risk == Risk.OK:
-            cp.lines.append(f"責帰: 両ベンダーとも oracle 距離 ≤ atol "
-                            f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}) — 責帰不要")
-        elif bl.closer == "TIED":
-            cp.lines.append(f"責帰: A({bl.dist_a:.2e})↔B({bl.dist_b:.2e}) 同程度 "
-                            f"(ratio={bl.ratio:.1f}) — 方向不明・両実装/oracle を疑う")
+        # blame: oracle が健全な時だけ責帰を算入（不健全な oracle で blame すると誤指摘になる）
+        if oracle_healthy:
+            bl = compare_accuracy(af, bf, oref, tol=eq.atol)
+            cp.max_risk = max(cp.max_risk, bl.max_risk)
+            if bl.max_risk == Risk.OK:
+                cp.lines.append(f"責帰: 両ベンダーとも oracle 距離 ≤ atol "
+                                f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}) — 責帰不要")
+            elif bl.closer == "TIED":
+                cp.lines.append(f"責帰: A({bl.dist_a:.2e})↔B({bl.dist_b:.2e}) 同程度 "
+                                f"(ratio={bl.ratio:.1f}) — 方向不明・両実装/oracle を疑う")
+            else:
+                blamed = "B" if bl.closer == "A" else "A"
+                cp.lines.append(f"責帰: vendor {bl.closer} が oracle に近い "
+                                f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}・ratio={bl.ratio:.1f}x) "
+                                f"→ vendor {blamed} の実装を優先修正")
         else:
-            blamed = "B" if bl.closer == "A" else "A"
-            cp.lines.append(f"責帰: vendor {bl.closer} が oracle に近い "
-                            f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}・ratio={bl.ratio:.1f}x) "
-                            f"→ vendor {blamed} の実装を優先修正")
+            cp.lines.append("責帰: oracle が不健全 — blame はスキップ（誤指摘を防ぐ）")
         ad.phases.append(cp)
 
     ad.stamp(**(provenance or {}))

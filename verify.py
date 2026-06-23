@@ -481,6 +481,17 @@ def main() -> int:
     check("attribution bisect_onset matches linear find_onset (O(log L) correctness)",
           bisect_onset(_pf_a, _pf_b, _x12, n_layers=4, tol=0.05, relative=False) == 1)
 
+    # 28b. diagnose() は attribution + blame を 1 回で返す（統合診断・孤立 API を閉じる）
+    from tsugi.attribution import diagnose
+    _diag_oracle = [_attr_id, _attr_id, _attr_id, _attr_id]
+    _diag_b = [_attr_id, _attr_perturb, _attr_id, _attr_id]  # B diverges at layer 1
+    _dr = diagnose(_layers_a12, _diag_b, _diag_oracle, _x12,
+                   tol=0.05, relative=False, names=["L0", "L1", "L2", "L3"])
+    check("diagnose spike=1 (where B diverges)",
+          _dr.spike == 1 and _dr.spike_closer == "A")  # A matches oracle → blame B
+    check("diagnose onset=1 (first layer exceeding tol)",
+          _dr.onset == 1)
+
     # 29. blame 新視点13: どちらのベンダーが oracle に近いか（責帰）
     from tsugi.blame import compare_accuracy, accuracy_relative, layer_blame
 

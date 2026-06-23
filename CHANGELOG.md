@@ -5,6 +5,19 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
+- **3つの弱点を修正（長所短所分析→改良）**:
+  1. **Oracle 失敗時の blame スキップ**: oracle_check が BLOCK のとき blame は汚染された oracle で
+     走り誤ったベンダー指摘を出す可能性があった。`oracle_healthy` フラグで guard し、不健全な oracle
+     では「blame はスキップ（誤指摘を防ぐ）」と明示する。
+  2. **blame の `tol * 10` を `_BLOCK_DIST_RATIO = 10.0` に名前付き定数化**: tolerance.derive_tolerance
+     の safety マージン込み tol のさらに 10× 超は系統的誤りとして BLOCK に格上げする、という判断根拠を
+     docstring に記述。マジックナンバーを排除し感度分析を可能にした。
+  3. **`diagnose()` 統合診断 API を attribution.py に追加**: これまで attribution と blame は
+     孤立 API で開発者が手動で結合する必要があった。`diagnose(layers_a, layers_b, layers_oracle, x, *)`
+     が1回の呼び出しで onset/spike（attribution）と spike 層での責帰（blame: spike_closer=A/B/TIED）を
+     返す。`DiagnosisReport.to_text()` が "fix vendor X" を含む完全診断チェーンを出力。
+  4. **audit.py docstring を 8→13 視点に更新（前コミット）**。
+
 - **blame を `audit_runtime` の correctness 層に統合（診断チェーンを製品経路で閉じる）**:
   oracle を渡すと shared-mode 検出に加え blame（新視点13）が走り、「vendor X の実装を優先修正」を
   verdict に算入。両ベンダーが oracle 内なら「責帰不要」、片方が乖離なら修正方向を明示、
