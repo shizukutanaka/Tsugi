@@ -142,6 +142,61 @@ def propagate(ops: list[GraphOp], input_div: float = 0.0) -> PropagationReport:
     return rep
 
 
+def merge_divergence(divs, *, correlated: bool = False) -> float:
+    """並列ブランチの末端発散を合流（merge）点で合成する。
+
+    transformer の合流（multi-head attention のヘッド和・残差加算・gated 経路・concat）は
+    複数ブランチの発散を 1 本にまとめる。合成則は相関仮定に依る:
+      - `correlated=False`（既定・random-walk）: δ = √(Σ δ_i²)。各ブランチの丸めが独立
+        （別カーネル・別累積）なら発散は二乗平均で *希釈* される（残差が安定な理由と同根）。
+      - `correlated=True`（worst-case・保守）: δ = Σ δ_i。系統モードを共有する（同じ ill-cond
+        な入力を全ブランチが処理する等）なら線形に加わる。検証器の非対称コスト下では
+        相関が不明なら保守側（True）を選ぶ。
+    """
+    ds = [max(0.0, float(d)) for d in divs]
+    if not ds:
+        return 0.0
+    return sum(ds) if correlated else math.sqrt(sum(d * d for d in ds))
+
+
+def propagate_dag(nodes, input_div: float = 0.0, *,
+                  correlated: bool = False) -> PropagationReport:
+    """直列 op と並列フォークが混在する series-parallel グラフに沿って発散を伝播する。
+
+    `propagate`（線形列）の一般化。`nodes` の各要素は:
+      - `GraphOp`            : 直列 op（δ をそのまま通す。residual フラグも従来通り効く）。
+      - `list[list[GraphOp]]`: フォーク。現在の δ から各ブランチを *独立に* propagate し、
+        末端で `merge_divergence` により合流させる。空ブランチ `[]` は恒等（skip）路として
+        δ をそのまま運ぶ。
+
+    これで attention（並列ヘッド→和）・残差（恒等＋f→加算）・concat 等の DAG を表現できる。
+    各フォークはブランチが現在の発散 δ_in を *再処理* するものとして扱う（f が発散入力を
+    見る実態に即し、非対称コスト下で保守側）。**対象は series-parallel まで**——交差辺を
+    もつ一般 DAG（重み共有・cross-attention の往復等）は線形/SP 近似に留まる。
+    """
+    rep = PropagationReport()
+    delta = input_div
+    for node in nodes:
+        if isinstance(node, GraphOp):
+            loc = local_divergence(node)
+            amp = amplification(node)
+            if node.residual:
+                delta = math.sqrt(delta ** 2 + (amp * loc) ** 2)
+            else:
+                delta = amp * delta + loc
+            rep.ops.append(OpTrace(kind=node.kind, local=loc, amp=amp, cumulative=delta))
+        else:   # フォーク: 各ブランチを現在の δ から伝播し merge で合流
+            branch_terms = []
+            for branch in node:
+                sub = propagate(list(branch), input_div=delta)
+                rep.ops.extend(sub.ops)                    # トレース可視化のため残す
+                branch_terms.append(sub.model_divergence if branch else delta)
+            delta = merge_divergence(branch_terms, correlated=correlated)
+            rep.ops.append(OpTrace(kind=f"merge×{len(node)}", local=0.0, amp=1.0,
+                                   cumulative=delta))
+    return rep
+
+
 def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum") -> float:
     """代表サンプルからデータ依存の *相対* 条件数を実測する（静的 cond=1 の置換）。
 

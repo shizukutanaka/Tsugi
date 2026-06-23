@@ -65,6 +65,13 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
   の numpy 実測で「残差 < 平坦」を検証（test_propagation・verify 不変条件）。テスト 129 関数
   / verify 50 不変条件。
 
+### Added
+- **propagation の DAG 対応（Q12 完了）**: `propagate_dag(nodes, *, correlated=)` ＋
+  `merge_divergence(divs, *, correlated=)`。線形列だけだった伝播をフォーク→合流へ一般化し、
+  attention 並列ヘッド・残差・concat の series-parallel DAG を表現。合流則は独立(√Σδ²・希釈)/
+  相関(Σδ・worst-case)を選べ、非対称コスト下で保守側を選択可能。numpy の 2 ブランチ合流で
+  実測発散を上界することを検証。深さ(`propagate`)に続き *幅* 方向の合成を獲得。
+
 ### Changed
 - **rollout をデコード方式に整合**: `rollout_from_logits(..., decode={greedy,topk,nucleus})`。
   実 LLM はサンプリング生成が主流で、候補集合が分岐すれば argmax 同一でも生成分布は分かれる。
@@ -75,7 +82,7 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 - **facade の rollout fail-safe 漏れ**: `audit_runtime(gen_length>0)` の rollout 層が点推定
   `flip_rate` を使い、standalone に入れた上側信頼限界（0 フリップ観測≠p=0）をバイパスしていた。
   完全一致 logit でも巨大 L で survival=100% と過信する穴を塞ぎ、facade も `flip_rate_upper_bound`
-  を通すよう修正（standalone と fail-safe を一致）。テスト 151 関数 / verify 66 不変条件。
+  を通すよう修正（standalone と fail-safe を一致）。テスト 155 関数 / verify 67 不変条件。
 
 ## [0.2.0] — 2026-06-16
 検証層を 8 視点 + メタ(calibration) + 基盤(nondeterminism) + 翻訳(decision) へ拡張し、

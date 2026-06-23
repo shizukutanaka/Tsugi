@@ -60,7 +60,11 @@ empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 効果）を検討。**
 
 **Q12.** propagation は線形 op 列のみ。分岐・残差接続（transformer）は？
-→ 非対応。残差は発散を加算的に運ぶ。**改善: DAG（残差/分岐）対応を将来課題として明記。**
+→ ✅修正済（2 段）: (1) 残差は `GraphOp(residual=True)` で δ_out=√(δ_in²+(amp·local)²) と
+random-walk 希釈。(2) 一般のフォーク→合流は `propagate_dag(nodes, correlated=)` ＋
+`merge_divergence`（√Σδ² / Σδ）で series-parallel DAG（attention 並列ヘッド・concat）を表現。
+numpy の 2 ブランチ合流で実測発散を上界することを検証（test_propagation）。**残: 交差辺を
+もつ一般 DAG（重み共有・cross-attention 往復）は SP 近似に留まる。**
 
 ## C. scale=1.0 という暗黙仮定（Q13–17）
 
@@ -247,7 +251,8 @@ max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防
 - ✅ Q35/Q36（修正済）: property test 10×200・calibration を roc_sweep で ROC 化。
 
 **P2（後・要設計/実機）**
-- Q12/Q11: propagation の DAG・scale 伝播対応。
+- ✅ Q12（修正済）: propagation の DAG 対応（`propagate_dag`＋`merge_divergence`・series-parallel）。
+  残 Q11: scale 伝播（正規化での発散リセット）と一般 DAG の交差辺。
 - Q29–32: decision の task 多様性（回帰/生成/サンプリング）。
 - Q50: 実機 e2e（最重要だが GPU 必須）。
 

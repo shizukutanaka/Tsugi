@@ -129,6 +129,16 @@ def main() -> int:
     resid_chain = model_tolerance([GraphOp("matmul", K=512, residual=True)] * 24)
     check("residual topology dilutes propagated divergence vs plain chain",
           resid_chain < plain_chain * 0.5)
+    # propagation の DAG 一般化: フォーク→合流（attention/concat）を表現でき、線形列を包含
+    from tsugi.propagation import merge_divergence, propagate, propagate_dag
+    _lin = [GraphOp("matmul", K=256), GraphOp("softmax", cond=4.0)]
+    _fork = [[[GraphOp("matmul", K=256)], [GraphOp("matmul", K=256)]]]
+    check("propagate_dag generalizes linear chain and merges branches conservatively",
+          abs(propagate_dag(_lin).model_divergence - propagate(_lin).model_divergence) < 1e-18
+          and merge_divergence([0.1, 0.1], correlated=True)
+          > merge_divergence([0.1, 0.1], correlated=False)
+          and propagate_dag(_fork, correlated=True).model_divergence
+          >= propagate_dag(_fork, correlated=False).model_divergence)
 
     # 13. envelope: 認証前提の実行時逸脱を検出（静的保証の契約化・新視点5）
     import numpy as np  # noqa: F811

@@ -3,7 +3,7 @@
 > 仕様が実装を駆動する（C11）。本書は `tsugi` の **検証 API** の規範仕様。各関数の契約
 > （入力・出力・判定意味論）と、**保証すること / しないこと（盲点）** を定める。
 > コンパイラ/DSL の仕様は [SPEC.md](SPEC.md)、全体マップは [VERIFICATION.md](VERIFICATION.md)。
-> 不変条件は `verify.py`（66）、実行可能な真値は `tests/correctness/`（151 関数）。
+> 不変条件は `verify.py`（67）、実行可能な真値は `tests/correctness/`（155 関数）。
 
 状態: v0.x（API 未凍結）。CPU リファレンスで動作・検証済み。GPU 実行は未検証（要実機）。
 
@@ -52,13 +52,19 @@
   乖離しうる（呼び出し側が代表 scale を与えるべき）。
 
 ### 1.5 propagation — 合成的等価性（per-model）
-`propagate(ops: list[GraphOp], input_div=0.0) -> PropagationReport` / `model_tolerance(ops) -> float`
+`propagate(ops: list[GraphOp], input_div=0.0) -> PropagationReport` / `model_tolerance(ops) -> float` /
+`propagate_dag(nodes, input_div=0.0, *, correlated=False) -> PropagationReport` /
+`merge_divergence(divs, *, correlated=False) -> float`
 - 規約: 通常 op `δ_out = amp·δ_in + local`、残差 op（`GraphOp(residual=True)`）
-  `δ_out = √(δ_in² + (amp·local)²)`（skip 接続による希釈・~√L）。
+  `δ_out = √(δ_in² + (amp·local)²)`（skip 接続による希釈・~√L）。`propagate_dag` は `propagate`
+  の一般化で、`nodes` 要素が `GraphOp`（直列）か `list[list[GraphOp]]`（フォーク→合流）。合流は
+  `merge_divergence`: `correlated=False` で √(Σδ²)（独立な丸め・希釈）、`True` で Σδ（系統共有・
+  worst-case）。attention 並列ヘッド・残差・concat の series-parallel DAG を表現。
 - 増幅は *相対* 誤差を増やす op のみ（`reduce`/`softmax`/`exp`）。`empirical_cond(sample,kind)` で
   データ依存 cond を実測可能。
-- 保証: per-kernel 等価 ⇏ per-model 等価の定量化（一次近似）。**しない**: 静的 cond=1 は下界
-  （真の増幅は実データ要）。DAG/分岐は線形列近似。
+- 保証: per-kernel 等価 ⇏ per-model 等価の定量化（一次近似）。深さ（`propagate`）と幅
+  （`propagate_dag` のフォーク合流）の両方向。**しない**: 静的 cond=1 は下界（真の増幅は実データ要）。
+  series-parallel まで——交差辺をもつ一般 DAG（重み共有・cross-attention 往復）は SP 近似に留まる。
 
 ---
 

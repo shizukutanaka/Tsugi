@@ -6,6 +6,7 @@ per-kernel 等価 ⇏ per-model 等価 を、合成モデルと実 numpy シミ�
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from tsugi.propagation import (  # noqa: E402
     GraphOp,
     empirical_cond,
     is_amplifier,
+    merge_divergence,
     model_tolerance,
     propagate,
+    propagate_dag,
 )
 from tsugi.tolerance import expected_gemm_abs_error  # noqa: E402
 
@@ -126,6 +129,59 @@ def test_empty_graph():
     assert model_tolerance([]) == 0.0
 
 
+def test_merge_dilutes_uncorrelated_vs_correlated():
+    # 合流則: 独立(random-walk)は二乗平均で希釈、相関(worst-case)は線形和
+    divs = [0.1, 0.1, 0.1]
+    assert abs(merge_divergence(divs, correlated=True) - 0.3) < 1e-12
+    assert abs(merge_divergence(divs, correlated=False) - math.sqrt(0.03)) < 1e-12
+    assert merge_divergence(divs, correlated=False) < merge_divergence(divs, correlated=True)
+    assert merge_divergence([]) == 0.0
+
+
+def test_dag_reduces_to_linear_chain():
+    # propagate_dag は GraphOp だけの列なら propagate と一致（一般化が線形を包含）
+    ops = [GraphOp("matmul", K=256), GraphOp("softmax", cond=4.0), GraphOp("matmul", K=128)]
+    assert abs(propagate_dag(ops).model_divergence - propagate(ops).model_divergence) < 1e-18
+
+
+def test_dag_identity_branch_carries_input_divergence():
+    # 恒等(空)ブランチ＋f ブランチの合流は δ_in を運ぶ（skip 経路＝残差の DAG 表現）
+    upstream = [GraphOp("matmul", K=256)]
+    base = propagate(upstream).model_divergence
+    fork = [*upstream, [[], [GraphOp("matmul", K=256)]]]
+    merged = propagate_dag(fork, correlated=False).model_divergence
+    assert merged >= base                      # 恒等枝が下界を与える
+    # 相関ありはさらに大きい（保守側）
+    merged_c = propagate_dag(fork, correlated=True).model_divergence
+    assert merged_c >= merged
+
+
+def _run_merge(n, K, seed=0):
+    """2 ブランチ合流 y = matmul(x,w1)+matmul(x,w2) を 2 ベンダーで流し相対発散を返す。"""
+    rng = np.random.default_rng(seed)
+    x = rng.standard_normal((n, K)).astype(np.float16)
+    w1 = (rng.standard_normal((K, K)) / np.sqrt(K)).astype(np.float16)
+    w2 = (rng.standard_normal((K, K)) / np.sqrt(K)).astype(np.float16)
+    ya = (simulate_vendor_matmul(x, w1, accum="f32")
+          + simulate_vendor_matmul(x, w2, accum="f32"))
+    yb = (simulate_vendor_matmul(x, w1, accum="f32", split_k=8)
+          + simulate_vendor_matmul(x, w2, accum="f32", split_k=8))
+    a, b = ya.astype(np.float64), yb.astype(np.float64)
+    return float(np.linalg.norm(a - b) / (np.linalg.norm(a) + 1e-30))
+
+
+def test_dag_branch_merge_bounds_measured_divergence_numpy():
+    # 実 numpy: 2 つの計算ブランチが合流する DAG。線形列では表現できない位相を、
+    # propagate_dag のフォーク→merge が（保守側 correlated で）実測発散を上界する。
+    n, K = 64, 64
+    measured = _run_merge(n, K)
+    fork = [[[GraphOp("matmul", K=K)], [GraphOp("matmul", K=K)]]]
+    predicted = propagate_dag(fork, correlated=True).model_divergence
+    assert predicted >= measured, f"DAG bound {predicted:.2e} should bound {measured:.2e}"
+    # 合流は trace に merge ノードを残す（可視性）
+    assert any(o.kind.startswith("merge") for o in propagate_dag(fork).ops)
+
+
 def test_only_genuine_relative_amplifiers():
     # 相対誤差を増幅するのは reduce/softmax/exp のみ。div/reciprocal/add は相対 ~1。
     assert is_amplifier("reduce") and is_amplifier("exp") and is_amplifier("softmax")
@@ -169,6 +225,10 @@ def main() -> int:
         test_residual_dilutes_model_divergence,
         test_residual_lower_than_plain_numpy,
         test_empty_graph,
+        test_merge_dilutes_uncorrelated_vs_correlated,
+        test_dag_reduces_to_linear_chain,
+        test_dag_identity_branch_carries_input_divergence,
+        test_dag_branch_merge_bounds_measured_divergence_numpy,
         test_only_genuine_relative_amplifiers,
         test_empirical_cond_is_data_driven,
         test_empirical_cond_makes_amplification_fire,
