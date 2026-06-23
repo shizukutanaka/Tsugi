@@ -5,6 +5,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **新視点12: 発散帰属 — 出力の不一致はどこから来るか？（`tsugi.attribution`）**: 移植失敗時の
+  O(L) 手動デバッグを O(log L) に短縮する per-layer 因果特定層。`layer_divergences` が両ベンダー
+  同一入力で各層出力の発散を prefix scan し、`find_onset`（汚染開始層）・`find_spike`（最大増幅層）
+  を特定。`bisect_onset` が prefix-forward 構造を使い O(log L) で onset を探索。
+  `attribute` が `AttributionReport` を返し onset/spike/全層プロファイルをレポート。
+  onset ≠ spike（汚染開始と最大増幅が別層）を INFO で通知。`propagation.dominant`（理論予測）と
+  `attribution.spike`（実測）の照合で理論検証/反証の接続点を提供。tests/correctness/test_attribution.py
+  で 27 テスト全通過。verify.py で invariants 27-28 追加（77/77）。
 - **新視点11: タスク多様性 — argmax ⇏ 全タスク（`tsugi.decision` 拡張）**: argmax 分類専用だった
   decision 層を非分類タスクへ拡張（Q29/Q30）。`regression_flip_rate`（値の相対/絶対許容乖離）・
   `binary_flip_rate`（sigmoid+threshold 跨ぎ）・`binary_margin`（決定境界距離）・

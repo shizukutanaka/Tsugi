@@ -440,6 +440,47 @@ def main() -> int:
           GraphOp("matmul", K=8).safety == SAFETY
           and _dt(8, "float16")["atol"] == _dt(8, "float16", safety=SAFETY)["atol"])
 
+    # 27. attribution 新視点12: 発散 onset/spike で O(log L) デバッグ経路を実現
+    from tsugi.attribution import attribute, layer_divergences, find_onset, find_spike, bisect_onset
+
+    _x12 = np.array([1.0, 2.0, 3.0])
+
+    def _attr_id(x):
+        return np.asarray(x, dtype=np.float64)
+
+    def _attr_perturb(x):
+        return np.asarray(x, dtype=np.float64) + 0.1
+
+    _layers_a12 = [_attr_id, _attr_id, _attr_id, _attr_id]
+    # Perturbation injected at layer 1 → onset=1, spike=1
+    _layers_b12 = [_attr_id, _attr_perturb, _attr_id, _attr_id]
+    _divs12 = layer_divergences(_layers_a12, _layers_b12, _x12, relative=False)
+    check("attribution layer_divergences returns one entry per layer",
+          len(_divs12) == 4 and all(isinstance(d, float) for d in _divs12))
+    check("attribution onset detects first layer exceeding threshold",
+          find_onset(_divs12, threshold=0.05) == 1
+          and find_onset(_divs12, threshold=200.0) is None)
+    check("attribution spike identifies max divergence increment layer",
+          find_spike(_divs12) == 1)
+    check("attribution identical vendors → onset=None (no false positive)",
+          attribute(_layers_a12, _layers_a12, _x12, tol=1e-9).onset is None)
+
+    # 28. bisect_onset と linear scan は同じ onset を返す（O(log L) correctness）
+    def _pf_a(i, x):
+        out = np.asarray(x, dtype=np.float64)
+        for fn in _layers_a12[:i + 1]:
+            out = np.asarray(fn(out), dtype=np.float64)
+        return out
+
+    def _pf_b(i, x):
+        out = np.asarray(x, dtype=np.float64)
+        for fn in _layers_b12[:i + 1]:
+            out = np.asarray(fn(out), dtype=np.float64)
+        return out
+
+    check("attribution bisect_onset matches linear find_onset (O(log L) correctness)",
+          bisect_onset(_pf_a, _pf_b, _x12, n_layers=4, tol=0.05, relative=False) == 1)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

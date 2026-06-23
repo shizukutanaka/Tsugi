@@ -256,6 +256,10 @@ max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防
 - ✅ Q12（修正済）: propagation の DAG 対応（`propagate_dag`＋`merge_divergence`・series-parallel）。
   残 Q11: scale 伝播（正規化での発散リセット）と一般 DAG の交差辺。
 - ✅ Q29/Q30（修正済）: 新視点11 `compare_task(task=regression/binary/ranking)` で argmax 外のタスクを対応。
+- ✅ 新視点12（修正済）: `tsugi.attribution` — per-layer 発散 prefix scan。`layer_divergences`/
+  `find_onset`/`find_spike`/`attribute`/`bisect_onset`。O(L) 手動デバッグ → O(log L)。
+  propagation.dominant（理論）と attribution.spike（実測）の照合で理論と実験の接続点を提供。
+  tests/correctness/test_attribution.py 27 テスト、verify.py invariants 27-28（77/77）。
 - Q29–32: decision の task 多様性（回帰/生成/サンプリング）。
 - Q50: 実機 e2e（最重要だが GPU 必須）。
 

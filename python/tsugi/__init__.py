@@ -15,6 +15,7 @@ GPU バックエンド（NVPTX/AMDGPU）はこのリファレンスと一致す�
 from __future__ import annotations
 
 from . import (
+    attribution,
     calibration,
     decision,
     envelope,
@@ -54,6 +55,7 @@ __all__ = [
     "decision",
     "rollout",
     "worstcase",
+    "attribution",
     "oracle_check",
     "provenance",
     "audit",

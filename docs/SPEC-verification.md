@@ -143,6 +143,22 @@
   健全性証明でない（見つからない＝等価の証明ではない・探索の網羅性依存）。ヒルクライムは局所最適に
   嵌りうる（薄い manifold は取り逃す）。box の与え方が結論を左右（envelope の認証領域と一致させる）。
 
+### 3.6 attribution — 発散帰属（per-layer 因果特定・新視点12）
+`layer_divergences(layers_a, layers_b, x, *, relative=True) -> list[float]`（prefix scan: 各層出力での発散）/
+`find_onset(divs, threshold) -> int | None`（threshold を最初に超える層） /
+`find_spike(divs) -> int | None`（発散増分が最大の層） /
+`attribute(layers_a, layers_b, x, *, tol, names, relative) -> AttributionReport` /
+`bisect_onset(fn_prefix_a, fn_prefix_b, x, n_layers, *, tol) -> int | None`（O(log L) onset 探索）
+- 規約: equivalence/decision が最終出力層の発散を測るのに対し、attribution は各層の境界で
+  発散を測定（prefix scan）し onset（発散開始層）と spike（最大増幅層）を特定する。
+  `layer_divergences` は両ベンダーで同一入力 x から出発し、各層後の発散を絶対/相対で返す。
+  `bisect_onset` は前向き計算が独立に実行できる構造（ステートレス prefix）で O(log L) を実現。
+  `AttributionReport.onset` は「汚染開始境界」、`.spike` は「propagation の dominant amplifier と照合する実測値」。
+- 保証: O(L) の手動デバッグを O(log L) に短縮（bisect_onset）。propagation の理論予測（dominant）と
+  実データの因果特定（spike）を対応付ける接続点。**しない**: 発散の *根本原因*（アルゴリズム誤り vs
+  累積誤差 vs HW 仕様差）を説明しない（因果特定のレベルは「どの層か」まで）。
+  onset ≠ spike の場合に両者が異なる意味を持つことをレポートするが自動修正はしない。
+
 ---
 
 ## 4. メタ層（検証器・oracle の信頼性）
