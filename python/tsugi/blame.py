@@ -146,11 +146,14 @@ def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = 2.0,
 
     # 両方 tol 超
     if closer == "TIED":
-        risk = Risk.WARN
+        both_far = dist_a > tol * _BLOCK_DIST_RATIO and dist_b > tol * _BLOCK_DIST_RATIO
+        risk = Risk.BLOCK if both_far else Risk.WARN
         rep.add(risk, "blame",
                 f"A({dist_a:.2e}) と B({dist_b:.2e}) が同程度に oracle から乖離 "
-                f"(ratio={ratio:.1f} < {ratio_threshold}) — 両実装を見直す "
-                "（oracle_check.verify_oracle で oracle の健全性を確認推奨）")
+                f"(ratio={ratio:.1f} < {ratio_threshold}) — 両実装を見直す"
+                + (" — 両方とも tol×10 超（系統的共有誤り・前提を疑う）"
+                   if both_far else "")
+                + " （oracle_check.verify_oracle で oracle の健全性を確認推奨）")
     else:
         blame_side = "B" if closer == "A" else "A"
         farther = dist_b if closer == "A" else dist_a

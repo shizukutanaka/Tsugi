@@ -23,6 +23,16 @@ import numpy as np
 
 from .report import FindingReport, Risk
 
+# --- 閾値定数 (Q5: magic number 排除) ---
+# フリップしたサンプルの margin 中央値が全体中央値の何割を超えたら「near-tie に集中していない」
+# と判断するか（0.5 = 50%）。確信サンプルまでフリップしているなら系統的発散を疑う。
+_NEAR_TIE_MARGIN_FRAC: float = 0.5
+# 予算の何倍を超えたら WARN → BLOCK に格上げするか（10×）。
+# 予算 flip_budget がゼロ（完全無フリップ要求）の場合は _FLIP_BLOCK_MIN の絶対値で判断。
+_FLIP_BLOCK_RATIO: float = 10.0
+# flip_budget=0 の場合の BLOCK 最小フリップ率（1% = 実用上無視できない規模）。
+_FLIP_BLOCK_MIN: float = 0.01
+
 
 def margin(logits: np.ndarray) -> np.ndarray:
     """各サンプルの判断マージン = top1 − top2（最後の軸をクラス軸とみなす）。"""
@@ -353,7 +363,7 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
                 f"同点率 {rep.tie_rate * 100:.1f}%: argmax が規約依存（量子化/マスク）。"
                 "ベンダー間の tie-break 規約差で数値発散ゼロでもフリップしうる（誤帰属に注意）")
     if rep.flip_rate > flip_budget:
-        risk = Risk.BLOCK if rep.flip_rate > max(10 * flip_budget, 0.01) else Risk.WARN
+        risk = Risk.BLOCK if rep.flip_rate > max(_FLIP_BLOCK_RATIO * flip_budget, _FLIP_BLOCK_MIN) else Risk.WARN
         rep.add(risk, "task",
                 f"判断フリップ率 {rep.flip_rate * 100:.2f}% > 予算 {flip_budget * 100:.2f}% "
                 "→ ベンダー間でユーザーに見える予測が変わる")
@@ -362,7 +372,7 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
                 f"判断フリップ {rep.flip_rate * 100:.2f}%（予算内）・near-tie に集中")
     # 健全性: フリップは低マージン(near-tie)の裾に集中するはず。確信領域で起きるなら異常。
     if fm.size and rep.overall_margin_median > 0 and \
-            rep.flipped_margin_median > 0.5 * rep.overall_margin_median:
+            rep.flipped_margin_median > _NEAR_TIE_MARGIN_FRAC * rep.overall_margin_median:
         rep.add(Risk.WARN, "task",
                 "フリップが near-tie 裾に集中していない → 確信予測まで変化・系統的発散を疑う")
     # 数値的に大きくても argmax 保存的な系統発散ならタスクは等価（calibration の系統検出と対）

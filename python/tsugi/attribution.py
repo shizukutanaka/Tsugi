@@ -107,11 +107,13 @@ class AttributionReport(FindingReport):
     def final_divergence(self) -> float:
         return self.divs[-1] if self.divs else 0.0
 
+    @property
     def spike_name(self) -> str:
         if self.spike is None or self.spike >= len(self.layer_names):
             return f"layer[{self.spike}]"
         return self.layer_names[self.spike]
 
+    @property
     def onset_name(self) -> str:
         if self.onset is None:
             return "(none)"
@@ -123,7 +125,7 @@ class AttributionReport(FindingReport):
         return super().to_text(
             header=(f"attribution ({self.n_layers} layers, tol={self.tol:.2e}, "
                     f"final_div={self.final_divergence:.2e}, "
-                    f"onset={self.onset_name()}, spike={self.spike_name()})"),
+                    f"onset={self.onset_name}, spike={self.spike_name})"),
             empty="(all layers within tolerance — divergence origin not found)")
 
 
@@ -140,7 +142,12 @@ def attribute(layers_a, layers_b, x, *, tol: float, names=None,
     divs = layer_divergences(layers_a, layers_b, x, relative=relative)
     onset = find_onset(divs, tol)
     spike = find_spike(divs)
-    _names = list(names) if names is not None else [f"layer[{i}]" for i in range(len(divs))]
+    n = len(divs)
+    if names is not None:
+        raw = list(names)
+        _names = (raw + [f"layer[{i}]" for i in range(len(raw), n)])[:n]
+    else:
+        _names = [f"layer[{i}]" for i in range(n)]
 
     rep = AttributionReport(
         layer_names=_names, divs=divs, onset=onset, spike=spike, tol=tol,
@@ -158,14 +165,14 @@ def attribute(layers_a, layers_b, x, *, tol: float, names=None,
         spike_delta = (divs[spike] - (divs[spike - 1] if spike > 0 else 0.0)) if spike is not None else 0.0
         risk = Risk.BLOCK if final > tol * 10 else Risk.WARN
         rep.add(risk, "attribution",
-                f"発散 onset={rep.onset_name()} (div={divs[onset]:.2e}) | "
-                f"dominant spike={rep.spike_name()} (Δ={spike_delta:.2e}) | "
-                f"final={final:.2e} — 疑うべき実装: {rep.spike_name()}")
+                f"発散 onset={rep.onset_name} (div={divs[onset]:.2e}) | "
+                f"dominant spike={rep.spike_name} (Δ={spike_delta:.2e}) | "
+                f"final={final:.2e} — 疑うべき実装: {rep.spike_name}")
 
     # propagation の理論予測との比較メモ（呼び出し側が propagation dominant と照合できる）
     if spike is not None and onset is not None and spike != onset:
         rep.add(Risk.INFO, "attribution",
-                f"spike ({rep.spike_name()}) と onset ({rep.onset_name()}) が異なる: "
+                f"spike ({rep.spike_name}) と onset ({rep.onset_name}) が異なる: "
                 "最初に contaminate した層と最大増幅層は別 — propagation モデルの精度確認推奨")
 
     return rep
@@ -229,7 +236,12 @@ def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
     divs = layer_divergences(layers_a, layers_b, x, relative=relative)
     onset = find_onset(divs, tol)
     spike = find_spike(divs)
-    _names = list(names) if names is not None else [f"layer[{i}]" for i in range(len(divs))]
+    n = len(divs)
+    if names is not None:
+        raw = list(names)
+        _names = (raw + [f"layer[{i}]" for i in range(len(raw), n)])[:n]
+    else:
+        _names = [f"layer[{i}]" for i in range(n)]
 
     rep = DiagnosisReport(
         layer_names=_names, divs=divs, onset=onset, spike=spike, tol=tol,

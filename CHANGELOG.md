@@ -5,7 +5,24 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
-- **3つの弱点を修正（長所短所分析→改良）**:
+- **5つの弱点を修正（長所短所分析→改良・第2回）**:
+  1. **API 一貫性**: `AttributionReport.spike_name`/`onset_name` をメソッドから `@property` に変換。
+     `DiagnosisReport` はすでに `@property` だったため、両クラスの呼び出し規約が一致した。
+     呼び出し側が `()` の有無を意識する必要がなくなる。
+  2. **names 正規化**: `attribute()` と `diagnose()` で渡す `names` リストの長さを `len(divs)` に
+     自動整合（長すぎれば切り捨て、短すぎれば `layer[i]` で補完）。これまで names が divs より長いと
+     `layer_names` と `divs` のインデックスがズレていた。
+  3. **envelope の閾値定数化（Q4）**: `0.1`（overflow 近接 WARN）・`0.7`（exp-overflow WARN）・`1.5`
+     （scale BLOCK）を `_OVERFLOW_WARN_FRAC`/`_EXP_WARN_FRAC`/`_SCALE_BLOCK_RATIO` に。
+     根拠コメントを定数 docstring に記述。
+  4. **decision の閾値定数化（Q5）**: `0.5 * overall_margin_median`（near-tie 判定）・
+     `10 * flip_budget`（BLOCK 格上げ比率）・`0.01`（最小 BLOCK フリップ率）を名前付き定数に。
+  5. **blame の TIED→BLOCK 格上げ（Q31）**: TIED かつ両ベンダーが `tol × _BLOCK_DIST_RATIO` 超の
+     場合、WARN → BLOCK に格上げ。「両方同程度に間違っている（共有前提の誤り）」という系統的失敗は
+     BLOCK 相当。テスト: `test_compare_accuracy_tied_both_far_becomes_block`。
+  テスト合計: test_attribution.py 34 件、test_blame.py 20 件、84/84 不変条件。
+
+- **3つの弱点を修正（長所短所分析→改良・第1回）**:
   1. **Oracle 失敗時の blame スキップ**: oracle_check が BLOCK のとき blame は汚染された oracle で
      走り誤ったベンダー指摘を出す可能性があった。`oracle_healthy` フラグで guard し、不健全な oracle
      では「blame はスキップ（誤指摘を防ぐ）」と明示する。

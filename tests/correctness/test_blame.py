@@ -236,8 +236,23 @@ def test_attribution_blame_chain():
     assert rep.closer == "B", (
         f"B should be closer to oracle (A has the error), got closer={rep.closer}")
     # Diagnostic chain: spike at proj(1), vendor A is culprit
-    assert attr.spike_name() == "proj"
+    assert attr.spike_name == "proj"
     assert rep.closer == "B"  # → "vendor A を直せ"
+
+
+def test_compare_accuracy_tied_both_far_becomes_block():
+    """Q31: TIED + both vendors far from oracle → BLOCK (systemic shared failure)."""
+    oracle = np.array([1.0])
+    tol = 1e-4
+    # both > tol * 10 (= 1e-3) and same distance → TIED but both far
+    a = oracle + 0.5
+    b = oracle - 0.5
+    rep = compare_accuracy(a, b, oracle, tol=tol)
+    assert rep.closer == "TIED", f"expected TIED, got {rep.closer}"
+    assert rep.max_risk == Risk.BLOCK, (
+        f"expected BLOCK when both dist >> tol*10, got {rep.max_risk}")
+    assert any("系統的共有誤り" in f.message or "both" in f.message.lower()
+               or "両方" in f.message for f in rep.findings)
 
 
 def main():
@@ -261,6 +276,7 @@ def main():
         test_layer_blame_b_diverges_at_layer1,
         test_layer_blame_truncates_to_shortest,
         test_attribution_blame_chain,
+        test_compare_accuracy_tied_both_far_becomes_block,
     ]
     passed = failed = 0
     for t in tests:

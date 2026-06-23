@@ -236,8 +236,8 @@ def test_attribute_detects_onset_and_spike():
     assert rep.onset is not None, "onset should be detected"
     assert rep.onset == 1, f"expected onset at layer 1 (ffn), got {rep.onset}"
     assert rep.spike == 1, f"expected spike at layer 1 (ffn), got {rep.spike}"
-    assert rep.spike_name() == "ffn"
-    assert rep.onset_name() == "ffn"
+    assert rep.spike_name == "ffn"
+    assert rep.onset_name == "ffn"
 
 
 def test_attribute_names_fallback_when_none():
@@ -245,7 +245,7 @@ def test_attribute_names_fallback_when_none():
     x = np.array([1.0])
     rep = attribute(layers, [_scale(2.0), _identity], x, tol=1e-4, relative=False)
     # names=None → auto-generated
-    assert rep.onset_name().startswith("layer[") or rep.onset_name() == "(none)"
+    assert rep.onset_name.startswith("layer[") or rep.onset_name == "(none)"
 
 
 def test_attribute_empty_layers():
@@ -332,9 +332,9 @@ def test_attribution_spike_vs_propagation_dominant():
                     names=["matmul_small", "matmul_big", "matmul_small2"])
 
     assert rep.spike == 1, f"expected spike at layer 1, got {rep.spike}"
-    assert rep.spike_name() == "matmul_big"
+    assert rep.spike_name == "matmul_big"
     # Both APIs agree the middle layer is the critical one
-    assert theory_dominant.kind == rep.spike_name().split("_")[0]
+    assert theory_dominant.kind == rep.spike_name.split("_")[0]
 
 
 # --- diagnose (combined attribution + blame) ---------------------------------
@@ -391,6 +391,39 @@ def test_diagnose_to_text_contains_chain_info():
     assert "fix vendor" in text
 
 
+def test_spike_name_is_property_not_method():
+    """spike_name and onset_name must be @property (API consistency with DiagnosisReport)."""
+    from tsugi.attribution import AttributionReport
+    rep = AttributionReport(layer_names=["a", "b"], divs=[0.0, 0.1], onset=1, spike=1)
+    # @property: accessed without () — calling as method raises TypeError
+    name = rep.spike_name
+    assert name == "b", f"expected 'b', got {name!r}"
+    onset = rep.onset_name
+    assert onset == "b", f"expected 'b', got {onset!r}"
+
+
+def test_attribute_names_truncated_when_too_long():
+    """names longer than layers should be truncated to match len(divs)."""
+    layers_a = [_scale(1.0)]
+    layers_b = [lambda x: x + 0.5]
+    x = np.array([1.0])
+    rep = attribute(layers_a, layers_b, x, tol=0.01, relative=False,
+                    names=["layer0", "extra1", "extra2"])
+    assert len(rep.layer_names) == 1
+    assert rep.layer_names[0] == "layer0"
+
+
+def test_attribute_names_padded_when_too_short():
+    """names shorter than layers should be padded with auto-generated names."""
+    layers_a = [_scale(1.0), _scale(1.0)]
+    layers_b = [_scale(1.0), lambda x: x + 0.5]
+    x = np.array([1.0])
+    rep = attribute(layers_a, layers_b, x, tol=0.01, relative=False, names=["embed"])
+    assert len(rep.layer_names) == 2
+    assert rep.layer_names[0] == "embed"
+    assert rep.layer_names[1] == "layer[1]"
+
+
 def main():
     tests = [
         test_layer_divergences_identical_vendors,
@@ -424,6 +457,9 @@ def main():
         test_diagnose_with_oracle_blames_b,
         test_diagnose_all_clean_no_findings,
         test_diagnose_to_text_contains_chain_info,
+        test_spike_name_is_property_not_method,
+        test_attribute_names_truncated_when_too_long,
+        test_attribute_names_padded_when_too_short,
     ]
     passed = failed = 0
     for t in tests:

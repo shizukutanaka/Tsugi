@@ -25,6 +25,16 @@ import numpy as np
 
 from .report import FindingReport, Risk  # 検証層共通の深刻度モデル
 
+# --- 閾値定数 (Q4: magic number 排除) ---
+# dtype 上限の何割を超えたら overflow 近接 WARN にするか（0.1 = 10%）。
+_OVERFLOW_WARN_FRAC: float = 0.1
+# exp-overflow 閾値の何割を超えたら softmax WARN にするか（0.7 = 70%）。
+# fp16 の exp-overflow ≈ 11.09（ln 65504）なので 7.76 超で警告。
+_EXP_WARN_FRAC: float = 0.7
+# 認証 scale_max の何倍を超えたら BLOCK にするか（1.5 = 50% 超過）。
+# 1.0× は「近接（WARN）」、1.5× 超は「認証無効（BLOCK）」。
+_SCALE_BLOCK_RATIO: float = 1.5
+
 
 @dataclass(frozen=True)
 class DtypeLimits:
@@ -103,9 +113,9 @@ def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
     if max_abs >= lim.max_normal:
         rep.add(Risk.BLOCK, "tensor",
             f"max|x|={max_abs:.3g} ≥ {env.dtype} 上限 {lim.max_normal:.3g} → overflow/inf")
-    elif max_abs >= 0.1 * lim.max_normal:
+    elif max_abs >= _OVERFLOW_WARN_FRAC * lim.max_normal:
         rep.add(Risk.WARN, "tensor",
-            f"max|x|={max_abs:.3g} が {env.dtype} 上限の 10% 超 → overflow 近接")
+            f"max|x|={max_abs:.3g} が {env.dtype} 上限の {_OVERFLOW_WARN_FRAC*100:.0f}% 超 → overflow 近接")
 
     # denormal 域: FTZ（flush-to-zero）の有無がベンダーで異なり発散源になる
     nz = np.abs(xf[xf != 0.0])
@@ -118,10 +128,10 @@ def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
 
     # 出力スケールが認証時の前提を超過 → 認証 atol はもはや無効
     scale = float(np.sqrt(np.mean(xf ** 2))) if xf.size else 0.0
-    if scale > env.scale_max * 1.5:
+    if scale > env.scale_max * _SCALE_BLOCK_RATIO:
         implied = env.certified_atol * (scale / max(env.scale_max, 1e-30))
         rep.add(Risk.BLOCK, "scale",
-            f"実スケール {scale:.3g} が認証 scale_max {env.scale_max:.3g} を超過 "
+            f"実スケール {scale:.3g} が認証 scale_max {env.scale_max:.3g} を {_SCALE_BLOCK_RATIO}× 超 "
             f"→ 認証 atol={env.certified_atol:.2e} 無効（実許容 ~{implied:.2e}）・要再認証")
     elif scale > env.scale_max:
         rep.add(Risk.WARN, "scale",
@@ -146,10 +156,10 @@ def check_softmax_input(logits: np.ndarray, env: Envelope) -> EnvelopeReport:
         rep.add(Risk.BLOCK, "softmax",
             f"max|logit|={max_logit:.2f} > {env.dtype} exp-overflow {lim.exp_overflow:.2f} "
             "→ exp が inf（max-subtract 未適用なら片ベンダーで softmax 破綻）")
-    elif max_logit > 0.7 * lim.exp_overflow:
+    elif max_logit > _EXP_WARN_FRAC * lim.exp_overflow:
         rep.add(Risk.WARN, "softmax",
-            f"max|logit|={max_logit:.2f} が exp-overflow {lim.exp_overflow:.2f} に近接 "
-            "→ max-subtract 必須・ベンダー差が出やすい")
+            f"max|logit|={max_logit:.2f} が exp-overflow {lim.exp_overflow:.2f} の "
+            f"{_EXP_WARN_FRAC*100:.0f}% に近接 → max-subtract 必須・ベンダー差が出やすい")
     return rep
 
 
