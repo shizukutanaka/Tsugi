@@ -4,6 +4,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Changed
+- **blame を `audit_runtime` の correctness 層に統合（診断チェーンを製品経路で閉じる）**:
+  oracle を渡すと shared-mode 検出に加え blame（新視点13）が走り、「vendor X の実装を優先修正」を
+  verdict に算入。両ベンダーが oracle 内なら「責帰不要」、片方が乖離なら修正方向を明示、
+  同程度の乖離なら「両実装/oracle を疑う」。これまで `compare_accuracy` は孤立 API だったが
+  製品経路（audit）から到達可能になり、attribution（どの層）→ blame（どちらのベンダー）の
+  診断チェーンが audit で閉じる。audit.py docstring を 13 視点に更新。
+
 ### Added
 - **新視点13: ベンダー責帰 — どちらのベンダーが oracle に近いか？（`tsugi.blame`）**: BLOCK 判定後の
   「どちらのベンダーを修正するか」問題を解決（Q1-Q5 ソクラテス連鎖）。`accuracy_relative` が

@@ -1,11 +1,15 @@
 """Tsugi audit — 検証層を 1 つの判定に束ねる統合ファサード。
 
-8 つの視点（portability/equivalence/occupancy/tolerance/feasibility/propagation/
-envelope/decision）＋メタ層（calibration）＋基盤（nondeterminism）が出揃った。
+13 視点（portability/equivalence/occupancy/tolerance/feasibility/propagation/
+envelope/decision/rollout/worstcase/decision拡張/attribution/blame）＋メタ層
+（calibration/oracle_check）＋基盤（nondeterminism）が出揃った。
 個別に呼ぶのでなく、traced IR ＋タイル構成から **静的に実行できる層をまとめて回し、
 1 つの Audit レポートにする**。さらに *実機データが要る層*（実行時エンベロープ・
 非決定性ノイズ・タスクフリップ）を「実行時チェックリスト」として明示し、検証の
 ライフサイクル（静的 → 動的 → メタ → 基盤 → 翻訳）を一望できるようにする。
+
+oracle を渡すと correctness 層が動き、shared-mode 検出に加え blame（新視点13）が
+「どちらのベンダーを優先修正するか」を verdict に算入する（診断チェーンを製品経路で閉じる）。
 
 設計: 各視点は自分の所見を返すだけ。ここは束ねて深刻度を集約する単一責任。
 """
@@ -320,13 +324,15 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 
     # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。
     if oracle is not None:
+        from .blame import compare_accuracy
         from .calibration import SM_DIVERGENT, SM_SHARED, detect_shared_mode
         from .oracle_check import verify_oracle
+        oref = np.asarray(oracle, dtype=np.float64)
         cp = AuditPhase("correctness oracle 照合", "decided", Risk.OK)
         if not verify_oracle().ok:
             cp.max_risk = Risk.BLOCK
             cp.lines.append("oracle 自体がメタモルフィック検証に失敗 → 真値として使えない")
-        sm = detect_shared_mode(af, bf, np.asarray(oracle), K, dtype)
+        sm = detect_shared_mode(af, bf, oref, K, dtype)
         if sm == SM_SHARED:
             cp.max_risk = Risk.BLOCK
             cp.lines.append("SHARED_MODE: a≈b だが両方 oracle と不一致＝両ベンダー同一バグ"
@@ -335,6 +341,20 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             cp.lines.append("a≢b（cross-vendor が捕捉済み）")
         else:
             cp.lines.append("a≈b≈oracle: portability かつ correctness")
+        # blame: oracle があるなら「どちらを直すか」を示す（診断チェーンを製品経路で閉じる・新視点13）
+        bl = compare_accuracy(af, bf, oref, tol=eq.atol)
+        cp.max_risk = max(cp.max_risk, bl.max_risk)
+        if bl.max_risk == Risk.OK:
+            cp.lines.append(f"責帰: 両ベンダーとも oracle 距離 ≤ atol "
+                            f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}) — 責帰不要")
+        elif bl.closer == "TIED":
+            cp.lines.append(f"責帰: A({bl.dist_a:.2e})↔B({bl.dist_b:.2e}) 同程度 "
+                            f"(ratio={bl.ratio:.1f}) — 方向不明・両実装/oracle を疑う")
+        else:
+            blamed = "B" if bl.closer == "A" else "A"
+            cp.lines.append(f"責帰: vendor {bl.closer} が oracle に近い "
+                            f"(A={bl.dist_a:.2e}/B={bl.dist_b:.2e}・ratio={bl.ratio:.1f}x) "
+                            f"→ vendor {blamed} の実装を優先修正")
         ad.phases.append(cp)
 
     ad.stamp(**(provenance or {}))

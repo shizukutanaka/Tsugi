@@ -139,6 +139,20 @@ def test_audit_runtime_oracle_catches_shared_mode():
     assert not any(p.name.startswith("correctness") for p in no_oracle.phases)
 
 
+def test_audit_runtime_blame_points_to_culprit_vendor():
+    # oracle があるとき correctness 層が blame（新視点13）で修正方向を示す。
+    # B が oracle から大きく乖離 → 「vendor B の実装を優先修正」が verdict に現れる。
+    rng = np.random.default_rng(1)
+    oracle = rng.standard_normal((64, 64)).astype(np.float32)
+    a = oracle + 1e-6 * rng.standard_normal((64, 64)).astype(np.float32)  # A ≈ oracle
+    b = (oracle * 1.10).astype(np.float32)                                # B 10% off
+    ad = audit_runtime(a, b, K=256, oracle=oracle)
+    cp = next(p for p in ad.phases if p.name.startswith("correctness"))
+    blame_lines = [ln for ln in cp.lines if "責帰" in ln]
+    assert blame_lines, "correctness 層に blame（責帰）行があるべき"
+    assert "vendor B" in blame_lines[0], f"B を culprit に指すべき: {blame_lines[0]}"
+
+
 def test_audit_runtime_passes_equivalent_within_noise():
     # 真に等価(微小差)・ノイズ床込み → ブロッカー無し（INDISTINGUISHABLE/EQ は OK 寄り）
     rng = np.random.default_rng(0)
@@ -264,6 +278,7 @@ def main() -> int:
         test_audit_without_cfg_still_runs_portability,
         test_audit_verdict_is_provenance_stamped,
         test_audit_runtime_oracle_catches_shared_mode,
+        test_audit_runtime_blame_points_to_culprit_vendor,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
