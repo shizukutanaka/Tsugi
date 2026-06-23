@@ -38,6 +38,7 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **タスク多様性** — `tsugi.decision` の `compare_task` が回帰（値の相対/絶対許容）・バイナリ（sigmoid+threshold 跨ぎ）・ランキング（top-k 集合変化）のフリップ率を測る。argmax を非分類タスクに使うと flip_rate=0 に固まる静かな誤用を防ぐ（新視点11）
 - **最悪ケース発散探索** — `tsugi.worstcase` が認証エンベロープ内で発散を最大化する入力を能動探索（黒箱・微分フリー）。代表データ上は良性でも、許容超過の反例がエンベロープ内に在れば BLOCK。平均ケース等価 ⇏ 最悪ケース等価（受動測定への能動反証・envelope と閉ループ・新視点10）
 - **発散帰属** — `tsugi.attribution` が移植失敗時の O(L) デバッグを O(log L) に短縮。各層の出力発散を prefix scan し onset（汚染開始層）と spike（最大増幅層）を特定。`bisect_onset` で binary search により 100層モデルも 7 回の測定で onset を絞る。`propagation.dominant`（理論予測）と `attribution.spike`（実測）を照合し理論と実験の接続点を提供（新視点12）
+- **ベンダー責帰** — `tsugi.blame` が oracle との相対距離（dist_a / dist_b）を比較し「どちらのベンダーを修正するか」の方向を提供。attribution（どの層か）と組み合わせて "layer X の vendor Y を直せ" という完全診断チェーンを完成させる。oracle_check（shared mode 検出）と相補的（新視点13）
 - **統合監査** — `tsugi.audit` が 8 視点＋メタ＋基盤を 1 つの判定に束ね、静的層の verdict と実行時チェックリスト（実機データが要る層）をライフサイクル順に一望（運用統合）
 - **verdict の鮮度保証** — `tsugi.provenance` が監査結果を環境フィンガープリント（python/numpy/driver/rocm/cuda）に束ね、スタック更新で `is_stale` を自動判定。「一度 OK＝永遠に OK」を排す（時間軸の統合）
 - **permissive のみ** — 依存は全て MIT/Apache-2.0 系
@@ -106,7 +107,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | 完成形ファイル（仕様/ADR/README/FAQ/Benchmark/SPEC-verification） | ✅ 完了 | — |
 | リファレンス実装（CPU/NumPy・正しさの真値） | ✅ 完了 | test_reference（数値真値） |
 | 上流コンパイラ（DSL→tsugi.tile IR→各社intrinsic写像） | ✅ 完了 | DSL 全14opにlowering同期（drift不変条件）・tracer/compile テスト |
-| 不変条件 verify | ✅ 完了 | verify.py 77/77 invariants・全25スイート194テスト関数PASS |
+| 不変条件 verify | ✅ 完了 | verify.py 82/82 invariants・全26スイート213テスト関数PASS |
 | 移植性検証層（portability・新視点） | ✅ 完了 | warp/MMA/bf16/累積順序 リスク検出 |
 | 数値等価性層（equivalence・新視点） | ✅ 完了 | 擬似ベンダーで発散検出を実証 |
 | 占有率推定（occupancy） | ✅ 完了 | 一次情報源HW値・同一構成のベンダー差 |
@@ -122,6 +123,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 | verdict 鮮度保証（provenance・時間軸統合） | ✅ 完了 | verdict を環境fingerprintに束ね・スタック更新で is_stale 自動判定 |
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | 発散帰属（attribution・新視点12） | ✅ 完了 | onset/spike で O(L)→O(log L)・propagation 理論と実測の照合 |
+| ベンダー責帰（blame・新視点13） | ✅ 完了 | dist_a/dist_b 比較で修正方向を特定・attribution と完全診断チェーンを完成 |
 | GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
 

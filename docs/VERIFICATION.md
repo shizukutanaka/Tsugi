@@ -47,6 +47,7 @@ QA 文化）、クロスベンダー QA そのものが差別化になる。
 | 10 | `worstcase` | 最悪入力でも一致するか | 認証エンベロープ内で発散最大化入力を能動探索。平均ケース等価 ⇏ 最悪ケース等価 | [link](PERSPECTIVE-worstcase.md) |
 | 11 | `decision`（拡張） | 分類以外のタスクでも一致するか | 回帰/バイナリ/ランキングのフリップ率。argmax を非分類タスクに使うと静かに誤計算する | [link](PERSPECTIVE-task-diversity.md) |
 | 12 | `attribution` | 出力の不一致はどこから来るか | onset（汚染開始層）と spike（最大増幅層）を per-layer スキャンで特定。O(L)デバッグ → O(log L)。propagation の理論予測を実測で照合 | [link](PERSPECTIVE-attribution.md) |
+| 13 | `blame` | どちらのベンダーが oracle に近いか | dist_a / dist_b で「どちらを修正するか」を特定。attribution（どの層か）と組み合わせて "layer X の vendor Y を直せ" という完全診断チェーンを完成させる | [link](PERSPECTIVE-blame.md) |
 
 補助: `occupancy`（ベンダー別占有率）・`equivalence`（2 出力の等価判定）・
 `provenance`（verdict の鮮度）・`oracle_check`（oracle 自体の検証）・

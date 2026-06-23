@@ -481,6 +481,37 @@ def main() -> int:
     check("attribution bisect_onset matches linear find_onset (O(log L) correctness)",
           bisect_onset(_pf_a, _pf_b, _x12, n_layers=4, tol=0.05, relative=False) == 1)
 
+    # 29. blame 新視点13: どちらのベンダーが oracle に近いか（責帰）
+    from tsugi.blame import compare_accuracy, accuracy_relative, layer_blame
+
+    _oracle13 = np.array([1.0, 2.0, 3.0])
+    _a13 = _oracle13 + 1e-8      # A almost exact
+    _b13 = _oracle13 + 0.5       # B far from oracle
+
+    def _bid(x): return np.asarray(x, dtype=np.float64)
+    def _bperturb(x): return np.asarray(x, dtype=np.float64) + 0.5
+
+    check("blame: A closer to oracle → closer='A' (B blamed)",
+          compare_accuracy(_a13, _b13, _oracle13, tol=1e-4).closer == "A")
+    check("blame: identical to oracle → OK risk",
+          compare_accuracy(_oracle13.copy(), _oracle13.copy(),
+                           _oracle13, tol=1e-4).max_risk
+          == __import__("tsugi.report", fromlist=["Risk"]).Risk.OK)
+    check("blame: accuracy_relative of exact oracle match is zero",
+          accuracy_relative(_oracle13, _oracle13) == 0.0)
+
+    # 30. layer_blame が per-layer で dist_a / dist_b を返す（attribution との接続）
+    _lb_oracle = [_bid, _bid, _bid]
+    _lb_a = [_bid, _bid, _bid]            # A matches oracle everywhere
+    _lb_b = [_bid, _bperturb, _bid]       # B diverges at layer 1
+    _lb_dists = layer_blame(_lb_a, _lb_b, _lb_oracle, _oracle13, relative=False)
+    check("layer_blame returns per-layer dist tuples",
+          len(_lb_dists) == 3
+          and all(isinstance(da, float) and isinstance(db, float)
+                  for da, db in _lb_dists))
+    check("layer_blame detects B divergence at layer 1 (da=0, db>0)",
+          _lb_dists[1][0] == 0.0 and _lb_dists[1][1] > 0.1)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -143,6 +143,21 @@
   健全性証明でない（見つからない＝等価の証明ではない・探索の網羅性依存）。ヒルクライムは局所最適に
   嵌りうる（薄い manifold は取り逃す）。box の与え方が結論を左右（envelope の認証領域と一致させる）。
 
+### 3.7 blame — ベンダー責帰（どちらを修正するか・新視点13）
+`accuracy_relative(out, oracle, *, eps) -> float`（相対距離 max|out-oracle| / (max|oracle|+ε)）/
+`compare_accuracy(a, b, oracle, *, tol, ratio_threshold=2.0, relative=True) -> BlameReport` /
+`layer_blame(layers_a, layers_b, layers_oracle, x, *, relative=True) -> list[tuple[float, float]]`
+- 規約: attribution が「どの層か」を特定するのに対し、blame は「どちらのベンダーが oracle に近いか」を
+  定量比較し「どちらの実装を優先修正するか」の方向を提供する。`compare_accuracy` が
+  dist_a / dist_b の比率（ratio）を計算し、ratio ≥ ratio_threshold なら `closer=A/B`（責帰が明確）、
+  ratio < ratio_threshold なら `closer=TIED`（両方同程度・方向不明）を判定。
+  `layer_blame` が per-layer で (dist_a, dist_b) を返し attribution.spike の層での責帰クロスチェックを提供。
+  診断チェーン: "equivalence → attribution.spike（どの層）→ blame.closer（どちらのベンダー）→ 修正"。
+- 保証: oracle との相対距離を比較することで "どちらを直すか" の方向を提供する。blame は
+  *観測的比較* であって因果証明ではない（真因はアルゴリズム誤り / 累積誤差 / HW 仕様差 等多様）。
+  **しない**: oracle 自身の正確性は保証しない（oracle_check.verify_oracle を事前に呼ぶこと推奨）。
+  ratio ≈ 1 の TIED ケースでは方向が特定できない（両実装または oracle を疑う必要）。
+
 ### 3.6 attribution — 発散帰属（per-layer 因果特定・新視点12）
 `layer_divergences(layers_a, layers_b, x, *, relative=True) -> list[float]`（prefix scan: 各層出力での発散）/
 `find_onset(divs, threshold) -> int | None`（threshold を最初に超える層） /

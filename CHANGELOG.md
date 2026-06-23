@@ -5,6 +5,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **新視点13: ベンダー責帰 — どちらのベンダーが oracle に近いか？（`tsugi.blame`）**: BLOCK 判定後の
+  「どちらのベンダーを修正するか」問題を解決（Q1-Q5 ソクラテス連鎖）。`accuracy_relative` が
+  oracle への相対距離を計算、`compare_accuracy` が dist_a / dist_b の ratio で `closer=A/B/TIED`
+  と責帰方向を判定、`layer_blame` が per-layer で (dist_a, dist_b) を返す。attribution（どの層か）
+  と組み合わせて "layer X の vendor Y 実装を直せ" という完全診断チェーンを完成させる。
+  oracle_check（shared mode 検出）と相補的: oracle_check は "共有モード障害の有無"、blame は
+  "責帰の割り当て"。tests/correctness/test_blame.py 19 テスト全通過。verify.py invariants 29-30
+  追加（82/82）。
 - **新視点12: 発散帰属 — 出力の不一致はどこから来るか？（`tsugi.attribution`）**: 移植失敗時の
   O(L) 手動デバッグを O(log L) に短縮する per-layer 因果特定層。`layer_divergences` が両ベンダー
   同一入力で各層出力の発散を prefix scan し、`find_onset`（汚染開始層）・`find_spike`（最大増幅層）

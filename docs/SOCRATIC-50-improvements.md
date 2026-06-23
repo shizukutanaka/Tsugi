@@ -260,6 +260,11 @@ max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防
   `find_onset`/`find_spike`/`attribute`/`bisect_onset`。O(L) 手動デバッグ → O(log L)。
   propagation.dominant（理論）と attribution.spike（実測）の照合で理論と実験の接続点を提供。
   tests/correctness/test_attribution.py 27 テスト、verify.py invariants 27-28（77/77）。
+- ✅ 新視点13（修正済）: `tsugi.blame` — ベンダー責帰。`accuracy_relative`/`compare_accuracy`/
+  `layer_blame`。oracle との dist_a / dist_b を比較し「どちらのベンダーを修正するか」を特定。
+  attribution（どの層）と組み合わせて "layer X の vendor Y を直せ" という完全診断チェーンを完成。
+  oracle_check（shared mode 検出）と相補的。tests/correctness/test_blame.py 19 テスト。
+  verify.py invariants 29-30（82/82）。
 - Q29–32: decision の task 多様性（回帰/生成/サンプリング）。
 - Q50: 実機 e2e（最重要だが GPU 必須）。
 

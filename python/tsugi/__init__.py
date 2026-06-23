@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from . import (
     attribution,
+    blame,
     calibration,
     decision,
     envelope,
@@ -56,6 +57,7 @@ __all__ = [
     "rollout",
     "worstcase",
     "attribution",
+    "blame",
     "oracle_check",
     "provenance",
     "audit",
