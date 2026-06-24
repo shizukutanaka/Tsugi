@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tsugi.nondeterminism import classify_nondeterminism
 from tsugi.propagation import GraphOp, is_amplifier, propagate
 
 _CALL_OPS = ("call_function", "call_method", "call_module")
@@ -61,6 +62,19 @@ def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
     return ops
 
 
+def fx_call_target_names(gm: Any) -> list[str]:
+    """FX グラフの呼び出しノードの raw target 名を列挙する（非決定 op 照合用）。
+
+    _kind_of は scatter_add/index_add 等を論理 op に畳まないため、生 target 名を別途
+    取り出して nondeterminism カタログに照合する（atomicAdd 由来の非決定検出）。
+    """
+    names: list[str] = []
+    for node in gm.graph.nodes:
+        if getattr(node, "op", None) in _CALL_OPS:
+            names.append(str(getattr(node, "target", "")))
+    return names
+
+
 def audit_fx(gm: Any, ref_logits=None) -> dict:
     """FX グラフに静的検証（propagation）を走らせ、要点を dict で返す。
 
@@ -73,12 +87,17 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
     ops = fx_to_graph_ops(gm)
     rep = propagate(ops)
     amps = sorted({o.kind for o in ops if is_amplifier(o.kind)})
+    # atomicAdd 由来の非決定 op を静的に検出（PyTorch 公式カタログ照合）。
+    # これらがあれば静的許容では不十分で、実機 noise floor 実測が必須。
+    nondet = classify_nondeterminism(fx_call_target_names(gm))
     out = {
         "n_ops": len(ops),
         "model_divergence": rep.model_divergence,
         "naive_sum": rep.naive_sum,
         "amplifiers": amps,
         "dominant": rep.dominant.kind if rep.dominant is not None else None,
+        "nondeterministic_ops": list(nondet.nondet_ops),
+        "requires_noise_floor": nondet.requires_noise_floor,
         "task_flip_bound": None,
     }
     if ref_logits is not None:

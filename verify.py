@@ -557,6 +557,33 @@ def main() -> int:
     check("float64 dtype_limits is not the float32 fallback (max_normal differs by 270 orders)",
           _dlim("float64").max_normal > _dlim("float32").max_normal * 1e260)
 
+    # 34. nondeterminism 静的カタログ: atomicAdd 由来の非決定 op を実行前に検出（PyTorch 公式）
+    from tsugi.nondeterminism import (classify_nondeterminism, op_is_nondeterministic)
+    check("atomicAdd nondeterministic ops cataloged (scatter_add/index_add/bincount, PyTorch docs)",
+          op_is_nondeterministic("scatter_add") and op_is_nondeterministic("aten.index_add.default")
+          and op_is_nondeterministic("bincount")
+          and not op_is_nondeterministic("matmul") and not op_is_nondeterministic("softmax"))
+    _ndrep = classify_nondeterminism(["matmul", "softmax", "scatter_add", "add"])
+    check("graph with atomicAdd op statically requires runtime noise-floor measurement",
+          _ndrep.requires_noise_floor and _ndrep.nondet_ops == ("scatter_add",)
+          and not classify_nondeterminism(["matmul", "softmax", "add"]).requires_noise_floor)
+    # FX 橋がコード生成前に非決定 op を audit に届ける（torch.compile 経路）
+    from tsugi_torch.fxbridge import audit_fx as _afx
+
+    class _NN:
+        def __init__(s, op, t):
+            s.op, s.target, s.meta = op, t, {}
+
+    class _GG:
+        def __init__(s, ns):
+            s.graph = type("GR", (), {"nodes": ns})
+    _ndgm = _GG([_NN("call_function", "aten.addmm.default"),
+                 _NN("call_function", "aten.scatter_add.default"),
+                 _NN("output", "output")])
+    check("torch backend audit_fx flags atomicAdd nondeterminism before codegen",
+          _afx(_ndgm)["requires_noise_floor"]
+          and any("scatter_add" in n for n in _afx(_ndgm)["nondeterministic_ops"]))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

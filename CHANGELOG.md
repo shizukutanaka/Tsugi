@@ -5,6 +5,25 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **atomicAdd 由来の非決定 op 静的カタログ（PyTorch 公式由来・第8回）**:
+  外部調査（PyTorch 公式 randomness ドキュメント・Qiita「seed、本当に固定できた?」・
+  arXiv:2408.05148 浮動小数非結合性）の知見に基づく。PyTorch は `scatter_add` / `index_add` /
+  `bincount` / `embedding_bag`(backward) / `ctc_loss` / プーリング・サンプリングの backward が
+  **atomicAdd を使い seed 固定でも run-to-run で揺れる**ことを明示している。Tsugi は noise floor を
+  *実測* する機構（`measure_noise_floor`）を持つが、**どの op が本質的に非決定か**を事前に
+  宣言する静的カタログが欠けていた。実行前に「このグラフは静的許容では不十分・noise floor 実測が
+  必須」と告げられるのが価値。
+  - `nondeterminism.ATOMIC_NONDET_OPS`: PyTorch 公式が atomicAdd 由来と明示する 13 op のカタログ
+    （op→非決定の理由 forward/backward）。
+  - `op_is_nondeterministic(name)` / `nondeterminism_reason(name)`: 前方一致で表記揺れ
+    （`scatter_add_`・`aten.scatter_add.default`・`max_pool2d`・大文字）を吸収。
+  - `classify_nondeterminism(op_names) -> NondetCatalogReport`: グラフの op を走査し非決定 op を
+    列挙。`requires_noise_floor` で「静的許容では不十分」を宣言。
+  - **FX 橋（torch.compile 経路）への結線**: `fxbridge.audit_fx` が `requires_noise_floor` と
+    `nondeterministic_ops` を返すようになり、**コード生成前に**非決定 op を audit に届ける。
+    `fx_call_target_names()` で生 target 名を抽出して照合。
+  テスト 4 件追加（test_nondeterminism.py +3、test_fxbridge.py +1）。verify.py 不変条件 3 件（94/94）。
+
 - **TF32 dtype サポート: NVIDIA Ampere+ の fp16 級精度 GEMM に正しい許容を適用（第7回）**:
   外部調査（Qiita/Zenn/PyTorch 公式/NVIDIA 技術ブログ）の知見に基づく修正。
   TF32（TensorFloat32）は NVIDIA Ampere+ GPU が float32 GEMM/conv に使うハイブリッド形式で、

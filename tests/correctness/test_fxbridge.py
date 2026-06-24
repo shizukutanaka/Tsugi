@@ -93,6 +93,26 @@ def test_audit_fx_translates_to_task_flip_bound():
     assert 0.0 <= rep["task_flip_bound"] <= 1.0      # 確率（上界）
 
 
+def test_audit_fx_flags_nondeterministic_atomic_ops():
+    # scatter_add 等 atomicAdd 由来の非決定 op を検出し noise floor 実測必須を宣言
+    # （PyTorch 公式: https://pytorch.org/docs/stable/notes/randomness.html）
+    gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.scatter_add.default"),    # 非決定（forward atomicAdd）
+        _Node("call_function", "aten._softmax.default"),
+        _Node("output", "output"),
+    ])
+    rep = audit_fx(gm)
+    assert rep["requires_noise_floor"], "scatter_add を含むのに noise floor 不要扱い"
+    assert any("scatter_add" in n for n in rep["nondeterministic_ops"])
+
+    # 決定論的グラフ（matmul/softmax のみ）は noise floor 不要
+    det = audit_fx(_transformer_block())
+    assert not det["requires_noise_floor"]
+    assert det["nondeterministic_ops"] == []
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -101,6 +121,7 @@ def main() -> int:
         test_audit_fx_surfaces_amplifiers,
         test_audit_fx_empty_graph,
         test_audit_fx_translates_to_task_flip_bound,
+        test_audit_fx_flags_nondeterministic_atomic_ops,
     ]
     for t in tests:
         try:

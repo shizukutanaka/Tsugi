@@ -44,6 +44,90 @@ DIVERGENT = "DIVERGENT"
 INDISTINGUISHABLE = "INDISTINGUISHABLE"  # クロス差がノイズ未満＝判定未定義
 
 
+# --- atomicAdd 由来で run-to-run 非決定な演算の静的カタログ（PyTorch 公式由来） ---
+# https://pytorch.org/docs/stable/notes/randomness.html
+# これらは GPU で atomicAdd を使い、スレッド到着順で和の順序が変わるため seed 固定でも
+# run-to-run で揺れる。**静的許容（derive_tolerance）だけでは不十分** で、noise floor の
+# *実測*（measure_noise_floor）が必須。値 = 非決定の理由（forward/backward のどちらか）。
+# これは measure_noise_floor の *静的な事前警告* 版: グラフにこれらの op があれば、
+# 実行前に「この比較は noise floor 実測なしには信頼できない」と宣言できる。
+ATOMIC_NONDET_OPS: dict[str, str] = {
+    # forward が atomicAdd を使う（出力そのものが run-to-run で揺れる）
+    "scatter_add": "forward atomicAdd（散布加算の到着順）",
+    "index_add": "forward atomicAdd（添字加算の到着順）",
+    "index_put": "forward atomicAdd（accumulate=True の重複添字）",
+    "bincount": "forward atomicAdd（ヒストグラム集計）",
+    "scatter_reduce": "forward atomicAdd（reduce='sum' 経路）",
+    "index_select_backward": "atomicAdd（gather の逆伝播）",
+    # backward が atomicAdd を使う（勾配が run-to-run で揺れる → 学習で顕著）
+    "embedding_bag": "backward atomicAdd（埋め込み勾配の集約）",
+    "embedding": "backward atomicAdd（重複添字の勾配集約）",
+    "ctc_loss": "backward atomicAdd（系列勾配の集約）",
+    "max_pool": "backward atomicAdd（重複入力位置の勾配集約）",
+    "adaptive_avg_pool": "backward atomicAdd（プーリング勾配の集約）",
+    "grid_sample": "backward atomicAdd（サンプリング勾配の集約）",
+    "interpolate": "backward atomicAdd（アップサンプリング勾配の集約）",
+}
+
+
+def op_is_nondeterministic(op_name: str) -> bool:
+    """この op が atomicAdd 由来で本質的に run-to-run 非決定か（PyTorch 公式カタログ照合）。
+
+    op_name は完全一致または前方一致で判定する（"scatter_add_"・"aten.scatter_add.default"・
+    "max_pool2d" 等の表記揺れを吸収）。
+    """
+    name = op_name.lower()
+    return any(key in name for key in ATOMIC_NONDET_OPS)
+
+
+def nondeterminism_reason(op_name: str) -> str | None:
+    """非決定 op ならその理由を返す（決定論的なら None）。"""
+    name = op_name.lower()
+    for key, reason in ATOMIC_NONDET_OPS.items():
+        if key in name:
+            return reason
+    return None
+
+
+@dataclass
+class NondetCatalogReport(FindingReport):
+    """グラフ中の非決定 op を静的に列挙する（noise floor 実測の必要性を事前宣言）。"""
+
+    nondet_ops: tuple[str, ...] = ()
+
+    @property
+    def requires_noise_floor(self) -> bool:
+        """1 つでも非決定 op があれば noise floor 実測が必須（静的許容では不十分）。"""
+        return len(self.nondet_ops) > 0
+
+    def to_text(self) -> str:  # type: ignore[override]
+        return super().to_text(
+            header=(f"nondeterminism catalog "
+                    f"({'NOISE-FLOOR REQUIRED' if self.requires_noise_floor else 'deterministic'})"),
+            empty="(no atomicAdd-based ops — static tolerance is sufficient)")
+
+
+def classify_nondeterminism(op_names) -> NondetCatalogReport:
+    """グラフの op 名リストを走査し、atomicAdd 由来の非決定 op を静的に列挙する。
+
+    これらの op があれば、derive_tolerance の静的許容だけでは不十分で、
+    measure_noise_floor で run-to-run ノイズを実測してから等価判定すべき
+    （compare_stable に渡す）。実行前にこの要件を宣言できるのが利点。
+    """
+    rep = NondetCatalogReport()
+    hits = []
+    for name in op_names:
+        reason = nondeterminism_reason(name)
+        if reason is not None:
+            hits.append(str(name))
+            rep.add(Risk.WARN, str(name),
+                    f"{reason} → seed 固定でも run-to-run で揺れる。"
+                    "静的許容でなく noise floor 実測（measure_noise_floor）が必須")
+    rep.nondet_ops = tuple(hits)
+    return rep
+
+
+
 def simulate_nondeterministic_reduction(parts: np.ndarray, seed: int) -> np.ndarray:
     """atomicAdd の非決定スケジュールを擬似再現する（CPU・シミュレーション・明示）。
 

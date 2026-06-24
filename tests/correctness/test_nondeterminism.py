@@ -17,12 +17,16 @@ from tsugi.nondeterminism import (  # noqa: E402
     EQUIVALENT,
     INDISTINGUISHABLE,
     attribute,
+    classify_nondeterminism,
     compare_stable,
     measure_batch_variance,
     measure_noise_floor,
+    nondeterminism_reason,
+    op_is_nondeterministic,
     simulate_batch_variant_reduction,
     simulate_nondeterministic_reduction,
 )
+from tsugi.report import Risk  # noqa: E402
 
 
 def _parts(seed: int, K: int = 4096) -> np.ndarray:
@@ -127,6 +131,42 @@ def test_single_run_comparison_is_flaky():
     assert verdicts == {"EQ", "DV"}   # 同じ真に等価な対が run の引きで EQ/DV に揺れる
 
 
+def test_atomic_op_catalog_flags_pytorch_nondeterministic_ops():
+    # PyTorch 公式が atomicAdd 由来で非決定と明示する op を静的に識別する
+    # （https://pytorch.org/docs/stable/notes/randomness.html）
+    for name in ("scatter_add", "index_add", "bincount", "embedding_bag", "ctc_loss"):
+        assert op_is_nondeterministic(name), f"{name} を非決定と識別できない"
+        assert nondeterminism_reason(name) is not None
+    # 決定論的な op は誤検出しない
+    for name in ("matmul", "softmax", "add", "relu", "layernorm"):
+        assert not op_is_nondeterministic(name), f"{name} を誤って非決定扱い"
+        assert nondeterminism_reason(name) is None
+
+
+def test_op_catalog_tolerates_naming_variants():
+    # 表記揺れ（末尾 _・aten 修飾・次元サフィックス）を前方一致で吸収する
+    assert op_is_nondeterministic("scatter_add_")
+    assert op_is_nondeterministic("aten.scatter_add.default")
+    assert op_is_nondeterministic("max_pool2d")
+    assert op_is_nondeterministic("ADAPTIVE_AVG_POOL3D")   # 大文字でも一致
+
+
+def test_classify_nondeterminism_requires_noise_floor():
+    # 非決定 op を含むグラフは noise floor 実測が必須と宣言される
+    graph = ["matmul", "softmax", "scatter_add", "add"]
+    rep = classify_nondeterminism(graph)
+    assert rep.requires_noise_floor
+    assert rep.nondet_ops == ("scatter_add",)
+    assert rep.max_risk == Risk.WARN
+    assert any("noise floor" in f.message for f in rep.findings)
+
+    # 決定論的グラフは静的許容で十分（noise floor 不要）
+    det = classify_nondeterminism(["matmul", "softmax", "layernorm", "add"])
+    assert not det.requires_noise_floor
+    assert det.nondet_ops == ()
+    assert det.max_risk == Risk.OK
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -140,6 +180,9 @@ def main() -> int:
         test_indistinguishable_for_truly_equivalent_vendors,
         test_real_divergence_still_detected_above_noise,
         test_single_run_comparison_is_flaky,
+        test_atomic_op_catalog_flags_pytorch_nondeterministic_ops,
+        test_op_catalog_tolerates_naming_variants,
+        test_classify_nondeterminism_requires_noise_floor,
     ]
     for t in tests:
         try:
