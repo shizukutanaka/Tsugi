@@ -91,6 +91,12 @@ def main() -> int:
     bad = simulate_vendor_matmul(a, b, accum="f16", split_k=64)
     check("equivalence detects f16-accum divergence", not compare(good, bad, "float16").equivalent)
     check("equivalence accepts identical", compare(good, good.copy(), "float16").equivalent)
+    # float64 が float32 の緩い許容にフォールバックしない（偽OK 防止・PyTorch assert_close 由来）
+    _f64 = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    check("equivalence float64 catches 1e-6 drift (no float32 fallback)",
+          not compare(_f64, _f64 + 1e-6, "float64").equivalent)
+    check("equivalence float64 accepts genuine double-precision rounding",
+          compare(_f64, _f64 + 1e-14, "float64").equivalent)
 
 
     # 9. occupancy: 同一構成がベンダー間で差を持つ（移植落とし穴の検出）

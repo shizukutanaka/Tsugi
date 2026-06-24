@@ -16,11 +16,17 @@ import numpy as np
 
 from .report import Risk  # 検証層共通の深刻度モデル
 
-# dtype 別の許容誤差（BENCHMARK.md §4 と整合）
+# dtype 別の許容誤差（BENCHMARK.md §4 と整合）。
+# 参考: PyTorch `torch.testing.assert_close` の dtype 別デフォルト（同一ベンダー想定）は
+#   float16=(rtol=1e-3, atol=1e-3) / float32=(1e-4, 1e-5) / float64=(1e-5, 1e-8)。
+# Tsugi は *クロスベンダー*（NVIDIA↔AMD で正当に異なる）を扱うため概ね 1 桁緩めるが、
+# fail-safe 哲学（偽OK は致命的）に従い float64 を float32 にフォールバックさせない
+# （float64 を 1e-4 で見ると 5 桁緩く偽OK 源になる）。未知 dtype のみ float32 を既定とする。
 TOLERANCE = {
     "float16": dict(atol=1e-2, rtol=1e-2),
     "bfloat16": dict(atol=2e-2, rtol=2e-2),  # bf16 はベンダー差が大きい
     "float32": dict(atol=1e-4, rtol=1e-4),
+    "float64": dict(atol=1e-7, rtol=1e-7),   # 倍精度: PyTorch 1e-8 比で 1 桁緩め（cross-vendor）
 }
 
 

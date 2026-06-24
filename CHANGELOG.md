@@ -4,6 +4,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Fixed
+- **float64 が float32 の緩い許容にフォールバックする偽OK バグを修正（外部調査ベース・第6回）**:
+  Qiita/Zenn と PyTorch 公式の `torch.testing.assert_close` 調査から、dtype 別許容の標準
+  （fp16=1e-3 / fp32=1e-4 / **fp64=1e-8**）を確認。Tsugi の `equivalence.TOLERANCE` と
+  `tolerance.UNIT_ROUNDOFF` 両方に **float64 が欠落**しており、`compare(a, b, "float64")` が
+  float32 の許容（atol=1e-4・u=5.96e-8）にフォールバックしていた。倍精度の真の精度は ~1e-16 で、
+  **5〜8 桁緩い許容での偽OK**（Tsugi の最重要リスク「偽OK は致命的」）を生む欠陥。
+  - `equivalence.TOLERANCE` に `float64=(atol=1e-7, rtol=1e-7)` を追加。
+  - `tolerance.UNIT_ROUNDOFF` に `float64=2^-53 (≈1.11e-16)` を追加（calibration の検出限界も連動修正）。
+  - 回帰テスト 2 件（`test_float64_does_not_fall_back_to_float32_tolerance` /
+    `test_float64_accepts_genuine_double_precision_noise`）＋ verify.py 不変条件 2 件（86/86）。
+
 ### Changed
 - **型注釈の補完（API 明確化）（第5回）**:
   1. **attribution/blame 関数の型注釈追加**: `layer_divergences` / `attribute` / `diagnose` /

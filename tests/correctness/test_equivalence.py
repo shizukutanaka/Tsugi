@@ -90,6 +90,32 @@ def test_classify_layout_vs_numerical_divergence():
     assert classify_divergence(a, a[:, :32].copy(), K) == DV_DIVERGENT
 
 
+def test_float64_does_not_fall_back_to_float32_tolerance():
+    """float64 比較が float32 の緩い許容(1e-4)にフォールバックしないこと（偽OK 防止）。
+
+    研究知見（PyTorch assert_close は float64=atol 1e-8）に基づく修正の回帰テスト。
+    倍精度で 1e-6 ずれた 2 実装は、float32 許容(1e-4)では「等価」と誤判定されるが、
+    float64 専用許容(1e-7)では正しく DIVERGENT を検出すべき。
+    """
+    base = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+    perturbed = base + 1e-6   # float32 tol(1e-4)では隠れる / float64 tol(1e-7)では見える
+    rep64 = compare(base, perturbed, dtype="float64")
+    assert not rep64.equivalent, (
+        f"float64 で 1e-6 のズレを見逃した（偽OK）: {rep64.to_text()}")
+    # 対照: 同じズレを float32 許容で見ると（緩いので）等価扱い = フォールバックの危険性
+    rep32 = compare(base, perturbed, dtype="float32")
+    assert rep32.equivalent, "対照: float32 許容(1e-4)では 1e-6 は等価扱い（だから fallback は危険）"
+
+
+def test_float64_accepts_genuine_double_precision_noise():
+    """float64 で真の倍精度丸め(~1e-15)は等価と判定する（偽BLOCK を出さない）。"""
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal(100).astype(np.float64)
+    noise = base + rng.standard_normal(100) * 1e-14  # 倍精度丸め級
+    rep = compare(base, noise, dtype="float64")
+    assert rep.equivalent, f"倍精度丸めを過剰検出（偽BLOCK）: {rep.to_text()}"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -99,6 +125,8 @@ def main() -> int:
         test_report_fields,
         test_uniform_risk_interface,
         test_classify_layout_vs_numerical_divergence,
+        test_float64_does_not_fall_back_to_float32_tolerance,
+        test_float64_accepts_genuine_double_precision_noise,
     ]
     for t in tests:
         try:

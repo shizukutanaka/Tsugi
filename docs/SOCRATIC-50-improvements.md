@@ -16,8 +16,12 @@
 → ✅ **修正済**: `tsugi.constants.SAFETY` に集約し 5 箇所すべてがそれを参照（単一情報源・DRY）。
 
 **Q3.** safety=4.0 は fp16/bf16/fp32 で同じでよいか？
-→ dtype で丸めの統計的性質は変わりうる。**改善: dtype 別 safety の妥当性を検討（少なくとも
-「同一でよい」根拠を記す）。**
+→ dtype で丸めの統計的性質は変わりうる。safety は dtype 非依存だが *unit roundoff*（u）を
+dtype 別に掛けることで実効許容は dtype 別になる（u: fp16 4.9e-4 / bf16 3.9e-3 / fp32 6e-8 /
+**fp64 1.1e-16**）。✅ **一部修正済（外部調査ベース）**: PyTorch `torch.testing.assert_close` の
+dtype 別デフォルト（fp16=1e-3 / fp32=1e-4 / **fp64=1e-8**）を参照根拠として明記。さらに
+**fp64 が `UNIT_ROUNDOFF`/`TOLERANCE` 両方で欠落し float32 にフォールバック → 8 桁緩い偽OK 源**
+だった欠陥を発見・修正（fp64 を両 dict に追加）。残: safety 自体の dtype 別チューニングは実機校正待ち。
 
 **Q4.** 検出限界 `0.1*max_normal`（overflow 近接 WARN の 10%）の 0.1 は？
 → envelope の閾値。任意。**改善: 閾値群（0.1・0.7・1.5・0.5*thresh 等）を名前付き定数化。**
