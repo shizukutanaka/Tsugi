@@ -34,6 +34,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -47,7 +48,8 @@ from .blame import _RATIO_THRESHOLD_TIED
 _BLOCK_DIV_RATIO: float = 10.0
 
 
-def layer_divergences(layers_a, layers_b, x, *, relative: bool = True) -> list[float]:
+def layer_divergences(layers_a: Sequence[Callable], layers_b: Sequence[Callable],
+                      x: np.ndarray | Sequence, *, relative: bool = True) -> list[float]:
     """各層を通過した後の 2 ベンダー発散を測る（prefix scan）。
 
     `layers_a`/`layers_b`: 各層を表す callable のリスト。layer_i(prev_output) -> output。
@@ -147,7 +149,9 @@ class AttributionReport(_LayerProfileMixin, FindingReport):
             empty="(all layers within tolerance — divergence origin not found)")
 
 
-def attribute(layers_a, layers_b, x, *, tol: float, names=None,
+def attribute(layers_a: Sequence[Callable], layers_b: Sequence[Callable],
+              x: np.ndarray | Sequence, *, tol: float,
+              names: Sequence[str] | None = None,
               relative: bool = True) -> AttributionReport:
     """per-layer 発散スキャンで発散の onset と spike を特定する。
 
@@ -222,7 +226,9 @@ class DiagnosisReport(_LayerProfileMixin, FindingReport):
             empty="(all layers within tolerance — no divergence found)")
 
 
-def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
+def diagnose(layers_a: Sequence[Callable], layers_b: Sequence[Callable],
+             layers_oracle: Sequence[Callable] | None, x: np.ndarray | Sequence, *,
+             tol: float, names: Sequence[str] | None = None,
              relative: bool = True) -> DiagnosisReport:
     """attribution + blame を 1 回で実行する統合診断。
 
@@ -294,7 +300,9 @@ def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
     return rep
 
 
-def bisect_onset(fn_prefix_a, fn_prefix_b, x, n_layers: int, *,
+def bisect_onset(fn_prefix_a: Callable[[int, np.ndarray | Sequence], np.ndarray],
+                 fn_prefix_b: Callable[[int, np.ndarray | Sequence], np.ndarray],
+                 x: np.ndarray | Sequence, n_layers: int, *,
                  tol: float, relative: bool = True) -> int | None:
     """onset を binary search で O(log L) で特定する（層数が多い時の効率化）。
 

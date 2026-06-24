@@ -5,6 +5,13 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
+- **型注釈の補完（API 明確化）（第5回）**:
+  1. **attribution/blame 関数の型注釈追加**: `layer_divergences` / `attribute` / `diagnose` /
+     `layer_blame` / `compare_accuracy` / `accuracy_relative` のパラメータに型注釈を追加。
+     `layers_a: Sequence[Callable]` / `x: np.ndarray | Sequence` のように API の引数の型を明示。
+  2. **import の追加**: `collections.abc.Callable`, `Sequence` を両ファイルに追加。
+  3. 効果: IDE 自動補完が機能・新ユーザーの理解が容易・型チェッカーが検証可能になる。
+
 - **定数の統合と散在の排除（第4回）**:
   1. **blame の `ratio_threshold` を共有定数に**: `compare_accuracy` で `ratio_threshold=2.0` を
      デフォルトとしていたが、`diagnose()` が同じ値を硬コーディングしていた。

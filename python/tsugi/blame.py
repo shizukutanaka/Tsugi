@@ -39,6 +39,7 @@
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -57,7 +58,8 @@ _BLOCK_DIST_RATIO: float = 10.0
 _RATIO_THRESHOLD_TIED: float = 2.0
 
 
-def accuracy_relative(out, oracle, *, eps: float = 1e-30) -> float:
+def accuracy_relative(out: np.ndarray | Sequence, oracle: np.ndarray | Sequence,
+                      *, eps: float = 1e-30) -> float:
     """output の oracle に対する相対距離。max|out − oracle| / (max|oracle| + ε)。"""
     out = np.asarray(out, dtype=np.float64)
     ref = np.asarray(oracle, dtype=np.float64)
@@ -86,7 +88,9 @@ class BlameReport(FindingReport):
             empty="(both vendors within tolerance — blame inconclusive)")
 
 
-def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = _RATIO_THRESHOLD_TIED,
+def compare_accuracy(a: np.ndarray | Sequence, b: np.ndarray | Sequence,
+                     oracle: np.ndarray | Sequence, *,
+                     tol: float, ratio_threshold: float = _RATIO_THRESHOLD_TIED,
                      relative: bool = True) -> BlameReport:
     """A と B それぞれの oracle 距離を比較し、どちらが oracle に近いか（責帰）を報告。
 
@@ -172,7 +176,8 @@ def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = _RATI
     return rep
 
 
-def layer_blame(layers_a, layers_b, layers_oracle, x, *,
+def layer_blame(layers_a: Sequence[Callable], layers_b: Sequence[Callable],
+                layers_oracle: Sequence[Callable], x: np.ndarray | Sequence, *,
                 relative: bool = True) -> list[tuple[float, float]]:
     """各層で (dist_a_i, dist_b_i) を返す（attribution.spike の層で blame を確認するクロスチェック）。
 
