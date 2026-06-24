@@ -116,6 +116,60 @@ def test_float64_accepts_genuine_double_precision_noise():
     assert rep.equivalent, f"倍精度丸めを過剰検出（偽BLOCK）: {rep.to_text()}"
 
 
+def test_nan_in_output_flagged_as_non_finite():
+    """NaN を含む出力は has_non_finite=True かつ DIVERGENT と判定（データ破壊の識別）。
+
+    精度発散（finite な差）と NaN 伝播（データ破壊）は根本原因が異なる。
+    前者はアルゴリズム精度問題、後者は overflow/除零/入力破損。
+    has_non_finite フラグでスタックトレースなしに根本原因を絞り込める。
+    """
+    a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    b_nan = np.array([1.0, np.nan, 3.0], dtype=np.float32)
+    rep = compare(a, b_nan, dtype="float32")
+    assert not rep.equivalent, "NaN を含む出力が等価と誤判定された"
+    assert rep.has_non_finite, "NaN が has_non_finite=False のまま（識別できていない）"
+    assert "NaN/Inf" in rep.to_text(), f"to_text() に NaN/Inf が表示されない: {rep.to_text()}"
+
+    # 双方に Inf を含む場合も非有限を識別できる
+    b_inf = np.array([1.0, np.inf, 3.0], dtype=np.float32)
+    rep_inf = compare(a, b_inf, dtype="float32")
+    assert rep_inf.has_non_finite
+    assert not rep_inf.equivalent
+
+    # 有限同士の差は has_non_finite=False
+    rep_finite = compare(a, a + 0.5, dtype="float32")
+    assert not rep_finite.has_non_finite, "有限の差で has_non_finite=True（偽陽性）"
+
+
+def test_tf32_tolerance_matches_float16():
+    """TF32 dtype の許容誤差が float16 と同等（10-bit 仮数 → fp16 精度）。
+
+    NVIDIA Ampere+ の float32 GEMM/conv は TF32 Tensor Core を使い仮数が 10 bit（fp16 と同等）。
+    AMD ROCm は TF32 非対応 → NVIDIA vs AMD 比較では dtype="tf32" で fp16 級許容が必要。
+    """
+    from tsugi.equivalence import TOLERANCE
+    tol_tf32 = TOLERANCE["tf32"]
+    tol_f16 = TOLERANCE["float16"]
+    assert tol_tf32["atol"] == tol_f16["atol"], (
+        f"TF32 atol={tol_tf32['atol']} ≠ float16 atol={tol_f16['atol']}")
+    assert tol_tf32["rtol"] == tol_f16["rtol"]
+
+    # dtype="tf32" で compare が動作するか（KeyError が起きない）
+    a = np.array([1.0, 2.0], dtype=np.float32)
+    b = a + 5e-3   # float32 許容(1e-4) では DIVERGENT / tf32 許容(1e-2) では EQUIVALENT
+    rep_tf32 = compare(a, b, dtype="tf32")
+    rep_f32 = compare(a, b, dtype="float32")
+    assert rep_tf32.equivalent, f"TF32 許容内(5e-3)を DIVERGENT と誤検出: {rep_tf32.to_text()}"
+    assert not rep_f32.equivalent, "float32 許容(1e-4)で 5e-3 差が等価（想定外）"
+
+
+def test_tf32_unit_roundoff_matches_float16():
+    """TF32 の unit_roundoff が float16 と同等（仮数 10 bit, u = 2^-11）。"""
+    from tsugi.tolerance import UNIT_ROUNDOFF
+    assert UNIT_ROUNDOFF["tf32"] == UNIT_ROUNDOFF["float16"], (
+        f"TF32 unit_roundoff={UNIT_ROUNDOFF['tf32']} ≠ float16={UNIT_ROUNDOFF['float16']}")
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -127,6 +181,9 @@ def main() -> int:
         test_classify_layout_vs_numerical_divergence,
         test_float64_does_not_fall_back_to_float32_tolerance,
         test_float64_accepts_genuine_double_precision_noise,
+        test_nan_in_output_flagged_as_non_finite,
+        test_tf32_tolerance_matches_float16,
+        test_tf32_unit_roundoff_matches_float16,
     ]
     for t in tests:
         try:

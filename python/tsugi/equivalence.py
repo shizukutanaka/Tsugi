@@ -22,11 +22,15 @@ from .report import Risk  # 検証層共通の深刻度モデル
 # Tsugi は *クロスベンダー*（NVIDIA↔AMD で正当に異なる）を扱うため概ね 1 桁緩めるが、
 # fail-safe 哲学（偽OK は致命的）に従い float64 を float32 にフォールバックさせない
 # （float64 を 1e-4 で見ると 5 桁緩く偽OK 源になる）。未知 dtype のみ float32 を既定とする。
+# TF32: NVIDIA Ampere+ が float32 GEMM/conv に使うハイブリッド形式（10-bit 仮数、fp32 指数）。
+# AMD ROCm は TF32 非対応 → NVIDIA(TF32) vs AMD(full fp32) で最大 ~1e-3 誤差が生じうる。
+# dtype="tf32" は float32 演算だが TF32 精度で比較したい場合に使う。
 TOLERANCE = {
     "float16": dict(atol=1e-2, rtol=1e-2),
     "bfloat16": dict(atol=2e-2, rtol=2e-2),  # bf16 はベンダー差が大きい
     "float32": dict(atol=1e-4, rtol=1e-4),
     "float64": dict(atol=1e-7, rtol=1e-7),   # 倍精度: PyTorch 1e-8 比で 1 桁緩め（cross-vendor）
+    "tf32":    dict(atol=1e-2, rtol=1e-2),   # 仮数 10 bit（fp16 と同等）→ fp16 と同じ許容
 }
 
 
@@ -39,6 +43,10 @@ class EquivalenceReport:
     n_total: int
     atol: float
     rtol: float
+    # NaN/Inf が検出されたかを明示的に追跡する（数値発散とデータ破壊を区別）。
+    # NaN は element-wise 比較で必ず mismatch になるが、その原因が「精度差」か
+    # 「overflow/NaN 伝播」かを区別しないと根本原因診断ができない。
+    has_non_finite: bool = False
 
     # report.FindingReport は所見リスト型。等価判定はスカラ計量なので継承せず、
     # 共通の判定インターフェース（risk/max_risk/ok）だけ揃えて第一級レポートにする。
@@ -56,7 +64,8 @@ class EquivalenceReport:
 
     def to_text(self) -> str:
         status = "EQUIVALENT" if self.equivalent else "DIVERGENT"
-        return (f"[{status}] max_abs={self.max_abs_err:.3e} max_rel={self.max_rel_err:.3e} "
+        nan_tag = " [NaN/Inf検出]" if self.has_non_finite else ""
+        return (f"[{status}]{nan_tag} max_abs={self.max_abs_err:.3e} max_rel={self.max_rel_err:.3e} "
                 f"mismatch={self.n_mismatch}/{self.n_total} (atol={self.atol}, rtol={self.rtol})")
 
 
@@ -120,18 +129,23 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
 def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> EquivalenceReport:
     af = a.astype(np.float64)
     bf = b.astype(np.float64)
+    # NaN/Inf を先に検出する（精度発散とデータ破壊を区別するため）。
+    # NaN は close[] を常に False にするため mismatch にカウントされるが、
+    # has_non_finite=True により診断層が「overflow/NaN 伝播」と識別できる。
+    has_non_finite = bool(not (np.all(np.isfinite(af)) and np.all(np.isfinite(bf))))
     abs_err = np.abs(af - bf)
     rel_err = abs_err / (np.abs(af) + 1e-12)
     close = abs_err <= (atol + rtol * np.abs(af))
     n_mismatch = int(np.size(close) - np.count_nonzero(close))
     return EquivalenceReport(
         equivalent=bool(np.all(close)),
-        max_abs_err=float(abs_err.max()),
-        max_rel_err=float(rel_err.max()),
+        max_abs_err=float(np.nanmax(abs_err)) if abs_err.size else 0.0,
+        max_rel_err=float(np.nanmax(rel_err)) if rel_err.size else 0.0,
         n_mismatch=n_mismatch,
         n_total=int(np.size(close)),
         atol=atol,
         rtol=rtol,
+        has_non_finite=has_non_finite,
     )
 
 

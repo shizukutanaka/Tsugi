@@ -4,6 +4,43 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **TF32 dtype サポート: NVIDIA Ampere+ の fp16 級精度 GEMM に正しい許容を適用（第7回）**:
+  外部調査（Qiita/Zenn/PyTorch 公式/NVIDIA 技術ブログ）の知見に基づく修正。
+  TF32（TensorFloat32）は NVIDIA Ampere+ GPU が float32 GEMM/conv に使うハイブリッド形式で、
+  fp32 指数部（8 bit）+ fp16 仮数部（10 bit）= 精度は fp16 と同等。AMD ROCm は TF32 非対応のため
+  NVIDIA(TF32) vs AMD(full fp32) 比較では最大 ~1e-3 の誤差が生じる（float32 許容の 1e-4 では偽BLOCK）。
+  `dtype="tf32"` を明示して fp16 と同等の許容（atol/rtol=1e-2）で比較するよう 3 箇所を拡張:
+  - `tolerance.UNIT_ROUNDOFF["tf32"] = 2^-11`（fp16 と同等の unit roundoff）。モジュール docstring に
+    `torch.backends.cuda.matmul.allow_tf32`（PyTorch 1.12 以降デフォルト False）・
+    `torch.backends.cudnn.allow_tf32`（conv 側、デフォルト True）の説明を追記。
+  - `equivalence.TOLERANCE["tf32"] = {atol=1e-2, rtol=1e-2}`（fp16 と同等）。
+  - `envelope.DTYPE_LIMITS["tf32"]`（fp32 と同等の overflow リスク・TF32 は指数部が fp32 と同じ）。
+  テスト 3 件追加（`test_tf32_tolerance_matches_float16`・`test_tf32_unit_roundoff_matches_float16`・
+  `test_tf32_dtype_limits_match_float32`）。
+
+- **NaN/Inf 明示タグ `has_non_finite` を `EquivalenceReport` に追加（第7回）**:
+  外部調査（Zenn 半精度安定性記事・HuggingFace DebugUnderflowOverflow）の知見に基づく。
+  現行の `_compare_with()` は NaN を element-wise 比較の mismatch としてカウントするが、
+  **「精度発散（finite な差）」と「データ破壊（NaN/Inf 伝播、overflow/除零）」は根本原因が異なる**。
+  NaN はアルゴリズム精度問題でなく上流の overflow/入力破損で生じ、修正方針も異なる。
+  - `EquivalenceReport.has_non_finite: bool = False` フィールド追加（デフォルト後方互換）。
+  - `_compare_with()` で `np.isfinite()` による事前検出を追加。NaN/Inf を含む配列は
+    `has_non_finite=True`、`equivalent=False`（BLOCK）として返す。
+  - `to_text()` に `[NaN/Inf検出]` タグを追加（スタックトレースなしに根本原因を絞り込める）。
+  - `abs_err.max()` を `np.nanmax()` に変更（NaN を含む場合も max_abs_err が有限値を返す）。
+  テスト 1 件追加（`test_nan_in_output_flagged_as_non_finite`）。
+
+- **`float64` を `envelope.DTYPE_LIMITS` に追加: float32 フォールバック防止（第7回）**:
+  `DTYPE_LIMITS` に `"float64"` が欠落していたため、`dtype_limits("float64")` が float32 の限界値
+  （max_normal=3.4e38）にフォールバックしていた。float64 の max_normal=1.8e308（float32 の 270 桁超）
+  なので、float64 テンソルの値 1e100 が overflow BLOCK と誤判定される偽陽性の源。
+  - `DtypeLimits("float64", max_normal=1.7976931348623157e308, min_normal=2.2250738585072014e-308, ...)`
+  - `DtypeLimits("tf32", ...)` も同時追加（fp32 と同等の overflow 範囲）。
+  テスト 2 件追加（`test_float64_dtype_limits_are_correct`・`test_tf32_dtype_limits_match_float32`）。
+  `test_envelope.py` の型別デモ表示に `float64`・`tf32` を追加。
+  verify.py 不変条件 5 件追加（91/91）。
+
 ### Fixed
 - **float64 が float32 の緩い許容にフォールバックする偽OK バグを修正（外部調査ベース・第6回）**:
   Qiita/Zenn と PyTorch 公式の `torch.testing.assert_close` 調査から、dtype 別許容の標準

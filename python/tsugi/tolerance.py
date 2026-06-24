@@ -8,6 +8,15 @@
   GEMM の f16 入力・f32 累積では、支配的な発散は入力量子化（u_fp16）が累積で
   ランダムウォーク的に広がる項。絶対誤差 ~ safety * sqrt(K) * u_input * scale。
   → K が大きいほど許容も大きい（大K GEMM は正当に大きくズレる）。
+
+TF32 (TensorFloat32) について:
+  NVIDIA Ampere+ GPU は float32 GEMM/conv を TF32 Tensor Core で実行する（デフォルト）。
+  TF32 は fp32 の指数部（8 bit）と fp16 の仮数部（10 bit）を組み合わせたハイブリッド形式
+  → 精度は fp16 と同等（u_TF32 = 2^-11）だが動的範囲は fp32 と同等。
+  torch.backends.cuda.matmul.allow_tf32 は PyTorch 1.12 以降デフォルト False だが、
+  torch.backends.cudnn.allow_tf32（conv 側）はデフォルト True。
+  AMD ROCm は TF32 をサポートしないため、クロスベンダー比較では float32 入出力でも
+  TF32 由来の 1e-3 級誤差が生じうる → dtype="tf32" で明示的に緩い許容を使う。
 """
 from __future__ import annotations
 
@@ -21,6 +30,10 @@ UNIT_ROUNDOFF = {
     "bfloat16": 2.0 ** -8,   # 7 仮数ビット → u ≈ 3.91e-3（fp16 より粗い）
     "float32": 2.0 ** -24,   # 23 仮数ビット → u ≈ 5.96e-8
     "float64": 2.0 ** -53,   # 52 仮数ビット → u ≈ 1.11e-16（倍精度・oracle と同精度）
+    # TF32: NVIDIA Ampere+ の fp32 GEMM/conv で使われるハイブリッド形式。
+    # 仮数部 10 bit（fp16 と同じ）→ u は fp16 と同値。
+    # AMD ROCm は TF32 非対応 → NVIDIA vs AMD で float32 計算に最大 1e-3 誤差。
+    "tf32": 2.0 ** -11,      # 10 仮数ビット（fp16 と同等）→ u ≈ 4.88e-4
 }
 
 

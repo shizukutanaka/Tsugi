@@ -529,6 +529,34 @@ def main() -> int:
     check("layer_blame detects B divergence at layer 1 (da=0, db>0)",
           _lb_dists[1][0] == 0.0 and _lb_dists[1][1] > 0.1)
 
+    # 31. TF32 dtype: NVIDIA Ampere+ の 10-bit 仮数 GEMM に fp16 と同等の許容を適用
+    from tsugi.equivalence import TOLERANCE as _TOL
+    from tsugi.tolerance import UNIT_ROUNDOFF as _URO
+    check("TF32 tolerance equals float16 (10-bit mantissa, cross-vendor Ampere↔AMD)",
+          _TOL["tf32"]["atol"] == _TOL["float16"]["atol"]
+          and _URO["tf32"] == _URO["float16"])
+    # dtype="tf32" で compare が動く（KeyError 不発）
+    _tf32_a = np.ones((4, 4), np.float32)
+    _tf32_b = _tf32_a + 5e-3   # fp16/tf32 許容内(1e-2)だが fp32 許容(1e-4)では外
+    check("compare(..., dtype='tf32') accepts TF32-level drift without KeyError",
+          compare(_tf32_a, _tf32_b, "tf32").equivalent
+          and not compare(_tf32_a, _tf32_b, "float32").equivalent)
+
+    # 32. NaN/Inf 明示タグ: 精度発散とデータ破壊を区別（根本原因診断の起点）
+    _nan_a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    _nan_b = np.array([1.0, np.nan, 3.0], dtype=np.float32)
+    _nan_rep = compare(_nan_a, _nan_b, "float32")
+    check("NaN in output → has_non_finite=True and equivalent=False (data corruption tag)",
+          _nan_rep.has_non_finite and not _nan_rep.equivalent)
+    _fin_rep = compare(_nan_a, _nan_a + 0.5, "float32")
+    check("finite divergence → has_non_finite=False (精度発散とデータ破壊を区別)",
+          not _fin_rep.has_non_finite)
+
+    # 33. float64 が envelope DTYPE_LIMITS に登録済み（float32 フォールバック防止）
+    from tsugi.envelope import dtype_limits as _dlim
+    check("float64 dtype_limits is not the float32 fallback (max_normal differs by 270 orders)",
+          _dlim("float64").max_normal > _dlim("float32").max_normal * 1e260)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

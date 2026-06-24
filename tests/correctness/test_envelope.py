@@ -84,6 +84,36 @@ def test_real_fp16_overflow_actually_happens():
     assert 11.0 < lim.exp_overflow < 11.2
 
 
+def test_float64_dtype_limits_are_correct():
+    """float64 の dtype_limits が float32 にフォールバックしないこと。
+
+    float64 max ≈ 1.8e308、float32 max ≈ 3.4e38 — 270 桁違う。
+    float64 テンソルを float32 limits で検査すると、float64 正常値が overflow 判定される偽BLOCK。
+    """
+    lim64 = dtype_limits("float64")
+    lim32 = dtype_limits("float32")
+    assert lim64.max_normal > lim32.max_normal * 1e260, (
+        f"float64 max_normal={lim64.max_normal:.3g} が float32 ({lim32.max_normal:.3g}) と同じ"
+        "（フォールバック疑い）")
+    # float64 正常値 (1e100) が float64 limits では overflow にならない
+    env64 = certify_gemm(K=64, dtype="float64", scale=1.0)
+    x64 = np.full((4, 4), 1e100, dtype=np.float64)
+    rep = check_tensor(x64, env64)
+    # scale 超過 WARN はあっても overflow BLOCK は出ないはず
+    overflow_block = any("overflow" in f.message and f.risk == Risk.BLOCK for f in rep.findings)
+    assert not overflow_block, (
+        f"float64 で 1e100 が overflow BLOCK（float32 limits にフォールバックしている疑い）: {rep.to_text()}")
+
+
+def test_tf32_dtype_limits_match_float32():
+    """TF32 の dtype_limits が float32 と同等（TF32 は fp32 指数部 → overflow リスク同じ）。"""
+    lim_tf32 = dtype_limits("tf32")
+    lim_f32 = dtype_limits("float32")
+    assert lim_tf32.max_normal == lim_f32.max_normal, (
+        f"TF32 max_normal={lim_tf32.max_normal} ≠ float32 max_normal={lim_f32.max_normal}")
+    assert lim_tf32.exp_overflow == lim_f32.exp_overflow
+
+
 def test_outlier_features_break_single_scale():
     # outlier feature(massive activations): 数チャネルだけ巨大→単一 scale 仮定が破綻し WARN
     rng = np.random.default_rng(0)
@@ -109,6 +139,8 @@ def main() -> int:
         test_fp16_softmax_logit_overflow,
         test_real_fp16_overflow_actually_happens,
         test_outlier_features_break_single_scale,
+        test_float64_dtype_limits_are_correct,
+        test_tf32_dtype_limits_match_float32,
     ]
     for t in tests:
         try:
@@ -119,7 +151,7 @@ def main() -> int:
             ok = False
     # 参考: fp16 と bf16 のエンベロープ差（overflow vs precision）
     print("\n--- dtype 別エンベロープ（IEEE 754 実値）---")
-    for d in ("float16", "bfloat16", "float32"):
+    for d in ("float16", "bfloat16", "float32", "tf32", "float64"):
         lim = dtype_limits(d)
         print(f"  {d:9s} max={lim.max_normal:.3g} min_normal={lim.min_normal:.2e} "
               f"exp-overflow at |x|>{lim.exp_overflow:.2f}")

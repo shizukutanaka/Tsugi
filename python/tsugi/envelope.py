@@ -46,10 +46,15 @@ class DtypeLimits:
 
 
 # fp16 は範囲が狭く overflow が主リスク・bf16 は範囲広いが precision/denormal が主リスク。
+# TF32 は指数部が fp32 と同じため overflow リスクは fp32 と同等（bf16/fp32 と同じ DtypeLimits）。
 DTYPE_LIMITS: dict[str, DtypeLimits] = {
     "float16":  DtypeLimits(65504.0, 6.103515625e-05, math.log(65504.0)),          # exp_of ≈ 11.09
     "bfloat16": DtypeLimits(3.3895314e38, 1.1754944e-38, math.log(3.3895314e38)),  # exp_of ≈ 88.7
     "float32":  DtypeLimits(3.4028235e38, 1.1754944e-38, math.log(3.4028235e38)),  # exp_of ≈ 88.7
+    "float64":  DtypeLimits(1.7976931348623157e308, 2.2250738585072014e-308,
+                            math.log(1.7976931348623157e308)),                      # exp_of ≈ 709.8
+    # TF32: 指数部は fp32 と同じ → overflow/denormal リスクは fp32 と同等
+    "tf32":     DtypeLimits(3.4028235e38, 1.1754944e-38, math.log(3.4028235e38)),  # exp_of ≈ 88.7
 }
 
 
