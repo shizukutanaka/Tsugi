@@ -55,6 +55,10 @@ DTYPE_LIMITS: dict[str, DtypeLimits] = {
                             math.log(1.7976931348623157e308)),                      # exp_of ≈ 709.8
     # TF32: 指数部は fp32 と同じ → overflow/denormal リスクは fp32 と同等
     "tf32":     DtypeLimits(3.4028235e38, 1.1754944e-38, math.log(3.4028235e38)),  # exp_of ≈ 88.7
+    # FP8 (OCP OFP8): 値域が極端に狭く overflow が主リスク → エンベロープ検査が特に重要。
+    # E4M3 は max=448 と非常に狭い（amax スケーリングが必須な理由）。E5M2 は range 重視で max=57344。
+    "float8_e4m3": DtypeLimits(448.0, 2.0 ** -6, math.log(448.0)),       # exp_of ≈ 6.10
+    "float8_e5m2": DtypeLimits(57344.0, 2.0 ** -14, math.log(57344.0)),  # exp_of ≈ 10.96
 }
 
 

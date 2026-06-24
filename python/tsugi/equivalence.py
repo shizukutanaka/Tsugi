@@ -31,6 +31,10 @@ TOLERANCE = {
     "float32": dict(atol=1e-4, rtol=1e-4),
     "float64": dict(atol=1e-7, rtol=1e-7),   # 倍精度: PyTorch 1e-8 比で 1 桁緩め（cross-vendor）
     "tf32":    dict(atol=1e-2, rtol=1e-2),   # 仮数 10 bit（fp16 と同等）→ fp16 と同じ許容
+    # FP8 (OCP OFP8・H100/MI300/B200 推論の主流): 仮数 2〜3 bit で丸めが巨大。
+    # クロスベンダーでは per-tensor amax スケールの差も乗る → 大幅に緩い許容が必要。
+    "float8_e4m3": dict(atol=1e-1, rtol=1e-1),  # 3 仮数 (u=0.0625)・重み/活性
+    "float8_e5m2": dict(atol=2e-1, rtol=2e-1),  # 2 仮数 (u=0.125)・勾配・最も粗い
 }
 
 

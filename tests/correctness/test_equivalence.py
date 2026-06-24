@@ -170,6 +170,33 @@ def test_tf32_unit_roundoff_matches_float16():
         f"TF32 unit_roundoff={UNIT_ROUNDOFF['tf32']} ≠ float16={UNIT_ROUNDOFF['float16']}")
 
 
+def test_fp8_tolerance_is_coarser_than_fp16():
+    """FP8 (E4M3/E5M2) の許容が fp16 より粗い（仮数 2〜3 bit で丸めが巨大）。
+
+    H100/MI300/B200 推論で主流の FP8 は、クロスベンダーでは per-tensor amax スケール差も
+    乗るため大幅に緩い許容が必要。E5M2(仮数 2bit) は E4M3(3bit) よりさらに粗い。
+    """
+    from tsugi.equivalence import TOLERANCE
+    from tsugi.tolerance import UNIT_ROUNDOFF
+    assert TOLERANCE["float8_e4m3"]["atol"] > TOLERANCE["float16"]["atol"], "E4M3 が fp16 より厳しい"
+    assert TOLERANCE["float8_e5m2"]["atol"] > TOLERANCE["float8_e4m3"]["atol"], "E5M2 が E4M3 より厳しい"
+    # unit roundoff も仮数ビット順（e5m2 が最も粗い）
+    assert UNIT_ROUNDOFF["float8_e5m2"] > UNIT_ROUNDOFF["float8_e4m3"] > UNIT_ROUNDOFF["float16"]
+    assert UNIT_ROUNDOFF["float8_e4m3"] == 2.0 ** -4   # 3 仮数ビット
+    assert UNIT_ROUNDOFF["float8_e5m2"] == 2.0 ** -3   # 2 仮数ビット
+
+
+def test_fp8_e4m3_catches_real_divergence_but_accepts_quantization_noise():
+    """E4M3 許容が量子化級ノイズは許し、真の発散は捕まえる（fail-safe の両立）。"""
+    a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    # E4M3 の u=0.0625 級のノイズ（量子化由来）は等価扱い
+    rep_noise = compare(a, a + 0.03, dtype="float8_e4m3")
+    assert rep_noise.equivalent, f"FP8 量子化級ノイズを過剰検出（偽BLOCK）: {rep_noise.to_text()}"
+    # 0.5 のスケール発散（許容 1e-1 超）は DIVERGENT
+    rep_div = compare(a, a + 0.5, dtype="float8_e4m3")
+    assert not rep_div.equivalent, "FP8 で真の発散(0.5)を見逃した（偽OK）"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -184,6 +211,8 @@ def main() -> int:
         test_nan_in_output_flagged_as_non_finite,
         test_tf32_tolerance_matches_float16,
         test_tf32_unit_roundoff_matches_float16,
+        test_fp8_tolerance_is_coarser_than_fp16,
+        test_fp8_e4m3_catches_real_divergence_but_accepts_quantization_noise,
     ]
     for t in tests:
         try:

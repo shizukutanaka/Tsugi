@@ -5,6 +5,23 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **FP8 (OCP OFP8: E4M3 / E5M2) dtype サポート（外部調査ベース・第9回）**:
+  外部調査（Qiita/Zenn の FP8 量子化記事・OCP 8-bit Floating Point Specification・
+  NVIDIA Transformer Engine）の知見に基づく。FP8 は H100/MI300/B200 世代の推論で主流
+  （vLLM ネイティブ・キャリブレーション不要）になったが、Tsugi の dtype テーブルに欠けていた。
+  TF32 と同じ 3 テーブル拡張パターンで追加:
+  - **E4M3**（4 指数・3 仮数・max=448・無限大なし）= 重み/活性の前向き。u=0.0625。
+  - **E5M2**（5 指数・2 仮数・max=57344・inf/nan あり）= 勾配の後ろ向き。u=0.125（最も粗い）。
+  - `tolerance.UNIT_ROUNDOFF`: `float8_e4m3=2^-4`・`float8_e5m2=2^-3`。
+  - `equivalence.TOLERANCE`: `float8_e4m3=1e-1`・`float8_e5m2=2e-1`（fp16 より大幅に緩い）。
+  - `envelope.DTYPE_LIMITS`: `float8_e4m3`(max=448)・`float8_e5m2`(max=57344)。
+  - **クロスベンダーの真のリスクは丸めでなく per-tensor amax スケーリング係数の差**: FP8 は値域が
+    狭く（E4M3 は max=448）amax 正規化が必須。各ベンダーが amax を別の縮約順序で計算するとスケールが
+    ずれ、テンソル全体が系統シフトする（calibration の系統検査が効く）。docstring に明記。
+  - エンベロープ検査が FP8 で特に重要: 未スケールの活性（例 1000）が E4M3 では即 overflow（fp16 なら
+    範囲内）。dtype 依存の overflow リスク差を実証。
+  テスト 4 件追加（test_equivalence.py +2、test_envelope.py +2）。verify.py 不変条件 4 件（98/98）。
+
 - **atomicAdd 由来の非決定 op 静的カタログ（PyTorch 公式由来・第8回）**:
   外部調査（PyTorch 公式 randomness ドキュメント・Qiita「seed、本当に固定できた?」・
   arXiv:2408.05148 浮動小数非結合性）の知見に基づく。PyTorch は `scatter_add` / `index_add` /

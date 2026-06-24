@@ -557,6 +557,25 @@ def main() -> int:
     check("float64 dtype_limits is not the float32 fallback (max_normal differs by 270 orders)",
           _dlim("float64").max_normal > _dlim("float32").max_normal * 1e260)
 
+    # 33b. FP8 (OCP OFP8 E4M3/E5M2): H100/MI300/B200 推論主流の dtype を 3 テーブルに登録
+    check("FP8 unit_roundoff ordered by mantissa bits (e5m2 coarsest > e4m3 > fp16)",
+          _URO["float8_e5m2"] > _URO["float8_e4m3"] > _URO["float16"]
+          and _URO["float8_e4m3"] == 2.0 ** -4 and _URO["float8_e5m2"] == 2.0 ** -3)
+    check("FP8 tolerance is coarser than fp16 (few mantissa bits + amax scale divergence)",
+          _TOL["float8_e4m3"]["atol"] > _TOL["float16"]["atol"]
+          and _TOL["float8_e5m2"]["atol"] > _TOL["float8_e4m3"]["atol"])
+    check("FP8 E4M3 narrow range (max=448) makes overflow the main envelope risk",
+          _dlim("float8_e4m3").max_normal == 448.0
+          and _dlim("float8_e5m2").max_normal == 57344.0
+          and _dlim("float8_e4m3").max_normal < _dlim("float16").max_normal)
+    # E4M3 では未スケール活性(1000)が overflow するが fp16 ではしない（dtype 依存リスク）
+    from tsugi.envelope import certify_gemm as _cg8
+    _x8 = np.full((4, 4), 1000.0, np.float32)
+    check("FP8 E4M3 flags 1000 as overflow (BLOCK) where fp16 does not (amax scaling needed)",
+          not check_tensor(_x8, _cg8(64, "float8_e4m3", 1.0)).in_envelope
+          and not any("overflow" in f.message
+                      for f in check_tensor(_x8, _cg8(64, "float16", 1000.0)).findings))
+
     # 34. nondeterminism 静的カタログ: atomicAdd 由来の非決定 op を実行前に検出（PyTorch 公式）
     from tsugi.nondeterminism import (classify_nondeterminism, op_is_nondeterministic)
     check("atomicAdd nondeterministic ops cataloged (scatter_add/index_add/bincount, PyTorch docs)",

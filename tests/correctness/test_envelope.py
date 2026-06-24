@@ -114,6 +114,32 @@ def test_tf32_dtype_limits_match_float32():
     assert lim_tf32.exp_overflow == lim_f32.exp_overflow
 
 
+def test_fp8_e4m3_narrow_range_makes_overflow_the_main_risk():
+    """FP8 E4M3 は max=448 と極端に狭く、小さな値でも overflow する（amax スケール必須の理由）。
+
+    H100/MI300 推論主流の FP8 は値域が狭いため、未スケールの活性（例 1000）が即 overflow。
+    エンベロープ検査が FP8 で特に重要であることを実証。
+    """
+    lim = dtype_limits("float8_e4m3")
+    assert lim.max_normal == 448.0
+    env = certify_gemm(K=64, dtype="float8_e4m3", scale=1.0)
+    # fp16 なら余裕(65504)だが E4M3 では 1000 が overflow
+    x = np.full((4, 4), 1000.0, dtype=np.float32)
+    rep = check_tensor(x, env)
+    assert not rep.in_envelope, "E4M3 で 1000 が overflow にならない（max=448 のはず）"
+    assert rep.max_risk == Risk.BLOCK
+    # 同じ 1000 は fp16(max=65504) では overflow しない → dtype 依存の overflow リスク差を実証
+    fp16_findings = check_tensor(x, certify_gemm(K=64, dtype="float16", scale=1000.0)).findings
+    assert not any("overflow" in f.message for f in fp16_findings), \
+        "fp16(max=65504) で 1000 が overflow 判定された（想定外）"
+
+
+def test_fp8_e5m2_wider_range_than_e4m3():
+    """E5M2 は range 重視（max=57344）で E4M3(max=448) より広い（指数 5 vs 4 bit）。"""
+    assert dtype_limits("float8_e5m2").max_normal > dtype_limits("float8_e4m3").max_normal
+    assert dtype_limits("float8_e5m2").max_normal == 57344.0
+
+
 def test_outlier_features_break_single_scale():
     # outlier feature(massive activations): 数チャネルだけ巨大→単一 scale 仮定が破綻し WARN
     rng = np.random.default_rng(0)
@@ -141,6 +167,8 @@ def main() -> int:
         test_outlier_features_break_single_scale,
         test_float64_dtype_limits_are_correct,
         test_tf32_dtype_limits_match_float32,
+        test_fp8_e4m3_narrow_range_makes_overflow_the_main_risk,
+        test_fp8_e5m2_wider_range_than_e4m3,
     ]
     for t in tests:
         try:
@@ -151,7 +179,7 @@ def main() -> int:
             ok = False
     # 参考: fp16 と bf16 のエンベロープ差（overflow vs precision）
     print("\n--- dtype 別エンベロープ（IEEE 754 実値）---")
-    for d in ("float16", "bfloat16", "float32", "tf32", "float64"):
+    for d in ("float8_e4m3", "float8_e5m2", "float16", "bfloat16", "float32", "tf32", "float64"):
         lim = dtype_limits(d)
         print(f"  {d:9s} max={lim.max_normal:.3g} min_normal={lim.min_normal:.2e} "
               f"exp-overflow at |x|>{lim.exp_overflow:.2f}")
