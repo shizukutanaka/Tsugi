@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .report import FindingReport, Risk
+from .blame import _RATIO_THRESHOLD_TIED
 
 # 最終発散が tol の何倍を超えたら WARN → BLOCK に格上げするか。
 # blame._BLOCK_DIST_RATIO と同じ論拠（tolerance は safety·√K·u マージン込みで、その 10× 超は
@@ -275,7 +276,7 @@ def diagnose(layers_a, layers_b, layers_oracle, x, *, tol: float, names=None,
             rep.spike_dist_b = db
             eps = 1e-30
             ratio = max(da, db) / (min(da, db) + eps)
-            if ratio < 2.0:
+            if ratio < _RATIO_THRESHOLD_TIED:
                 rep.spike_closer = "TIED"
             elif da < db:
                 rep.spike_closer = "A"

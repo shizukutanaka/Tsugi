@@ -51,6 +51,11 @@ from .report import FindingReport, Risk
 # WARN（要注意）でなく BLOCK（修正必須）と判断する。calibration の検出限界スケールと整合。
 _BLOCK_DIST_RATIO: float = 10.0
 
+# ベンダー間の oracle 距離比が何倍未満なら TIED と判断するか。
+# ratio = max(dist_a, dist_b) / min(dist_a, dist_b)。ratio < 2.0 なら「責帰の方向が不明」。
+# ratio >= 2.0 ならどちらかが oracle から明らかに遠い（責帰可能）。
+_RATIO_THRESHOLD_TIED: float = 2.0
+
 
 def accuracy_relative(out, oracle, *, eps: float = 1e-30) -> float:
     """output の oracle に対する相対距離。max|out − oracle| / (max|oracle| + ε)。"""
@@ -72,7 +77,7 @@ class BlameReport(FindingReport):
     closer: str = "TIED"       # "A" / "B" / "TIED"（ratio < ratio_threshold）
     ratio: float = 1.0         # max(dist_a, dist_b) / (min(dist_a, dist_b) + ε)
     tol: float = 0.0
-    ratio_threshold: float = 2.0
+    ratio_threshold: float = _RATIO_THRESHOLD_TIED
 
     def to_text(self) -> str:  # type: ignore[override]
         return super().to_text(
@@ -81,7 +86,7 @@ class BlameReport(FindingReport):
             empty="(both vendors within tolerance — blame inconclusive)")
 
 
-def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = 2.0,
+def compare_accuracy(a, b, oracle, *, tol: float, ratio_threshold: float = _RATIO_THRESHOLD_TIED,
                      relative: bool = True) -> BlameReport:
     """A と B それぞれの oracle 距離を比較し、どちらが oracle に近いか（責帰）を報告。
 

@@ -27,6 +27,11 @@ from .constants import SAFETY
 from .report import FindingReport, Risk
 from .tolerance import unit_roundoff
 
+# 系統バイアスの警告閾値。BLOCK 閾値（thresh）の何割を超えたら WARN にするか。
+# 正確には: bias > thresh → BLOCK（系統誤り確定）/ bias > 0.5*thresh → WARN（接近中）。
+# safety マージンの半分まで逃げ道を残し、超えたら即警告する保守的な設定。
+_WARN_BIAS_RATIO: float = 0.5
+
 
 def detectability_floor(K: int, dtype: str = "float16", scale: float = 1.0,
                         safety: float = SAFETY) -> dict[str, float]:
@@ -80,7 +85,7 @@ def check_systematic(a: np.ndarray, b: np.ndarray, K: int = 1,
         rep.add(Risk.BLOCK, "scale",
                 f"系統バイアス {rep.bias * 100:+.3f}% > 閾値 {thresh * 100:.3f}% "
                 f"→ max_abs 検出限界 {floor['rel'] * 100:.1f}% の下に隠れる系統バグ")
-    elif abs(rep.bias) > 0.5 * thresh:
+    elif abs(rep.bias) > _WARN_BIAS_RATIO * thresh:
         rep.add(Risk.WARN, "scale",
                 f"系統バイアス {rep.bias * 100:+.3f}% が閾値 {thresh * 100:.3f}% に近接")
     return rep

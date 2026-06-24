@@ -5,6 +5,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
+- **定数の統合と散在の排除（第4回）**:
+  1. **blame の `ratio_threshold` を共有定数に**: `compare_accuracy` で `ratio_threshold=2.0` を
+     デフォルトとしていたが、`diagnose()` が同じ値を硬コーディングしていた。
+     `_RATIO_THRESHOLD_TIED = 2.0` を blame.py に定義し、`BlameReport` のデフォルトと
+     `attribution.diagnose()` の判定がこれを参照するようにした（シングル・ソース・オブ・トゥルース）。
+  2. **calibration の系統バイアス警告閾値定数化**: `0.5 * thresh` を `_WARN_BIAS_RATIO = 0.5` に。
+     BLOCK 閾値の半分を警告ポイントとする保守的な設定の根拠を docstring に記述。
+
 - **DRY 再発防止 + 残存マジック数の排除（第3回）**:
   1. **`_LayerProfileMixin` で `spike_name`/`onset_name` を一元化**: `AttributionReport` と
      `DiagnosisReport` が同一の層名解決ロジックを別々に実装しており、片方がメソッド・片方が
