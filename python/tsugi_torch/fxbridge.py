@@ -49,6 +49,31 @@ def _node_K(node: Any, default: int = 512) -> int:
     return default
 
 
+def _node_is_symbolic(node: Any) -> bool:
+    """shape meta に symbolic 次元（torch.SymInt）が含まれるかを検査する。
+
+    torch.compile(dynamic=True) や export 経路では、次元が具体的な int でなく
+    torch.SymInt になる。SymInt は int() 変換で TypeError/ValueError を送出するため、
+    その失敗で symbolic を判定する。
+
+    shape guard 効果: symbolic shape があると torch.compile は実行時形状ごとに
+    ガードを立て、ガード違反で再コンパイルを行う。形状別特化カーネルはタイル幅・
+    縮約順序・アキュムレータ幅が変わり得るため、等価性は 1 形状のみ認証では不十分。
+    実際の運用形状をカバーする per-shape 検証が必要。
+    """
+    meta = getattr(node, "meta", None) or {}
+    tm = meta.get("tensor_meta") if isinstance(meta, dict) else None
+    shape = getattr(tm, "shape", None) if tm is not None else None
+    if not shape:
+        return False
+    for dim in shape:
+        try:
+            int(dim)
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
     """FX GraphModule を propagation 用の論理 op 列へ写す（duck-typed・torch 不要）。"""
     ops: list[GraphOp] = []
@@ -90,6 +115,14 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
     # atomicAdd 由来の非決定 op を静的に検出（PyTorch 公式カタログ照合）。
     # これらがあれば静的許容では不十分で、実機 noise floor 実測が必須。
     nondet = classify_nondeterminism(fx_call_target_names(gm))
+    # dynamic shape 検出: torch.compile(dynamic=True) や export 経路では shape が
+    # torch.SymInt になる。形状ごとにカーネルが特化されるため、
+    # 1 形状で認証した等価性は他の形状に転用できない（per-shape 再検証が必要）。
+    has_dynamic_shapes = any(
+        _node_is_symbolic(node)
+        for node in gm.graph.nodes
+        if getattr(node, "op", None) in _CALL_OPS
+    )
     out = {
         "n_ops": len(ops),
         "model_divergence": rep.model_divergence,
@@ -98,6 +131,7 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
         "dominant": rep.dominant.kind if rep.dominant is not None else None,
         "nondeterministic_ops": list(nondet.nondet_ops),
         "requires_noise_floor": nondet.requires_noise_floor,
+        "has_dynamic_shapes": has_dynamic_shapes,
         "task_flip_bound": None,
     }
     if ref_logits is not None:

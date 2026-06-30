@@ -603,6 +603,33 @@ def main() -> int:
           _afx(_ndgm)["requires_noise_floor"]
           and any("scatter_add" in n for n in _afx(_ndgm)["nondeterministic_ops"]))
 
+    # 35. dynamic shape 検出: shape guard で形状依存カーネルが選ばれ等価性が shape ごとに異なる
+    # 研究知見（2025）: torch.compile shape guard は形状ごとにカーネルを特化する。
+    # 特化カーネルはタイル幅・縮約順序・アキュムレータ幅が変わるため
+    # 1 形状で認証した等価性は他形状に転用できない → per-shape 再検証が必要。
+    class _SymDim:
+        """torch.SymInt 模倣 — int() で TypeError を送出する symbolic 次元。"""
+        def __int__(self): raise TypeError("symbolic")
+
+    class _SymNode:
+        def __init__(s, op, t, symbolic=False):
+            shp = (_SymDim(), 512) if symbolic else (8, 512)
+            s.op, s.target = op, t
+            s.meta = {"tensor_meta": type("M", (), {"shape": shp})}
+
+    class _SymGM:
+        def __init__(s, nodes):
+            s.graph = type("GR", (), {"nodes": nodes})
+
+    _dynm = _SymGM([_SymNode("call_function", "aten.addmm.default", symbolic=True),
+                    _SymNode("output", "output")])
+    _statm = _SymGM([_SymNode("call_function", "aten.addmm.default", symbolic=False),
+                     _SymNode("output", "output")])
+    check("dynamic shape graph detected as has_dynamic_shapes=True (shape guard→per-shape re-verify)",
+          _afx(_dynm)["has_dynamic_shapes"])
+    check("static shape graph is NOT dynamic (no symbolic dims → has_dynamic_shapes=False)",
+          not _afx(_statm)["has_dynamic_shapes"])
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

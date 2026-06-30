@@ -93,6 +93,50 @@ def test_audit_fx_translates_to_task_flip_bound():
     assert 0.0 <= rep["task_flip_bound"] <= 1.0      # 確率（上界）
 
 
+class _SymInt:
+    """torch.SymInt の最小 duck-type — int() で失敗する symbolic 次元。
+
+    torch.compile(dynamic=True) や torch.export で生成される symbolic 次元を模す。
+    int() が TypeError を送出することで _node_is_symbolic が dynamic を判定できる。
+    """
+    def __repr__(self) -> str:
+        return "s0"
+
+    def __int__(self) -> int:
+        raise TypeError("symbolic SymInt — cannot convert to int")
+
+
+def test_audit_fx_warns_dynamic_shapes():
+    """dynamic=True コンパイルの symbolic shape を検出し has_dynamic_shapes=True を返す。
+
+    torch.compile shape guard の研究知見（2025）:
+    - shape guard は形状ごとにカーネルを特化する（タイル幅・縮約順序・アキュムレータ幅）
+    - 特化カーネルの数値特性は形状依存 → 1 形状で認証した等価性は他形状に転用不可
+    - has_dynamic_shapes=True は「per-shape 再検証が必要」のシグナル
+    """
+    dynamic_gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (_SymInt(), _SymInt())),
+        _Node("call_function", "aten._softmax.default"),
+        _Node("output", "output"),
+    ])
+    rep = audit_fx(dynamic_gm)
+    assert rep["has_dynamic_shapes"], "symbolic shape を dynamic と判定できていない"
+
+    # 静的形状グラフ（int 次元）は dynamic でない
+    rep_static = audit_fx(_transformer_block())
+    assert not rep_static["has_dynamic_shapes"], "静的形状グラフが dynamic と誤判定された"
+
+    # 形状なしノード（meta 無し）は dynamic 扱いしない
+    no_meta_gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default"),   # shape=None → meta なし
+        _Node("output", "output"),
+    ])
+    assert not audit_fx(no_meta_gm)["has_dynamic_shapes"], \
+        "shape meta なし → dynamic と誤判定（既定の int 扱いが期待値）"
+
+
 def test_audit_fx_flags_nondeterministic_atomic_ops():
     # scatter_add 等 atomicAdd 由来の非決定 op を検出し noise floor 実測必須を宣言
     # （PyTorch 公式: https://pytorch.org/docs/stable/notes/randomness.html）
@@ -121,6 +165,7 @@ def main() -> int:
         test_audit_fx_surfaces_amplifiers,
         test_audit_fx_empty_graph,
         test_audit_fx_translates_to_task_flip_bound,
+        test_audit_fx_warns_dynamic_shapes,
         test_audit_fx_flags_nondeterministic_atomic_ops,
     ]
     for t in tests:

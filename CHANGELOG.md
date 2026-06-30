@@ -5,6 +5,27 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **torch.compile dynamic shape 検出（外部調査ベース・第10回）**:
+  外部調査（PyTorch 公式ドキュメント「Dynamic Shapes Core Concepts」・
+  Edward Yang blog「State of torch.compile August 2025」・GitHub issue #165506）の知見に基づく。
+
+  研究知見: torch.compile は実行時の入力形状に shape guard を立てる。guard 違反で
+  再コンパイルが発火し、形状ごとに異なるカーネルを特化する。特化カーネルは
+  タイル幅・縮約順序・アキュムレータ幅が変わるため、A形状で認証した等価性は
+  B形状には転用できない。Inductor はバッチ閾値を超えると atomics 経路に切り替える
+  ため、batch_size=32 と batch_size=64 で異なる数値特性になる場合がある。
+
+  実装:
+  - `fxbridge._node_is_symbolic(node)`: shape meta に `int()` 変換で失敗する次元（`torch.SymInt`）
+    が含まれるかを検査。torch.compile(dynamic=True) や torch.export 経路で生成される
+    symbolic 次元を検出する。
+  - `fxbridge.audit_fx()`: `has_dynamic_shapes: bool` フィールドを出力に追加。
+    グラフに symbolic 次元があると `True` → per-shape 再検証が必要のシグナル。
+  - `tests/correctness/test_fxbridge.py`: `_SymInt` duck-type クラス（`int()` で TypeError）と
+    `test_audit_fx_warns_dynamic_shapes` 追加（dynamic/static/meta なし の 3 ケース）。
+  - `verify.py`: invariant 35-36 を追加（dynamic → True・static → False）。
+    合計 100/100 不変条件に更新。
+
 - **FP8 (OCP OFP8: E4M3 / E5M2) dtype サポート（外部調査ベース・第9回）**:
   外部調査（Qiita/Zenn の FP8 量子化記事・OCP 8-bit Floating Point Specification・
   NVIDIA Transformer Engine）の知見に基づく。FP8 は H100/MI300/B200 世代の推論で主流
