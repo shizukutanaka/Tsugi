@@ -41,10 +41,11 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         if rep["n_ops"]:
             task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%"
                     if rep["task_flip_bound"] is not None else "")
+            dyn = " [has_dynamic_shapes: per-shape 再検証が必要]" if rep["has_dynamic_shapes"] else ""
             warnings.warn(
                 f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
-                f"{task} (cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
+                f"{task}{dyn} (cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない
         pass
@@ -56,8 +57,19 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
     return _forward
 
 
+_BACKEND_REGISTERED: bool = False  # 冪等ガード: 二重 import による重複登録を防ぐ
+
+
 def register() -> None:
-    """backend="tsugi" を torch に登録する。"""
+    """backend="tsugi" を torch に登録する（冪等）。
+
+    二重 import / reload でも安全: 一度登録済みなら即 return。
+    torch._dynamo.register_backend は既登録名で再呼出しするとエラーになるベンダーがあるため
+    module-level フラグで guard する（torch.list_backends() より安定）。
+    """
+    global _BACKEND_REGISTERED
+    if _BACKEND_REGISTERED:
+        return
     try:
         from torch._dynamo import register_backend
     except ImportError as exc:  # torch 未導入環境
@@ -66,6 +78,7 @@ def register() -> None:
         ) from exc
 
     register_backend(name="tsugi", compiler_fn=_tsugi_compile)
+    _BACKEND_REGISTERED = True
 
 
 # import 時に自動登録（torch があれば）

@@ -94,6 +94,24 @@ def certify_gemm(K: int, dtype: str = "float16", scale: float = 1.0,
                     certified_atol=tol["atol"])
 
 
+def certify_from_sample(x: np.ndarray, K: int, dtype: str = "float16",
+                        cond: float = 1.0, noise_floor: float = 0.0) -> Envelope:
+    """代表サンプルから RMS scale を実測してエンベロープを認証する（Q14）。
+
+    certify_gemm(scale=1.0) の暗黙仮定「テンソル RMS ≈ 1」を排除する。
+    実テンソルの RMS は 1 でない（推論活性は数十・正規化後は ~1 など層で大きく異なる）。
+    scale=1 で認証すると check_tensor が実スケール超過 BLOCK を誤発火するか、
+    認証 atol が実スケールに対して大きすぎて本物の発散を見逃す。
+
+    本関数はサンプルの RMS を直接測定し、その scale で certify_gemm を呼ぶ。
+    呼び出し側は代表的な本番テンソル（キャリブレーション集合の 1 バッチ等）を渡す。
+    """
+    xf = np.asarray(x, dtype=np.float64)
+    scale = float(np.sqrt(np.mean(xf ** 2))) if xf.size else 1.0
+    scale = max(scale, 1e-30)   # ゼロテンソルで除算を防ぐ
+    return certify_gemm(K=K, dtype=dtype, scale=scale, cond=cond, noise_floor=noise_floor)
+
+
 @dataclass
 class EnvelopeReport(FindingReport):
     @property

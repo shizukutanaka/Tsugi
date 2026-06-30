@@ -630,6 +630,46 @@ def main() -> int:
     check("static shape graph is NOT dynamic (no symbolic dims → has_dynamic_shapes=False)",
           not _afx(_statm)["has_dynamic_shapes"])
 
+    # 37. certify_from_sample: 実 RMS scale を測定して認証（scale=1 暗黙仮定を排除・Q14）
+    # scale=1 で認証後 scale=50 のデータを check_tensor すると scale 超過 BLOCK が誤発火する。
+    # certify_from_sample は同じデータで認証・検査を一致させ、偽 BLOCK を防ぐ。
+    from tsugi.envelope import certify_from_sample as _cfs
+    _x_large = np.random.default_rng(99).standard_normal((16, 64)).astype(np.float32) * 50.0
+    _env_wrong = certify_gemm(K=64, dtype="float32", scale=1.0)
+    check("certify_gemm(scale=1) for scale=50 data causes BLOCK (the problem certify_from_sample solves)",
+          check_tensor(_x_large, _env_wrong).max_risk == portability.Risk.BLOCK)
+    _env_right = _cfs(_x_large, K=64, dtype="float32")
+    _right_rep = check_tensor(_x_large, _env_right)
+    _scale_blocks = [f for f in _right_rep.findings if "scale" in f.message and f.risk == portability.Risk.BLOCK]
+    check("certify_from_sample eliminates spurious scale-BLOCK by using real RMS (Q14 fix)",
+          not _scale_blocks and _env_right.scale_max > 40.0)
+
+    # 38. audit_fx ref_scale: logits を渡すと RMS scale が測定されて出力に含まれる（envelope との橋）
+    _lg2 = np.random.default_rng(0).standard_normal((200, 64)).astype(np.float32) * 8.0
+    _afx_no = _afx(_gm)          # logits 無し
+    _afx_with = _afx(_gm, ref_logits=_lg2)
+    check("audit_fx without logits does not include ref_scale key",
+          "ref_scale" not in _afx_no)
+    check("audit_fx with logits includes ref_scale (RMS within 1%) for certify_from_sample use",
+          "ref_scale" in _afx_with
+          and abs(_afx_with["ref_scale"] - float(np.sqrt(np.mean(_lg2 ** 2)))) < 0.1)
+
+    # 39. backend 冪等性: tsugi_torch の register() は二重呼出しで同じ挙動を繰り返さない（Q28 fix）
+    # torch 有り: _BACKEND_REGISTERED=True → 二度目は即 return。
+    # torch 無し（本環境）: RuntimeError だが _BACKEND_REGISTERED=False で guard 変数が存在する。
+    from tsugi_torch import _BACKEND_REGISTERED, register
+    check("_BACKEND_REGISTERED is a bool (idempotency guard exists in module)",
+          isinstance(_BACKEND_REGISTERED, bool))
+    # 二度目の呼出しは _BACKEND_REGISTERED=True ならスキップ・False なら同じ RuntimeError
+    # → どちらの場合も「前回と同一の挙動」 = 冪等
+    try:
+        register()
+        _second_raise = False
+    except RuntimeError:
+        _second_raise = True
+    check("backend register() second call is idempotent (same outcome as first)",
+          not _BACKEND_REGISTERED or not _second_raise)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

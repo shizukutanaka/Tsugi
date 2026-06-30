@@ -135,6 +135,11 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
         "task_flip_bound": None,
     }
     if ref_logits is not None:
+        import numpy as _np
         from tsugi.decision import flip_bound_from_divergence
         out["task_flip_bound"] = flip_bound_from_divergence(ref_logits, rep.model_divergence)
+        # 実 logit の RMS scale を測定し certify_from_sample の代替 scale として公開する。
+        # audit_fx を呼んだ後に certify_from_sample(x, K, dtype) へ渡す目安になる。
+        _rf = _np.asarray(ref_logits, dtype=_np.float64)
+        out["ref_scale"] = float(_np.sqrt(_np.mean(_rf ** 2))) if _rf.size else 1.0
     return out

@@ -106,6 +106,32 @@ class _SymInt:
         raise TypeError("symbolic SymInt — cannot convert to int")
 
 
+def test_audit_fx_ref_scale_from_logits():
+    """ref_logits を渡すと ref_scale（RMS）が audit 出力に含まれる（Q14: scale 推定）。
+
+    certify_from_sample(x, K, dtype) に渡す scale ヒントになる。
+    scale=1 仮定でモデルを認証すると、実 logit scale（例: 数十）との乖離で
+    check_tensor が scale 超過 BLOCK を誤発火する。ref_scale はその乖離を事前に示す。
+    """
+    import numpy as np
+
+    gm = _transformer_block()
+
+    # ref_logits なしでは ref_scale は含まれない
+    rep_no_logits = audit_fx(gm)
+    assert "ref_scale" not in rep_no_logits, "logits 無しで ref_scale が含まれている"
+
+    # scale ≈ 10 の logit（LLM の未正規化出力に近い）
+    rng = np.random.default_rng(0)
+    logits = rng.standard_normal((500, 128)).astype(np.float32) * 10.0
+    rep = audit_fx(gm, ref_logits=logits)
+    assert "ref_scale" in rep, "logits 有りなのに ref_scale が含まれていない"
+    actual_rms = float(np.sqrt(np.mean(logits ** 2)))
+    assert abs(rep["ref_scale"] - actual_rms) / actual_rms < 0.01, \
+        f"ref_scale={rep['ref_scale']:.2f} が実 RMS={actual_rms:.2f} と乖離"
+    assert rep["task_flip_bound"] is not None, "ref_logits 有りなのに task_flip_bound=None"
+
+
 def test_audit_fx_warns_dynamic_shapes():
     """dynamic=True コンパイルの symbolic shape を検出し has_dynamic_shapes=True を返す。
 
@@ -165,6 +191,7 @@ def main() -> int:
         test_audit_fx_surfaces_amplifiers,
         test_audit_fx_empty_graph,
         test_audit_fx_translates_to_task_flip_bound,
+        test_audit_fx_ref_scale_from_logits,
         test_audit_fx_warns_dynamic_shapes,
         test_audit_fx_flags_nondeterministic_atomic_ops,
     ]

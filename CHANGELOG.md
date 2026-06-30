@@ -5,6 +5,31 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **長所短所分析に基づく3点改善（第11回）**:
+  コードベース全体調査（13 モジュール・100 不変条件・27 テストファイル）とソクラテス50問の
+  残余ギャップ分析から実装。
+
+  1. **`certify_from_sample(x, K, dtype)` — scale=1 暗黙仮定の排除（Q14）**:
+     `certify_gemm(scale=1.0)` で認証後に実 RMS が 50 のテンソルを `check_tensor` に通すと
+     スケール超過 BLOCK が誤発火する根本問題。代表サンプルから RMS を実測して認証する
+     `certify_from_sample` を追加。LLM の未正規化活性（scale~数十）・正規化後（scale~1）・
+     FP8 量子化後（scale~小）など層ごとに scale が大きく違うモデルで重要。
+     - `envelope.certify_from_sample(x, K, dtype, cond, noise_floor)`: RMS 計測 → certify_gemm
+     - ゼロテンソル（scale→0 で除算）の防御: `max(scale, 1e-30)`
+     - tests: 3 ケース（scale=50 誤 BLOCK 解消・ゼロ除算防止・小 scale 追従）
+
+  2. **backend 登録の冪等化（Q28）**:
+     `tsugi_torch.register()` は import 副作用で自動登録するが、モジュール reload / 二重 import で
+     重複登録しうる（`register_backend` はベンダーによっては既登録名でエラー）。
+     `_BACKEND_REGISTERED: bool` フラグを追加し、既登録なら即 return で冪等化。
+
+  3. **`audit_fx()` に `ref_scale` 追加（Q14/Q13 の FX 橋サイド）**:
+     `ref_logits` を渡した場合に実 RMS scale を測定して `"ref_scale"` を出力に含める。
+     `certify_from_sample` へ渡す scale のヒントになり、「FX 静的検査 → envelope 認証」の
+     経路を data-driven に接続する。
+  - tests: `test_audit_fx_ref_scale_from_logits` (scale RMS 精度 1%)
+  - verify.py: 100→106 不変条件（37-39 番）
+
 - **torch.compile dynamic shape 検出（外部調査ベース・第10回）**:
   外部調査（PyTorch 公式ドキュメント「Dynamic Shapes Core Concepts」・
   Edward Yang blog「State of torch.compile August 2025」・GitHub issue #165506）の知見に基づく。

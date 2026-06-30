@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 import numpy as np  # noqa: E402
 
 from tsugi.envelope import (  # noqa: E402
+    certify_from_sample,
     certify_gemm,
     channel_scale_spread,
     check_outlier_features,
@@ -154,6 +155,54 @@ def test_outlier_features_break_single_scale():
     assert any("outlier" in f.op for f in check_outlier_features(outlier).findings)
 
 
+def test_certify_from_sample_measures_real_scale():
+    """certify_from_sample は実サンプルの RMS を scale に使う（scale=1 仮定を排除）。
+
+    Q14 の修正: certify_gemm(scale=1.0) で認証後に scale=50 のデータを check_tensor すると
+    scale 超過 BLOCK が誤発火する。certify_from_sample は同じデータで認証・検査を一致させる。
+    """
+    rng = np.random.default_rng(42)
+    # scale ≈ 50 のテンソル（LLM の未正規化活性等）
+    x_large = rng.standard_normal((32, 128)).astype(np.float32) * 50.0
+
+    # scale=1 で認証すると scale 超過 BLOCK が誤発火する
+    env_wrong = certify_gemm(K=128, dtype="float32", scale=1.0)
+    rep_wrong = check_tensor(x_large, env_wrong)
+    assert rep_wrong.max_risk == Risk.BLOCK, "scale=1 認証でスケール超過 BLOCK が出ないと test 意味なし"
+
+    # certify_from_sample は実 scale を測定 → 同じデータが BLOCK にならない
+    env_correct = certify_from_sample(x_large, K=128, dtype="float32")
+    assert env_correct.scale_max > 40.0, f"RMS が正しく測定されていない: scale={env_correct.scale_max:.2f}"
+    rep_correct = check_tensor(x_large, env_correct)
+    # scale 超過 BLOCK が出ない（scale が正しく認証された）
+    scale_blocks = [f for f in rep_correct.findings if "scale" in f.message and f.risk == Risk.BLOCK]
+    assert not scale_blocks, f"certify_from_sample 後も scale BLOCK: {rep_correct.to_text()}"
+
+
+def test_certify_from_sample_zero_tensor():
+    """ゼロテンソルで certify_from_sample が除算エラーを出さない（ゼロ除算防止）。"""
+    x_zero = np.zeros((8, 8), dtype=np.float32)
+    env = certify_from_sample(x_zero, K=64, dtype="float16")
+    assert env.scale_max > 0.0, "ゼロテンソルで scale_max がゼロになってはいけない"
+    # ゼロテンソルは IN-ENVELOPE（overflow/denormal/scale 超過のいずれも無し）
+    rep = check_tensor(x_zero, env)
+    assert rep.in_envelope, rep.to_text()
+
+
+def test_certify_from_sample_small_scale():
+    """scale << 1 のテンソル（正規化後の活性）で certify_from_sample が正しく機能する。"""
+    rng = np.random.default_rng(7)
+    x_small = rng.standard_normal((16, 64)).astype(np.float32) * 0.01
+    env = certify_from_sample(x_small, K=64, dtype="float16")
+    # scale が実 RMS に追従していること
+    actual_rms = float(np.sqrt(np.mean(x_small ** 2)))
+    assert abs(env.scale_max - actual_rms) / actual_rms < 0.01, \
+        f"scale_max={env.scale_max:.4f} が実 RMS={actual_rms:.4f} と一致しない"
+    rep = check_tensor(x_small, env)
+    # 小 scale で overflow や scale 超過が起きない
+    assert rep.in_envelope, rep.to_text()
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -169,6 +218,9 @@ def main() -> int:
         test_tf32_dtype_limits_match_float32,
         test_fp8_e4m3_narrow_range_makes_overflow_the_main_risk,
         test_fp8_e5m2_wider_range_than_e4m3,
+        test_certify_from_sample_measures_real_scale,
+        test_certify_from_sample_zero_tensor,
+        test_certify_from_sample_small_scale,
     ]
     for t in tests:
         try:
