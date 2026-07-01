@@ -326,6 +326,32 @@ def test_audit_runtime_blocks_real_divergence():
     assert ad.max_risk == Risk.BLOCK
 
 
+def test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence():
+    """equivalence phase が classify_divergence で LAYOUT を数値発散と区別する（第18回）。
+
+    equivalence.classify_divergence（LAYOUT vs 真の数値発散の判別）は実装・テスト済みだが、
+    audit_runtime の equivalence phase は DIVERGENT を一律 BLOCK にするだけで、
+    転置/再タイル（値は正しいが位置違い・codegen の整列バグ）と真の精度バグを
+    区別していなかった（第11-17回で見つけた「機能は実装済みだが facade 未接続」と
+    同型の欠陥の7件目）。両者は修正すべき箇所が全く異なる（整列 vs 精度チューニング）
+    ため、区別せずに BLOCK だけ出すのは診断上の手がかりを捨てていることになる。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((32, 32)).astype(np.float32)
+
+    # 転置（レイアウトバグ・値は正しい）は BLOCK のまま（真に不一致）だが LAYOUT と明示される
+    ad_layout = audit_runtime(a, a.T.copy(), K=256, noise_floor=1e-6)
+    eq_layout = next(p for p in ad_layout.phases if p.name.startswith("equivalence"))
+    assert eq_layout.max_risk == Risk.BLOCK
+    assert "LAYOUT" in eq_layout.to_text()
+
+    # 真のスケール発散（レイアウトでない）は LAYOUT タグが付かない
+    ad_true = audit_runtime(a, (a * 1.5).astype(np.float32), K=256, noise_floor=1e-6)
+    eq_true = next(p for p in ad_true.phases if p.name.startswith("equivalence"))
+    assert eq_true.max_risk == Risk.BLOCK
+    assert "LAYOUT" not in eq_true.to_text()
+
+
 def test_audit_runtime_includes_decision_when_logits_given():
     rng = np.random.default_rng(0)
     a = rng.standard_normal((64, 64)).astype(np.float32)
@@ -511,6 +537,7 @@ def main() -> int:
         test_audit_runtime_worst_case_search_finds_envelope_counterexample,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
+        test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
         test_audit_runtime_supports_non_classification_tasks,
         test_audit_runtime_adds_rollout_phase_when_gen_length_given,

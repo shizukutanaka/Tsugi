@@ -314,7 +314,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     from .calibration import check_systematic
     from .decision import compare_decisions, compare_task
     from .envelope import check_tensor
-    from .equivalence import compare_gemm
+    from .equivalence import DV_LAYOUT, classify_divergence, compare_gemm
     from .nondeterminism import attribute
 
     ad = Audit()
@@ -341,6 +341,14 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     if verdict == "INDISTINGUISHABLE":
         eqp.max_risk = Risk.WARN
         eqp.lines.append("クロス差 ≤ ノイズ → 等価判定は未定義（要 run 増/決定化）")
+    elif verdict == "DIVERGENT" and af.shape == bf.shape:
+        # レイアウト不一致（転置・再タイル等・値は正しい）か真の数値発散かを区別する
+        # （classify_divergence は実装・テスト済みだが従来 audit_runtime に未接続だった）。
+        # LAYOUT なら修正先は codegen の整列問題であり、数値精度のチューニングではない。
+        dv = classify_divergence(af, bf, K, dtype)
+        if dv == DV_LAYOUT:
+            eqp.lines.append("LAYOUT: 値の多重集合は一致 → レイアウト不一致（転置/再タイル）"
+                             "の疑い・数値精度バグでなく codegen の整列問題を調査せよ")
     sysrep = check_systematic(af, bf, K, dtype)
     if not sysrep.ok:
         eqp.max_risk = max(eqp.max_risk, sysrep.max_risk)

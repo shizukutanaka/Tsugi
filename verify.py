@@ -800,6 +800,19 @@ def main() -> int:
     check("audit_runtime without fn_a/fn_b/worst_samples has no worstcase phase (backward compatible)",
           not any(p.name.startswith("worstcase") for p in _ad_no_wc45.phases))
 
+    # 46. audit_runtime の equivalence phase が classify_divergence で LAYOUT を区別する（第18回）
+    # equivalence.classify_divergence(LAYOUTか真の数値発散か)は実装済みだが audit_runtime は
+    # 一律 BLOCK にするだけで両者を区別していなかった(修正箇所が全く異なる: 整列 vs 精度)。
+    _a46 = np.random.default_rng(0).standard_normal((32, 32)).astype(np.float32)
+    _ad_layout46 = audit_runtime(_a46, _a46.T.copy(), K=256, noise_floor=1e-6)
+    _eq_layout46 = next(p for p in _ad_layout46.phases if p.name.startswith("equivalence"))
+    check("audit_runtime tags transpose (layout bug, values correct) as LAYOUT not plain BLOCK",
+          _eq_layout46.max_risk == portability.Risk.BLOCK and "LAYOUT" in _eq_layout46.to_text())
+    _ad_true46 = audit_runtime(_a46, (_a46 * 1.5).astype(np.float32), K=256, noise_floor=1e-6)
+    _eq_true46 = next(p for p in _ad_true46.phases if p.name.startswith("equivalence"))
+    check("audit_runtime does not tag a true scale divergence as LAYOUT (no false classification)",
+          _eq_true46.max_risk == portability.Risk.BLOCK and "LAYOUT" not in _eq_true46.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

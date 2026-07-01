@@ -5,6 +5,31 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **equivalence.classify_divergence を audit_runtime の equivalence phase に接続（第18回）**:
+  第11-17回で見つけた「機能は実装済みだが facade 未接続」欠陥を手作業の調査でなく、
+  audit.py のソーステキストに対する各モジュールの公開関数の機械的な参照スキャンで
+  再現・拡張して探索した結果、`equivalence.classify_divergence()`
+  （LAYOUT vs 真の数値発散の判別・実装済みだが未接続）を発見・修正（7件目）。
+
+  `classify_divergence` は element-wise 不一致が「レイアウト不一致」（転置・再タイル・
+  値は正しいが位置違い）か「真の数値発散」かを、値の多重集合（ソート済み全要素）が
+  保存されるかで判別する。だが `audit_runtime` の equivalence phase は DIVERGENT を
+  一律 BLOCK にするだけで両者を区別していなかった —— 修正すべき箇所が全く異なる
+  （LAYOUT は codegen の整列問題、DIVERGENT は数値精度チューニング）ため、この
+  未接続は診断上の手がかりを捨てていたことになる。
+
+  - `audit_runtime` の equivalence phase: `verdict == "DIVERGENT"` かつ形状一致時、
+    `classify_divergence(af, bf, K, dtype)` を実行し `DV_LAYOUT` なら
+    「値の多重集合は一致 → レイアウト不一致の疑い」を明記する。
+  - tests: `test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence`
+    （転置は LAYOUT タグ付き BLOCK・真のスケール発散は LAYOUT タグ無し BLOCK を確認）
+  - verify.py: 118→120 不変条件（46番）
+
+  スキャン手法（今後の回帰防止に有効）: `python/tsugi/*.py` の公開関数名（`def [a-z]...`）を
+  列挙し `audit.py` のソーステキストに文字列として現れるかを確認する。多くの false
+  positive（自モジュール内でのみ使われる正当な低レベルヘルパー）が出るため人手の判断は
+  要るが、「本来 facade に届くべき checker 関数」の候補を安価に洗い出せる。
+
 - **audit_runtime(fn_a=..., worst_samples=...) — worstcase.analyze_worst_case を能動探索として接続（第17回）**:
   `worstcase.analyze_worst_case()`（唯一の能動探索層・平均ケース検証の盲点を露出）は
   実装・テスト済みだが、`audit_runtime()` は受動的な代表サンプル比較しか行わず、認証
