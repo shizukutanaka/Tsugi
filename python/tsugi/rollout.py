@@ -103,14 +103,16 @@ class RolloutReport(FindingReport):
     length: int = 0
     survival: float = 1.0
     expected_step: float = math.inf
+    median_step: float = math.inf
     safe_length: int = 0
 
     def to_text(self) -> str:  # type: ignore[override]
         exp = "∞" if math.isinf(self.expected_step) else f"{self.expected_step:.0f}"
+        med = "∞" if math.isinf(self.median_step) else f"{self.median_step:.0f}"
         return super().to_text(
             header=(f"rollout (p={self.flip_rate * 100:.3f}%/tok, L={self.length}: "
                     f"survival={self.survival * 100:.2f}%, "
-                    f"E[初回発散]=tok {exp}, safe_len={self.safe_length})"),
+                    f"E[初回発散]=tok {exp} / 中央値=tok {med}, safe_len={self.safe_length})"),
             empty="(sequence-equivalent within confidence)")
 
 
@@ -122,14 +124,22 @@ def analyze_rollout(flip_rate: float, target_length: int, *,
       - target_length ≤ safe_len（survival ≥ confidence 圏内）→ OK
       - survival ≥ 0.5（一致が分岐より優勢だが confidence 未満）→ WARN
       - それ未満（L 内で分岐が優勢）→ BLOCK
+
+    初回発散ステップは幾何分布に従い右に裾を引くため、平均（expected_step=1/p）は
+    中央値（median_step≈ln2/p）より系統的に大きい —— 平均だけ見ると「典型的には
+    もっと長く保つ」と楽観視しやすい（右裾の少数の長生存run に平均が引っ張られる）。
+    fail-safe のため両方を報告する（divergence_step_quantile は実装済みだが従来
+    どのレポートにも接続されていなかった）。
     """
     p = min(max(flip_rate, 0.0), 1.0)
     surv = sequence_survival(p, target_length)
     safe = safe_generation_length(p, confidence)
     exp = expected_divergence_step(p)
+    med = divergence_step_quantile(p, 0.5)
     rep = RolloutReport(flip_rate=p, length=int(target_length), survival=surv,
-                        expected_step=exp, safe_length=safe)
+                        expected_step=exp, median_step=med, safe_length=safe)
     exps = "∞" if math.isinf(exp) else f"{exp:.0f}"
+    meds = "∞" if math.isinf(med) else f"{med:.0f}"
     if p <= 0.0 or target_length <= safe:
         rep.add(Risk.OK, "rollout",
                 f"L={target_length} は safe_len={safe} 以内 "
@@ -137,12 +147,13 @@ def analyze_rollout(flip_rate: float, target_length: int, *,
     elif surv >= 0.5:
         rep.add(Risk.WARN, "rollout",
                 f"per-token {p * 100:.3f}% は許容でも L={target_length} で survival="
-                f"{surv * 100:.2f}% (<{confidence * 100:.0f}%)・初回発散 ~tok {exps}")
+                f"{surv * 100:.2f}% (<{confidence * 100:.0f}%)・初回発散 平均tok {exps}"
+                f"/中央値tok {meds}")
     else:
         rep.add(Risk.BLOCK, "rollout",
                 f"per-token {p * 100:.3f}% が L={target_length} で複利的に増幅: survival="
-                f"{surv * 100:.2f}%・初回発散 ~tok {exps}・safe_len={safe} のみ "
-                f"(per-token 許容 ⇏ per-sequence 許容)")
+                f"{surv * 100:.2f}%・初回発散 平均tok {exps}/中央値tok {meds}"
+                f"・safe_len={safe} のみ (per-token 許容 ⇏ per-sequence 許容)")
     return rep
 
 

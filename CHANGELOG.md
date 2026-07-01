@@ -5,6 +5,24 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **rollout: 初回発散ステップの中央値を接続（過剰実装の発見・第19回）**:
+  ソクラテス式に「不足」（未接続の facade）でなく「過剰」（呼ばれない実装）の観点から
+  機械スキャンし直した結果、`rollout.divergence_step_quantile()`（初回発散ステップの
+  q 分位）が唯一の**完全デッドコード**（テストからも一切呼ばれない）だったことを発見。
+
+  平均 `expected_divergence_step`（=1/p）だけの報告は、初回発散ステップが従う幾何分布の
+  右裾に引っ張られ「典型的にはもっと長く保つ」と楽観視させる危険がある
+  （p=0.01 で平均100 vs 中央値69）。単なる削除でなく、統計的に意味のある値だったため
+  `analyze_rollout`/`RolloutReport` に接続する判断をした。
+
+  - `RolloutReport` に `median_step: float` フィールドを追加。
+  - `analyze_rollout()`: `divergence_step_quantile(p, 0.5)` を計算し `median_step` に格納、
+    `to_text()`/WARN/BLOCK メッセージに「平均tok X / 中央値tok Y」の両方を表示。
+  - tests: `test_median_divergence_step_is_smaller_than_mean`
+    （幾何分布の解析的性質・p=0.01 での具体値・RolloutReport 接続を検証）
+  - verify.py: 120→121 不変条件（rollout セクションに追加）
+  - docs/SOCRATIC-50-improvements.md に G 節（Q51-56・過不足を機械的に探す手法のまとめ）を追加。
+
 - **equivalence.classify_divergence を audit_runtime の equivalence phase に接続（第18回）**:
   第11-17回で見つけた「機能は実装済みだが facade 未接続」欠陥を手作業の調査でなく、
   audit.py のソーステキストに対する各モジュールの公開関数の機械的な参照スキャンで

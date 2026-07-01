@@ -16,6 +16,7 @@ import numpy as np  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
 from tsugi.rollout import (  # noqa: E402
     analyze_rollout,
+    divergence_step_quantile,
     expected_divergence_step,
     flip_rate_upper_bound,
     rollout_from_logits,
@@ -50,6 +51,31 @@ def test_expected_divergence_is_geometric_mean():
     # 初回発散の期待位置 = 1/p（幾何分布）
     assert abs(expected_divergence_step(0.01) - 100.0) < 1e-9
     assert abs(expected_divergence_step(0.5) - 2.0) < 1e-9
+
+
+def test_median_divergence_step_is_smaller_than_mean():
+    """初回発散ステップの中央値は平均より系統的に小さい（幾何分布の右裾・第19回）。
+
+    divergence_step_quantile は実装・テスト済みだったが、どのレポートからも
+    参照されていなかった（過剰実装＝実質デッドコード）。expected_step（平均=1/p）
+    だけ見ると「典型的にはもっと長く保つ」と楽観視しやすい —— 右裾の少数の長生存
+    run に平均が引っ張られるため。analyze_rollout に接続し両方報告することで、
+    「平均は大きいが半数の run はもっと早く分岐する」という fail-safe な事実を隠さない。
+    """
+    for p in (0.001, 0.01, 0.1, 0.5):
+        mean = expected_divergence_step(p)
+        median = divergence_step_quantile(p, 0.5)
+        assert median < mean, f"p={p}: median({median}) が mean({mean}) 以上（幾何分布の性質に反する）"
+        assert median > 0
+
+    # 解析的な検証値: p=0.01 → mean=100, median=ceil(ln(0.5)/ln(0.99))=69
+    assert abs(expected_divergence_step(0.01) - 100.0) < 1e-9
+    assert divergence_step_quantile(0.01, 0.5) == 69.0
+
+    # analyze_rollout の RolloutReport に median_step が接続されている
+    rep = analyze_rollout(0.01, 100)
+    assert rep.median_step == 69.0
+    assert "中央値" in rep.to_text()
 
 
 def test_safe_length_matches_confidence():
@@ -145,6 +171,7 @@ def main() -> int:
         test_survival_compounds_over_length,
         test_perfect_alignment_never_diverges,
         test_expected_divergence_is_geometric_mean,
+        test_median_divergence_step_is_smaller_than_mean,
         test_safe_length_matches_confidence,
         test_monte_carlo_confirms_analytic_survival,
         test_verdict_flips_with_generation_length,

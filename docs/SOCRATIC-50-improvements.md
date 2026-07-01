@@ -278,3 +278,48 @@ propagation（per-kernel⇏per-model 増幅）が統合経路では発火して�
 tracer が reduce/exp 等を IR に *全く記録していなかった*（softmax/rmsnorm はトレース不能）
 ことが根因。**本パスで tracer を拡張して修正済**（softmax がトレースでき、増幅 op が audit に
 流れる）。増幅の *大きさ*（cond 推定・Q8）が次の最優先。
+
+---
+
+## G. 過不足（excess/deficiency）を機械的に探す（Q51–56・第11-19回まとめ）
+
+第11-18回で「機能は実装済みだが facade（audit.py）に未接続」という同型の欠陥を7件
+発見・修正した（certify_from_sample・empirical_cond・robust noise floor・compare_task・
+attribution.diagnose・worstcase.analyze_worst_case・equivalence.classify_divergence）。
+第19回はこれを「不足（未接続）」でなく「過剰（無接続のまま放置された実装コスト）」の
+視点から問い直した。
+
+**Q51.** 「実装されているが呼ばれない」関数は全て同じ問題か？
+→ いいえ、2 種に分かれる。(a) テストからは呼ばれるが facade からは呼ばれない
+（＝意図された public API だが接続漏れ・「不足」側）。(b) テストからも一切呼ばれない
+（＝真のデッドコード・「過剰」側、実装コストを払ったのに一切価値を届けていない）。
+機械的スキャン（各モジュールの `def` 名を全ソース・全テストと照合）でこの 2 種を分離できる。
+
+**Q52.** 実際に (b) 型の完全デッドコードは存在したか？
+→ ✅ **修正済**（第19回）: `rollout.divergence_step_quantile`（初回発散ステップの q 分位）が
+唯一の完全デッドコードだった。`analyze_rollout` も対応する `RolloutReport` もこれを一切
+参照していなかった。
+
+**Q53.** 見つかった過剰関数は削除すべきか、接続すべきか？
+→ ケースバイケース。今回は削除でなく接続を選んだ: `divergence_step_quantile(p, 0.5)`
+（中央値）は `expected_divergence_step(p)`（平均=1/p）と対になる統計的に意味のある値
+だったため。単なる実験の残骸なら削除が正しい判断になる。
+
+**Q54.** なぜ平均だけでなく中央値も要るのか？
+→ 初回発散ステップは幾何分布に従い右に裾を引く。平均(1/p)は右裾の少数の長生存 run に
+引っ張られ、中央値(≈ln2/p)より系統的に大きい（p=0.01 で平均100・中央値69）。平均だけの
+報告は「典型的にはもっと長く保つ」と楽観視させる —— fail-safe の観点では危険な省略。
+✅ **修正済**（第19回）: `analyze_rollout`/`RolloutReport` に `median_step` を追加、
+`to_text()` に両方を表示。
+
+**Q55.** 他にも「歪んだ分布を単一点推定だけで報告している」箇所はないか？
+→ 部分的に対処済み: `nondeterminism.measure_noise_floor` は `spread`（max-min）と
+`spread_robust`（10-90パーセンタイル幅）の両方を返す（Q49）。`calibration.check_systematic`
+の `bias` は単一点推定（分布でなく符号付き平均）のまま。**改善: 系統バイアスの
+ばらつき（標準誤差・信頼区間）も返せば、少数サンプルでの過信を防げる。**（未着手・P2）
+
+**Q56.** この機械的スキャン手法自体をどう維持するか？
+→ 現状は手動実行（第18・19回のように都度 Python ワンライナーで scan）。
+**改善: verify.py に恒常的な invariant として組み込み、新しい「意図せぬデッドコード」や
+「facade 未接続」を CI で検出する。** ただし false positive（module-private helper）の
+除外リスト維持が必要になるため、費用対効果を見て判断（未着手・P2）。

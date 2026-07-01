@@ -378,6 +378,14 @@ def main() -> int:
     check("rollout per-token flip rate honors decode mode (sampling ≥ greedy)",
           rollout_from_logits(_da, _db, 256, decode="nucleus", top_p=0.9).flip_rate
           >= rollout_from_logits(_da, _db, 256, decode="greedy").flip_rate)
+    # rollout: 初回発散の中央値は平均より系統的に小さい（幾何分布の右裾・第19回）
+    # divergence_step_quantile は実装済みだが従来どのレポートにも接続されていなかった。
+    # 平均だけでは「典型的にはもっと長く保つ」と楽観視しやすい（右裾に平均が引っ張られる）。
+    from tsugi.rollout import divergence_step_quantile, expected_divergence_step
+    check("rollout reports median divergence step alongside mean (fail-safe: mean overstates typical survival)",
+          divergence_step_quantile(0.01, 0.5) < expected_divergence_step(0.01)
+          and analyze_rollout(0.01, 100).median_step == divergence_step_quantile(0.01, 0.5)
+          and "中央値" in analyze_rollout(0.01, 100).to_text())
 
     # 新視点10 worstcase: 平均ケース等価 ⇏ 最悪ケース等価（能動探索が代表を超える反例を発見）
     from tsugi.worstcase import analyze_worst_case
