@@ -46,6 +46,31 @@ def test_graph_ops_collapses_kloop_dots_into_one_matmul():
     assert matmuls[0].K == 256   # 4 dots × block_k 64
 
 
+def test_audit_numerics_uses_sample_scale_when_given():
+    """audit(sample=...) は certify_from_sample で実 RMS scale を認証する（Q13/Q14 の facade 接続）。
+
+    Round 11 で envelope.certify_from_sample を追加したが audit() facade は
+    certify_gemm(K,"float16",1.0) のまま未接続だった（scale=1 暗黙仮定が製品経路に残存）。
+    sample を渡すと numerics phase のテキストに実測 scale が反映されることを保証する。
+    sample 無指定時は「scale=1.0 仮定」を明記し、暗黙化しないことも確認する。
+    """
+    mod, block, cfg = _demo_module()
+
+    # sample 無指定: scale=1.0 仮定が明記される（暗黙化しない）
+    a_default = audit(mod, cfg, block_dims=block)
+    num_default = next(p for p in a_default.phases if p.name.startswith("numerics"))
+    assert "scale=1.0 仮定" in num_default.to_text()
+
+    # sample あり: 実測 RMS scale（例: 50）が反映される（scale=1 認証より遥かに大きい atol）
+    sample = np.random.default_rng(0).standard_normal((32, 32)).astype(np.float32) * 50.0
+    a_sample = audit(mod, cfg, block_dims=block, sample=sample)
+    num_sample = next(p for p in a_sample.phases if p.name.startswith("numerics"))
+    text = num_sample.to_text()
+    assert "sample 実測" in text
+    actual_rms = float(np.sqrt(np.mean(sample.astype(np.float64) ** 2)))
+    assert f"scale={actual_rms:.3g}" in text, f"実測 scale={actual_rms:.3g} がテキストに無い: {text}"
+
+
 def test_audit_propagates_amplification_through_traced_softmax():
     # Q10: 増幅 op（reduce/exp）を出す実カーネルを trace → audit に通し、propagation 層が
     # 実グラフから増幅 op を拾い「静的 cond=1 は下界」と過小評価を WARN することを保証。
@@ -286,6 +311,7 @@ def main() -> int:
     tests = [
         test_audit_aggregates_all_static_phases,
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
+        test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,
         test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,

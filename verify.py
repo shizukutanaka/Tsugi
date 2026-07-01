@@ -670,6 +670,20 @@ def main() -> int:
     check("backend register() second call is idempotent (same outcome as first)",
           not _BACKEND_REGISTERED or not _second_raise)
 
+    # 40. audit(sample=...) facade が certify_from_sample を使う（Q13/Q14 の facade 接続・第12回）
+    # Round 11 で envelope.certify_from_sample を追加したが audit() は certify_gemm(...,1.0) の
+    # ままだった（scale=1 暗黙仮定が製品経路の主要 facade に残存）。ここで接続を検証する。
+    _sample50 = np.random.default_rng(0).standard_normal((32, 32)).astype(np.float32) * 50.0
+    _a_nosample = audit(mod, dcfg, block_dims=block)
+    _a_sample = audit(mod, dcfg, block_dims=block, sample=_sample50)
+    _num_no = next(p for p in _a_nosample.phases if p.name.startswith("numerics"))
+    _num_yes = next(p for p in _a_sample.phases if p.name.startswith("numerics"))
+    check("audit() without sample explicitly states scale=1.0 assumption (no silent default)",
+          "scale=1.0 仮定" in _num_no.to_text())
+    check("audit(sample=...) uses real measured RMS scale instead of scale=1 (Q13/Q14 facade fix)",
+          "sample 実測" in _num_yes.to_text()
+          and "scale=1.0 仮定" not in _num_yes.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -5,6 +5,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit() facade に certify_from_sample を接続（第12回）**:
+  第11回で `envelope.certify_from_sample` を追加したが、製品の主要 facade である
+  `tsugi.audit.audit()` は依然 `certify_gemm(K, "float16", 1.0)` の scale=1 固定のままだった
+  （関数は存在するが呼び出し経路に未接続 = 実質使われない改善）。
+
+  - `audit(module, cfg, ..., sample=None)`: `sample`（代表テンソル）を渡すと numerics phase が
+    `certify_from_sample` で実 RMS scale を認証する。
+  - `sample` 未指定時は `"scale=1.0 仮定"` を numerics phase のテキストに明記し、
+    暗黙のデフォルトが隠れないようにする（fail-safe: 前提を必ず可視化）。
+  - tests: `test_audit_numerics_uses_sample_scale_when_given`（sample あり/なし双方のテキスト検証）
+  - verify.py: 106→108 不変条件（40番）
+
 - **長所短所分析に基づく3点改善（第11回）**:
   コードベース全体調査（13 モジュール・100 不変条件・27 テストファイル）とソクラテス50問の
   残余ギャップ分析から実装。

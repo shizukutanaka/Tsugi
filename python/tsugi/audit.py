@@ -132,14 +132,20 @@ def _graph_ops(module: ir.Module, cfg):
 
 
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
-          block_dims=None, ref_logits=None, provenance=None) -> Audit:
+          block_dims=None, ref_logits=None, sample=None, provenance=None) -> Audit:
     """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。
 
     ref_logits を渡すと、propagation のモデル発散を decision に橋渡しして、第2ベンダーを
     走らせる前にタスク判断フリップ率の上界を予測する（静的 → タスク影響）。
+
+    sample を渡すと、認証エンベロープの scale を代表テンソルから実測する
+    （envelope.certify_from_sample・SOCRATIC Q13/Q14）。無指定なら scale=1.0 を仮定するが、
+    実テンソルの RMS は 1 でない（LLM 未正規化活性は数十、量子化後は小さい等）ため、
+    scale=1 認証は本番 check_tensor でスケール超過を誤 BLOCK/見逃す原因になりうる。
+    sample 無指定時は「scale=1 仮定」であることを numerics phase に明記し、暗黙化を防ぐ。
     """
     from .calibration import detectability_floor
-    from .envelope import certify_gemm
+    from .envelope import certify_from_sample, certify_gemm
     from .feasibility import cross_vendor_feasibility, first_vendor_only
     from .occupancy import occupancy_gap
     from .portability import analyze
@@ -188,7 +194,13 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     if K > 0:
         num = AuditPhase("numerics 数値等価性の目安", "decided", Risk.INFO)
         num.lines.append("導出許容: " + explain(K, "float16"))
-        num.lines.append("認証エンベロープ: " + certify_gemm(K, "float16", 1.0).to_text())
+        if sample is not None:
+            env = certify_from_sample(sample, K, "float16")
+            num.lines.append(f"認証エンベロープ(sample 実測 scale={env.scale_max:.3g}): "
+                             + env.to_text())
+        else:
+            env = certify_gemm(K, "float16", 1.0)
+            num.lines.append("認証エンベロープ(scale=1.0 仮定・sample 未指定): " + env.to_text())
         floor = detectability_floor(K, "float16")
         num.lines.append(
             f"検出限界(偽OKの盲点): max_abs は相対 {floor['rel'] * 100:.1f}% 未満の"
