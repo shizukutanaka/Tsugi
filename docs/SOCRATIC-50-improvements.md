@@ -327,3 +327,16 @@ BLOCK になることを実証（偽OK 修正）。大 N（典型的な GEMM 出
 **改善: verify.py に恒常的な invariant として組み込み、新しい「意図せぬデッドコード」や
 「facade 未接続」を CI で検出する。** ただし false positive（module-private helper）の
 除外リスト維持が必要になるため、費用対効果を見て判断（未着手・P2）。
+
+**Q57.** Q55 の「点推定でなく上側限界」パターンは calibration 以外にも波及するか？
+→ ✅ **修正済**（第21回）: `decision.predicted_flip_bound(ref_logits, delta)` = P(margin<2δ)
+も、代表 logit n 件からの点推定に過ぎなかった。n が小さい代表集合ではたまたま
+margin<2δ 該当が 0 件でも、母集団の真の確率は 0 でない（rollout.flip_rate_upper_bound
+の rule-of-three と同じ問題）。0 件観測を「フリップ率 0%」と過信するのは偽OK の温床。
+`rollout.flip_rate_upper_bound`（Wilson 上側限界・既存実装を再利用）へ委譲するよう修正。
+n=20 の代表集合で margin<2δ が 0 件のケースで、旧ロジックなら bound=0.0（過信）だったのが
+新ロジックで bound≈0.12（正しく不確実性を反映）になることを実証。n が大きい（数千件）
+既存テスト・property test（200 試行）はすべて無回帰で通過（大 N では Wilson 上限が点推定に
+収束するため）。`flip_bound_from_divergence`（propagation→decision 橋）にも自動波及。
+残る同型候補: `decision.regression_flip_rate`/`binary_flip_rate`/`ranking_flip_rate` も
+n 件のサンプルからの単純比率（点推定）。小標本での過信リスクは同様に残る（未着手・P2）。

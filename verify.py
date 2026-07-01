@@ -842,6 +842,20 @@ def main() -> int:
     check("check_systematic uses the upper bound and correctly BLOCKs the small-N case (no false-OK)",
           _cs47(_a47, _b47, K=1, dtype="float16").max_risk == portability.Risk.BLOCK)
 
+    # 48. decision.predicted_flip_bound は点推定でなく Wilson 上側限界で判定する（第21回）
+    # P(margin<2δ) は代表 logit n 件からの点推定。n が小さいと 0 件観測でも真の確率は 0 でない
+    # （rollout.flip_rate_upper_bound と同じ rule-of-three 問題）。第20回 calibration と同型修正。
+    from tsugi.decision import margin as _margin48
+    from tsugi.decision import predicted_flip_bound as _pfb48
+    _z48 = np.random.default_rng(0).standard_normal((20, 50)).astype(np.float32) * 5.0
+    _delta48 = 0.01
+    _m48 = _margin48(_z48)
+    _k48 = int(np.count_nonzero(_m48 < 2.0 * _delta48))
+    check("small representative set (n=20) has zero observed sub-threshold margins (test setup)",
+          _k48 == 0)
+    check("predicted_flip_bound does not mistake zero observations for zero flip probability (fail-safe)",
+          _pfb48(_z48, _delta48) > 0.05)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

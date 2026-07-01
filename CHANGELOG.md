@@ -5,6 +5,29 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **decision.predicted_flip_bound — 点推定でなく Wilson 上側限界で判定（第21回）**:
+  第20回の Q55/Q57 で示した「点推定でなく上側限界で判定」パターンが calibration 以外にも
+  波及するかを検証した結果、`predicted_flip_bound(ref_logits, delta)` = P(margin<2δ) も
+  代表 logit n 件からの単純比率（点推定）に過ぎなかったことを発見・修正。
+
+  n が小さい代表集合（キャリブレーションセット）ではたまたま margin<2δ 該当サンプルが
+  0 件でも、母集団の真の確率が 0 とは限らない（`rollout.flip_rate_upper_bound` の
+  rule-of-three と同じ問題）。0 件観測を「フリップ率 0%」と過信するのは fail-safe に反する。
+
+  - `predicted_flip_bound(ref_logits, delta, confidence=0.95)`: 観測比率 k/n でなく
+    `rollout.flip_rate_upper_bound(k, n, confidence)`（Wilson 上側限界・既存実装を再利用）
+    へ委譲するよう修正。n が大きければ上限は点推定にほぼ収束し挙動は変わらない。
+  - `flip_bound_from_divergence(ref_logits, rel_divergence, confidence=0.95)`:
+    `confidence` を透過的に伝播。
+  - 実証: n=20 の代表集合で margin<2δ 該当が 0 件のケースで、旧ロジックなら bound=0.0
+    （過信）だったのが、新ロジックで bound≈0.12（正しく不確実性を反映）になる。
+  - 既存テスト（`test_predicted_bound_is_upper_bound` 等）・property test（10性質×200試行）
+    はすべて無回帰で通過（大 N の既存テストでは Wilson 上限が点推定に収束するため）。
+  - tests: `test_predicted_bound_uses_wilson_upper_bound_for_small_representative_set`
+  - verify.py: 124→126 不変条件（48番）
+  - docs/SOCRATIC-50-improvements.md に Q57 を追加（残る同型候補として
+    regression/binary/ranking_flip_rate の小標本過信リスクを明記）。
+
 - **calibration.check_systematic — 点推定でなく上側限界(bias+stderr)で判定（第20回）**:
   第19回の Q55 で指摘した残課題を解消。`systematic_divergence`（RMS 比バイアス）は
   N 要素からの単一点推定に過ぎず、小テンソル（N 小）ではたまたま小さい bias が出て

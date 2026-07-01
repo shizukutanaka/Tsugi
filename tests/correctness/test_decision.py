@@ -100,6 +100,41 @@ def test_predicted_bound_is_upper_bound():
         assert actual <= bound + 1e-9     # P(margin<2δ) は実フリップ率の上界
 
 
+def test_predicted_bound_uses_wilson_upper_bound_for_small_representative_set():
+    """predicted_flip_bound は点推定 k/n でなく Wilson 上側限界で判定する（第21回）。
+
+    P(margin<2δ) は代表 logit（ref_logits）n 件からの *点推定* に過ぎない。第20回の
+    calibration.check_systematic と同型の盲点: n が小さい代表集合ではたまたま
+    margin<2δ に該当するサンプルが 0 件でも、母集団の真の確率は 0 ではない
+    （rollout.flip_rate_upper_bound の rule-of-three と同じ問題）。0 件観測を
+    「フリップ率 0%」と過信するのは fail-safe に反する。
+    """
+    rng = np.random.default_rng(0)
+    n_small = 20
+    z_small = rng.standard_normal((n_small, 50)).astype(np.float32) * 5.0  # 大マージン中心
+    delta = 0.01
+    m = margin(z_small)
+    k = int(np.count_nonzero(m < 2.0 * delta))
+    assert k == 0, "この検証ケースは 0 件観測が前提（テストケース不成立）"
+
+    point_estimate = k / n_small   # 旧ロジック相当（0.0 になるはず）
+    bound = predicted_flip_bound(z_small, delta)
+    assert point_estimate == 0.0
+    assert bound > point_estimate, (
+        f"0 件観測を過信して bound=0 のまま（偽OK 復活）: bound={bound}")
+    assert bound > 0.05, f"小標本の不確実性を反映した上側限界になっていない: bound={bound}"
+
+    # n が大きければ Wilson 上限は点推定にほぼ収束する（回帰なし）
+    n_large = 20000
+    z_large = np.random.default_rng(1).standard_normal((n_large, 50)).astype(np.float32) * 5.0
+    m_large = margin(z_large)
+    k_large = int(np.count_nonzero(m_large < 2.0 * delta))
+    bound_large = predicted_flip_bound(z_large, delta)
+    if k_large > 0:
+        assert abs(bound_large - k_large / n_large) < 0.01, (
+            "大標本で Wilson 上限が点推定から大きく乖離（回帰の疑い）")
+
+
 def test_numerical_divergence_not_sufficient_for_task_divergence():
     # マージンが大きい(確信)モデルは、相当な数値発散(max_abs~0.37)でもタスク影響は無視可能
     z = _logits() * 100.0   # logit を増幅 → マージン大
@@ -277,6 +312,7 @@ def main() -> int:
         test_decision_flips_are_scale_invariant,
         test_flips_concentrate_in_low_margin_tail,
         test_predicted_bound_is_upper_bound,
+        test_predicted_bound_uses_wilson_upper_bound_for_small_representative_set,
         test_numerical_divergence_not_sufficient_for_task_divergence,
         test_compare_decisions_reports_topk,
         test_compare_decisions_blocks_high_flip_rate,

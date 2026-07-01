@@ -148,17 +148,29 @@ def decompose_divergence(a: np.ndarray, b: np.ndarray) -> dict[str, float]:
             "systematic_frac": 1.0 - residual / (total + 1e-30)}
 
 
-def predicted_flip_bound(ref_logits: np.ndarray, delta: float) -> float:
+def predicted_flip_bound(ref_logits: np.ndarray, delta: float,
+                         confidence: float = 0.95) -> float:
     """発散 δ が与える判断フリップ率の保守的上界 = P(margin < 2δ)。
 
     数値の床（calibration）・ノイズの床（nondeterminism）を *タスク影響* に翻訳する橋。
     フリップには margin<2δ が必要ゆえ上界。実フリップ率はこれ以下に収まる。
+
+    fail-safe: P(margin<2δ) は代表 logit（ref_logits）n 件からの *点推定* に過ぎない。
+    n が小さい代表集合では、たまたま 0 件（または少数件）しか margin<2δ に該当せず
+    真の確率を過小評価しうる（rollout.flip_rate_upper_bound と同じ「0 観測でも
+    p=0 と過信しない」問題）。ここでは観測比率でなく Wilson 信頼区間の片側上限を返す。
+    n が大きければ上限は点推定にほぼ収束し挙動は変わらない（回帰なし）。
     """
+    from .rollout import flip_rate_upper_bound
     m = margin(ref_logits)
-    return float(np.mean(m < 2.0 * delta)) if m.size else 0.0
+    if m.size == 0:
+        return 0.0
+    k = int(np.count_nonzero(m < 2.0 * delta))
+    return flip_rate_upper_bound(k, int(m.size), confidence=confidence)
 
 
-def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float) -> float:
+def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
+                               confidence: float = 0.95) -> float:
     """*相対* 発散（propagation のモデル発散）を *タスク* フリップ率上界へ翻訳する。
 
     propagation は相対発散 δ_rel を返す。logit に効く絶対発散は δ_abs = δ_rel·scale。
@@ -168,7 +180,7 @@ def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float) ->
     """
     x = np.asarray(ref_logits, dtype=np.float64)
     scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
-    return predicted_flip_bound(ref_logits, rel_divergence * scale)
+    return predicted_flip_bound(ref_logits, rel_divergence * scale, confidence=confidence)
 
 
 # ── 新視点11: タスク多様性 — argmax ⇏ 全タスク ─────────────────────────────────
