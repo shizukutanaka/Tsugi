@@ -303,6 +303,41 @@ def test_audit_cross_vendor_folds_batch_variance_floor():
     assert ad.portable
 
 
+def test_audit_cross_vendor_robust_resists_single_glitchy_run():
+    """audit_cross_vendor(robust=True) は単発の測定グリッチに頑健（Q49 の実機入口接続・第14回）。
+
+    nondeterminism.compare_stable は robust=True（外れ値頑健な 10-90 パーセンタイル幅）を
+    サポートするが、実機向けの主要入口 audit_cross_vendor には接続されておらず常に
+    max-min（spread）を使っていた。単発グリッチ 1 個で noise floor が桁違いに膨張し、
+    本来 EQUIVALENT と明確に判定できるはずの真の divergence を INDISTINGUISHABLE
+    （等価判定「未定義」の WARN）に押し込め、運用上の余計な triage を発生させる。
+    """
+    base = np.random.default_rng(0).standard_normal((8, 16)).astype(np.float32)
+
+    def run_a(s):
+        g = np.random.default_rng(1000 + s).standard_normal(base.shape).astype(np.float32)
+        scale = 5e-2 if s == 7 else 1e-6   # noise floor 測定中の 1 run だけグリッチ
+        return base + scale * g
+
+    def run_b(s):
+        g = np.random.default_rng(2000 + s).standard_normal(base.shape).astype(np.float32)
+        # A/B 間の真の系統発散（seed=0 の比較対象出力自体にはグリッチが乗らない）
+        return base * 1.0008 + 1e-6 * g
+
+    ad_default = audit_cross_vendor(run_a, run_b, K=256, n_runs=16)
+    ad_robust = audit_cross_vendor(run_a, run_b, K=256, n_runs=16, robust=True)
+
+    eq_default = next(p for p in ad_default.phases if "equivalence" in p.name.lower())
+    eq_robust = next(p for p in ad_robust.phases if "equivalence" in p.name.lower())
+
+    # 既定(non-robust): グリッチが noise floor を膨張させ INDISTINGUISHABLE（未定義）に隠す
+    assert "INDISTINGUISHABLE" in eq_default.to_text(), \
+        f"既定 robust=False でグリッチが noise floor を膨張させないと再現できない: {eq_default.to_text()}"
+    # robust=True: 同じグリッチでも 10-90 パーセンタイル幅で頑健 → EQUIVALENT に明確判定
+    assert "EQUIVALENT" in eq_robust.to_text() and "INDISTINGUISHABLE" not in eq_robust.to_text(), \
+        f"robust=True でも INDISTINGUISHABLE のまま（Q49 修正が効いていない）: {eq_robust.to_text()}"
+
+
 def test_audit_cross_vendor_forwards_provenance():
     # 実機入口も verdict を実 GPU スタックに束ねる（provenance 素通し・drift 回帰防止）
     base = np.random.default_rng(0).standard_normal((4, 16)).astype(np.float32)
@@ -360,6 +395,7 @@ def main() -> int:
         test_audit_runtime_adds_rollout_phase_when_gen_length_given,
         test_audit_rollout_is_fail_safe_with_zero_observed_flips,
         test_audit_cross_vendor_folds_batch_variance_floor,
+        test_audit_cross_vendor_robust_resists_single_glitchy_run,
         test_audit_cross_vendor_forwards_provenance,
         test_audit_demo_runs_end_to_end,
     ]

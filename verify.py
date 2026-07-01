@@ -711,6 +711,30 @@ def main() -> int:
     check("empirical_cond changes model_divergence vs the cond=1 static default",
           _prop_yes.to_text() != _prop_no.to_text())
 
+    # 42. audit_cross_vendor(robust=...) が外れ値頑健な noise floor を実機入口に接続する（第14回）
+    # nondeterminism.compare_stable は robust=True(Q49・10-90パーセンタイル幅)をサポートするが
+    # audit_cross_vendor は常に max-min(spread)を使い、単発グリッチで noise floor が桁違いに
+    # 膨張し、真に EQUIVALENT な差を INDISTINGUISHABLE(未定義WARN)に押し込めていた。
+    from tsugi.audit import audit_cross_vendor as _acv
+    _base42 = np.random.default_rng(0).standard_normal((8, 16)).astype(np.float32)
+
+    def _run_a42(s):
+        g = np.random.default_rng(1000 + s).standard_normal(_base42.shape).astype(np.float32)
+        return _base42 + (5e-2 if s == 7 else 1e-6) * g   # 単発グリッチ(seed=7)
+
+    def _run_b42(s):
+        g = np.random.default_rng(2000 + s).standard_normal(_base42.shape).astype(np.float32)
+        return _base42 * 1.0008 + 1e-6 * g   # 真の系統発散
+
+    _ad_def = _acv(_run_a42, _run_b42, K=256, n_runs=16)
+    _ad_rob = _acv(_run_a42, _run_b42, K=256, n_runs=16, robust=True)
+    _eq_def = next(p for p in _ad_def.phases if "equivalence" in p.name.lower())
+    _eq_rob = next(p for p in _ad_rob.phases if "equivalence" in p.name.lower())
+    check("audit_cross_vendor default (robust=False) is glitch-vulnerable (reproduces the problem)",
+          "INDISTINGUISHABLE" in _eq_def.to_text())
+    check("audit_cross_vendor(robust=True) resists single-glitch noise inflation (Q49 entry-point fix)",
+          "EQUIVALENT" in _eq_rob.to_text() and "INDISTINGUISHABLE" not in _eq_rob.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -5,6 +5,22 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit_cross_vendor(robust=...) — Q49 の外れ値頑健 noise floor を実機入口に接続（第14回）**:
+  `nondeterminism.compare_stable` は `robust=True`（10-90 パーセンタイル幅・単発グリッチに
+  頑健・SOCRATIC Q49 で修正済み）をサポートするが、GPU 実機向けの主要入口
+  `audit_cross_vendor()` は常に max-min（`spread`）を使っており、Q49 の修正から漏れていた
+  （第11-13回で見つけた「機能は実装済みだが facade に未接続」と同型の欠陥）。
+
+  - `audit_cross_vendor(run_a, run_b, K, ..., robust: bool = False)`: `robust=True` で
+    run-to-run / batch-invariance 床に `spread_robust` を使う（既定 False で後方互換）。
+  - 実証: noise floor 測定中の 16 run に単発グリッチ（1 run だけ 5e-2 倍ノイズ）を混ぜると、
+    非 robust の noise floor は robust 版の **約 30,000 倍**に膨張する。その結果、真に
+    `EQUIVALENT`（系統発散 0.08%）と判定できるはずのケースが `INDISTINGUISHABLE`
+    （等価判定「未定義」の WARN）に押し込められ、運用上不要な triage が発生する。
+    `robust=True` は同じグリッチ下でも正しく `EQUIVALENT` を返す。
+  - tests: `test_audit_cross_vendor_robust_resists_single_glitchy_run`
+  - verify.py: 110→112 不変条件（42番）
+
 - **audit(sample=...) が empirical_cond を自動実測（第13回）**:
   propagation 層は増幅 op（reduce/softmax/exp）の条件数 `cond` を静的には常に 1.0
   （well-conditioned 仮定）とし、`empirical_cond(sample, kind)` という実測関数は存在するのに

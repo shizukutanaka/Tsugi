@@ -395,22 +395,28 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None,
                        n_runs: int = 16, logits_a=None, logits_b=None,
                        flip_budget: float = 0.001, run_batch=None,
-                       batch_tiles=(32, 64, 128, 256, 512), provenance=None) -> Audit:
+                       batch_tiles=(32, 64, 128, 256, 512), robust: bool = False,
+                       provenance=None) -> Audit:
     """実機向けの入口: 各ベンダーの非決定性床を実測してから audit_runtime する。
 
     run_a/run_b: seed を受け取り出力テンソルを返す呼び出し可能（= 実 GPU カーネル）。
     run_batch: 任意。tile(=バッチ依存分割)を受け batch-invariance 床を測る呼び出し可能
       （2025 研究: バッチ変動が支配的非決定源）。与えれば実効床に max で織り込む。
+    robust: True で run-to-run / batch-invariance 床に外れ値頑健な spread_robust
+      （10-90 パーセンタイル幅）を使う（SOCRATIC Q49）。既定 False（max-min）は測定
+      グリッチ 1 個で床が桁違いに膨張しうる —— nondeterminism.compare_stable の
+      robust オプションと同じ理由でここにも露出する（実機入口が Q49 修正から漏れていた）。
     決定論を仮定せず、各ベンダーを n_runs 回走らせてノイズフロアを測り（視点7）、
     その noise を等価判定の床に織り込む。実機では run_* を実カーネルにするだけ。
     """
     from .nondeterminism import measure_batch_variance, measure_noise_floor
 
+    key = "spread_robust" if robust else "spread"
     nf_a = measure_noise_floor(run_a, n_runs)
     nf_b = measure_noise_floor(run_b, n_runs)
-    noise = max(nf_a["spread"], nf_b["spread"])
+    noise = max(nf_a[key], nf_b[key])
     if run_batch is not None:                       # batch-invariance 床を実効床に合流
-        noise = max(noise, measure_batch_variance(run_batch, batch_tiles)["spread"])
+        noise = max(noise, measure_batch_variance(run_batch, batch_tiles)[key])
     return audit_runtime(run_a(0), run_b(0), K, dtype=dtype, env=env,
                          noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
                          flip_budget=flip_budget, provenance=provenance)
