@@ -274,7 +274,9 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
                   flip_budget: float = 0.001, oracle=None, provenance=None,
                   gen_length: int = 0, task: str = "classification",
-                  task_kwargs: dict | None = None) -> Audit:
+                  task_kwargs: dict | None = None,
+                  layers_a=None, layers_b=None, layers_oracle=None, x0=None,
+                  layer_names=None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
@@ -287,6 +289,11 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         出荷判断・decision.compare_task はテスト済みだが従来 audit_runtime に未接続だった）。
       - oracle があれば correctness 層: oracle_check（oracle 自体の信頼性）＋
         detect_shared_mode（a≈b でも両方 oracle と不一致＝共有モード障害）
+      - layers_a/layers_b（＋任意 x0）があれば attribution.diagnose で層別診断:
+        「どの層で発散が始まるか（onset）」「どの層が支配的か（spike）」を特定し、
+        layers_oracle も渡せば spike 層でどちらのベンダーが正しいかも責帰する。
+        diagnose() は attribution+blame の集大成関数だが従来 audit_runtime に未接続だった
+        （BLOCK になった時に「どこが悪いか」を追加で特定する診断チェーンを製品経路で閉じる）。
     すべて実データで *決定済み* なので静的 verdict に算入する（when="decided"）。
 
     oracle 無しでは a≈b（portability）しか言えず correctness は未確定 —— shared-mode は
@@ -399,6 +406,16 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         else:
             cp.lines.append("責帰: oracle が不健全 — blame はスキップ（誤指摘を防ぐ）")
         ad.phases.append(cp)
+
+    # attribution: layers_a/layers_b があれば層別に発散を追い onset/spike を特定する
+    # （どこで発散が始まるか・どの層が支配的か。診断チェーンを製品経路で閉じる）。
+    if layers_a is not None and layers_b is not None:
+        from .attribution import diagnose
+        dg = diagnose(layers_a, layers_b, layers_oracle, x0 if x0 is not None else a_out,
+                     tol=eq.atol, names=layer_names)
+        ap = AuditPhase("attribution 層別診断", "decided", dg.max_risk)
+        ap.lines.append(dg.to_text())
+        ad.phases.append(ap)
 
     ad.stamp(**(provenance or {}))
     return ad

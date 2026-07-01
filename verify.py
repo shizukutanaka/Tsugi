@@ -753,6 +753,29 @@ def main() -> int:
     check("audit_runtime default task remains classification (backward compatible)",
           _dp_default43.name == "decision タスクレベル等価")
 
+    # 44. audit_runtime(layers_a=..., layers_b=...) が attribution.diagnose を接続する（第16回）
+    # diagnose（onset/spike特定＋blame統合）は実装済みだが audit_runtime は BLOCK を出すだけで
+    # どの層・どちらのベンダーが悪いかを一度も特定していなかった。
+    def _id44(x):
+        return np.asarray(x, dtype=np.float64)
+
+    def _scale2_44(x):
+        return np.asarray(x, dtype=np.float64) * 2.0
+
+    _oracle_layers44 = [_id44, _scale2_44, _id44]
+    _layers_a44 = [_id44, _scale2_44, _id44]
+    _layers_b44 = [_id44, lambda x: np.asarray(x, dtype=np.float64) * 2.0 + 0.5, _id44]
+    _a_out44 = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    _ad44 = audit_runtime(_a_out44, _a_out44.copy(), K=64,
+                          layers_a=_layers_a44, layers_b=_layers_b44,
+                          layers_oracle=_oracle_layers44, x0=np.array([1.0, 2.0, 3.0]))
+    _attr44 = next(p for p in _ad44.phases if p.name.startswith("attribution"))
+    check("audit_runtime(layers_a/layers_b/layers_oracle) pinpoints the divergent layer and culprit vendor",
+          "vendor B" in _attr44.to_text())
+    _ad_no_layers44 = audit_runtime(_a_out44, _a_out44.copy(), K=64)
+    check("audit_runtime without layers_a/layers_b has no attribution phase (backward compatible)",
+          not any(p.name.startswith("attribution") for p in _ad_no_layers44.phases))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

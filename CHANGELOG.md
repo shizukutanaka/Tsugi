@@ -5,6 +5,22 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit_runtime(layers_a=...) — attribution.diagnose を層別診断として接続（第16回）**:
+  `attribution.diagnose()`（onset/spike 特定＋blame 統合の集大成関数）は実装・テスト済みだが、
+  `audit_runtime()` は BLOCK 判定を出すだけで「どの層で・どちらのベンダーが」発散源かを
+  一度も特定していなかった（第11-15回で見つけた「機能は実装済みだが facade 未接続」と
+  同型の欠陥の5件目）。
+
+  - `audit_runtime(..., layers_a=None, layers_b=None, layers_oracle=None, x0=None, layer_names=None)`:
+    `layers_a`/`layers_b`（層 callable のシーケンス）を渡すと `attribution.diagnose` を実行し、
+    新設の「attribution 層別診断」phase に onset（発散開始層）・spike（支配的増分層）・
+    責帰ベンダーを含める。`layers_oracle` も渡せば spike 層でどちらのベンダーが
+    正しいかまで責帰する。
+  - `layers_a`/`layers_b` 未指定時は従来通り attribution phase は現れない（後方互換）。
+  - tests: `test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer`
+    （spike 層名・責帰ベンダーがテキストに現れることを検証・未指定時の後方互換も確認）
+  - verify.py: 114→116 不変条件（44番）
+
 - **audit_runtime(task=...) — 非分類タスク（回帰/二値/ランキング）を decision 層に接続（第15回）**:
   `decision.compare_task()`（regression/binary/ranking）は実装・テスト済みだが、
   `audit_runtime()` は常に `compare_decisions()`（分類 argmax 専用）を呼んでおり、
@@ -189,6 +205,9 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
   verify.py 不変条件 5 件追加（91/91）。
 
 ### Fixed
+- **docs/SOCRATIC-50-improvements.md の Q28 表記漏れ（第16回）**: 第11回で
+  `tsugi_torch._BACKEND_REGISTERED` により冪等化済みだったが、ドキュメントの ✅ マークが
+  漏れていた（コードは直っていたが記録が追いついていなかった）。表記を修正済みに更新。
 - **float64 が float32 の緩い許容にフォールバックする偽OK バグを修正（外部調査ベース・第6回）**:
   Qiita/Zenn と PyTorch 公式の `torch.testing.assert_close` 調査から、dtype 別許容の標準
   （fp16=1e-3 / fp32=1e-4 / **fp64=1e-8**）を確認。Tsugi の `equivalence.TOLERANCE` と

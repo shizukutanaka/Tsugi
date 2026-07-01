@@ -138,7 +138,8 @@ propagation GraphOp へ写す（duck-typed・torch 不要でテスト）。実 t
 と設計に明記。**
 
 **Q28.** backend 登録は import 副作用（自動 register）。テスト分離・冪等性は？
-→ 二重 import で二重登録の可能性。**改善: 登録の冪等化（既登録チェック）。**
+→ ✅ **修正済**（第11回）: `tsugi_torch._BACKEND_REGISTERED` フラグで冪等化。
+二度目の `register()` 呼出しは即 return（torch 有り時）。
 
 ## F. タスクモデルの狭さ（decision）（Q29–32）
 

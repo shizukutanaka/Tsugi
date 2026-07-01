@@ -225,6 +225,45 @@ def test_audit_runtime_blame_points_to_culprit_vendor():
     assert "vendor B" in blame_lines[0], f"B を culprit に指すべき: {blame_lines[0]}"
 
 
+def test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer():
+    """audit_runtime(layers_a=..., layers_b=...) が attribution.diagnose を接続する（第16回）。
+
+    attribution.diagnose（onset/spike 特定＋blame 統合）は実装・テスト済みだが、
+    audit_runtime は BLOCK を出すだけで「どの層で・どちらのベンダーが」悪いかを
+    一度も特定していなかった（第11-15回で見つけた「機能は実装済みだが facade 未接続」
+    と同型の欠陥の5件目）。layers_a/layers_b（＋任意 layers_oracle）を渡すと
+    層別診断が自動で走り、onset（発散開始層）・spike（支配的増分層）・
+    responsible vendor を verdict に含める。
+    """
+    def _id(x):
+        return np.asarray(x, dtype=np.float64)
+
+    def _scale2(x):
+        return np.asarray(x, dtype=np.float64) * 2.0
+
+    oracle_layers = [_id, _scale2, _id]
+    layers_a = [_id, _scale2, _id]                              # A は oracle と一致
+    layers_b = [_id, lambda x: np.asarray(x, dtype=np.float64) * 2.0 + 0.5, _id]  # B が層1で発散
+
+    rng = np.random.default_rng(0)
+    a_out = rng.standard_normal((16, 16)).astype(np.float32)
+    b_out = a_out.copy()
+    x0 = np.array([1.0, 2.0, 3.0])
+
+    ad = audit_runtime(a_out, b_out, K=64, layers_a=layers_a, layers_b=layers_b,
+                       layers_oracle=oracle_layers, x0=x0,
+                       layer_names=["embed", "matmul", "norm"])
+    attr = next(p for p in ad.phases if p.name.startswith("attribution"))
+    text = attr.to_text()
+    assert "matmul" in text, f"spike 層名(matmul)が診断テキストに無い: {text}"
+    assert "vendor B" in text or "fix vendor B" in text, \
+        f"B が発散源として責帰されていない: {text}"
+
+    # layers_a/layers_b 未指定なら attribution 層は現れない（後方互換）
+    ad_no_layers = audit_runtime(a_out, b_out, K=64)
+    assert not any(p.name.startswith("attribution") for p in ad_no_layers.phases)
+
+
 def test_audit_runtime_passes_equivalent_within_noise():
     # 真に等価(微小差)・ノイズ床込み → ブロッカー無し（INDISTINGUISHABLE/EQ は OK 寄り）
     rng = np.random.default_rng(0)
@@ -427,6 +466,7 @@ def main() -> int:
         test_audit_runtime_oracle_catches_shared_mode,
         test_audit_runtime_blame_skipped_when_oracle_unhealthy,
         test_audit_runtime_blame_points_to_culprit_vendor,
+        test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
