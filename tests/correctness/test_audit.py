@@ -264,6 +264,47 @@ def test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer():
     assert not any(p.name.startswith("attribution") for p in ad_no_layers.phases)
 
 
+def _accum_precision_vendors():
+    """累積精度が違う 2 ベンダー（fp16 累積 vs fp32 累積）の二乗和。test_worstcase.py と同型。"""
+    def fp16(x):
+        acc = np.float16(0.0)
+        for v in np.asarray(x, dtype=np.float16):
+            acc = np.float16(acc + np.float16(v * v))
+        return np.array([acc], dtype=np.float64)
+
+    def fp32(x):
+        return np.array([np.sum(np.asarray(x, dtype=np.float32) ** 2)], dtype=np.float64)
+
+    return fp16, fp32
+
+
+def test_audit_runtime_worst_case_search_finds_envelope_counterexample():
+    """audit_runtime(fn_a=..., fn_b=..., worst_samples=...) が worstcase.analyze_worst_case
+    を接続する（第17回）。
+
+    worstcase.analyze_worst_case（唯一の能動探索層・平均ケース検証の盲点を露出）は
+    実装・テスト済みだが、audit_runtime は受動的な代表サンプル比較しか行わず、認証
+    エンベロープ内に隠れる反例を能動的に探すことは一度もしていなかった
+    （第11-16回で見つけた「機能は実装済みだが facade 未接続」と同型の欠陥の6件目）。
+    代表サンプルでは良性に見える（典型発散 < tol）が、エンベロープ内の能動探索で
+    tol を超える反例が見つかる古典的なケースで、worstcase phase が BLOCK を出すことを実証する。
+    """
+    fp16, fp32 = _accum_precision_vendors()
+    rng = np.random.default_rng(0)
+    samples = [rng.standard_normal(64) for _ in range(16)]
+
+    a = rng.standard_normal((8, 8)).astype(np.float32)
+    ad = audit_runtime(a, a.copy(), K=64, fn_a=fp16, fn_b=fp32, worst_samples=samples,
+                       worst_tol=1e-3, worst_bounds=(-30.0, 30.0), worst_steps=900, worst_seed=1)
+    wc = next(p for p in ad.phases if p.name.startswith("worstcase"))
+    assert wc.max_risk == Risk.BLOCK, f"エンベロープ内の反例が見つからない: {wc.to_text()}"
+    assert not ad.portable, "worstcase の BLOCK が verdict に算入されていない"
+
+    # fn_a/fn_b/worst_samples 未指定なら worstcase phase は現れない（後方互換）
+    ad_no_wc = audit_runtime(a, a.copy(), K=64)
+    assert not any(p.name.startswith("worstcase") for p in ad_no_wc.phases)
+
+
 def test_audit_runtime_passes_equivalent_within_noise():
     # 真に等価(微小差)・ノイズ床込み → ブロッカー無し（INDISTINGUISHABLE/EQ は OK 寄り）
     rng = np.random.default_rng(0)
@@ -467,6 +508,7 @@ def main() -> int:
         test_audit_runtime_blame_skipped_when_oracle_unhealthy,
         test_audit_runtime_blame_points_to_culprit_vendor,
         test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer,
+        test_audit_runtime_worst_case_search_finds_envelope_counterexample,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,

@@ -276,7 +276,10 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   gen_length: int = 0, task: str = "classification",
                   task_kwargs: dict | None = None,
                   layers_a=None, layers_b=None, layers_oracle=None, x0=None,
-                  layer_names=None) -> Audit:
+                  layer_names=None,
+                  fn_a=None, fn_b=None, worst_samples=None, worst_radius: float = 1.0,
+                  worst_steps: int = 400, worst_seed: int = 0, worst_bounds=None,
+                  worst_tol: float | None = None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
@@ -294,6 +297,13 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         layers_oracle も渡せば spike 層でどちらのベンダーが正しいかも責帰する。
         diagnose() は attribution+blame の集大成関数だが従来 audit_runtime に未接続だった
         （BLOCK になった時に「どこが悪いか」を追加で特定する診断チェーンを製品経路で閉じる）。
+      - fn_a/fn_b（＋ worst_samples）があれば worstcase.analyze_worst_case で能動探索:
+        代表サンプルの *典型* 発散だけでなく、認証エンベロープ内で発散を *最大化* する
+        入力を微分フリー探索で能動的に探す（平均ケース等価 ⇏ 最悪ケース等価・envelope の
+        受動検査と対をなす能動検査）。worst_tol 未指定なら既に計算済みの eq.atol を流用する
+        （worst-case 探索に別基準を課したい場合は明示的に上書きできる）。
+        analyze_worst_case は実装済みだが従来 audit_runtime に未接続だった
+        （唯一の能動探索層が製品経路から欠落していた）。
     すべて実データで *決定済み* なので静的 verdict に算入する（when="decided"）。
 
     oracle 無しでは a≈b（portability）しか言えず correctness は未確定 —— shared-mode は
@@ -416,6 +426,18 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         ap = AuditPhase("attribution 層別診断", "decided", dg.max_risk)
         ap.lines.append(dg.to_text())
         ad.phases.append(ap)
+
+    # worstcase: fn_a/fn_b/worst_samples があれば認証エンベロープ内で発散を最大化する
+    # 反例を能動探索する（平均ケース検証の盲点を露出・envelope の受動検査と対）。
+    if fn_a is not None and fn_b is not None and worst_samples is not None:
+        from .worstcase import analyze_worst_case
+        wc = analyze_worst_case(fn_a, fn_b, worst_samples,
+                                tol=worst_tol if worst_tol is not None else eq.atol,
+                                radius=worst_radius, steps=worst_steps, seed=worst_seed,
+                                bounds=worst_bounds)
+        wp = AuditPhase("worstcase 能動探索", "decided", wc.max_risk)
+        wp.lines.append(wc.to_text())
+        ad.phases.append(wp)
 
     ad.stamp(**(provenance or {}))
     return ad

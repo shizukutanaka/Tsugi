@@ -776,6 +776,30 @@ def main() -> int:
     check("audit_runtime without layers_a/layers_b has no attribution phase (backward compatible)",
           not any(p.name.startswith("attribution") for p in _ad_no_layers44.phases))
 
+    # 45. audit_runtime(fn_a=..., fn_b=..., worst_samples=...) が worstcase.analyze_worst_case
+    # を接続する（第17回）。唯一の能動探索層が facade に未接続だった欠陥の6件目。
+    def _fp16_45(x):
+        acc = np.float16(0.0)
+        for v in np.asarray(x, dtype=np.float16):
+            acc = np.float16(acc + np.float16(v * v))
+        return np.array([acc], dtype=np.float64)
+
+    def _fp32_45(x):
+        return np.array([np.sum(np.asarray(x, dtype=np.float32) ** 2)], dtype=np.float64)
+
+    _rng45 = np.random.default_rng(0)
+    _samples45 = [_rng45.standard_normal(64) for _ in range(16)]
+    _a45 = _rng45.standard_normal((8, 8)).astype(np.float32)
+    _ad45 = audit_runtime(_a45, _a45.copy(), K=64, fn_a=_fp16_45, fn_b=_fp32_45,
+                          worst_samples=_samples45, worst_tol=1e-3,
+                          worst_bounds=(-30.0, 30.0), worst_steps=900, worst_seed=1)
+    _wc45 = next(p for p in _ad45.phases if p.name.startswith("worstcase"))
+    check("audit_runtime(fn_a/fn_b/worst_samples) finds an in-envelope counterexample (BLOCK)",
+          _wc45.max_risk == portability.Risk.BLOCK and not _ad45.portable)
+    _ad_no_wc45 = audit_runtime(_a45, _a45.copy(), K=64)
+    check("audit_runtime without fn_a/fn_b/worst_samples has no worstcase phase (backward compatible)",
+          not any(p.name.startswith("worstcase") for p in _ad_no_wc45.phases))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

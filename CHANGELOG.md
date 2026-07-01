@@ -5,6 +5,26 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit_runtime(fn_a=..., worst_samples=...) — worstcase.analyze_worst_case を能動探索として接続（第17回）**:
+  `worstcase.analyze_worst_case()`（唯一の能動探索層・平均ケース検証の盲点を露出）は
+  実装・テスト済みだが、`audit_runtime()` は受動的な代表サンプル比較しか行わず、認証
+  エンベロープ内に隠れる反例を能動的に探すことは一度もしていなかった（第11-16回で
+  見つけた「機能は実装済みだが facade 未接続」と同型の欠陥の6件目）。呼び出し規約の
+  違い（`fn_a(x)`/`fn_b(x)` という決定論的な x→出力の callable、`run_a(seed)` とは別物）
+  から接続が後回しになっていたが、`audit_runtime` の追加オプション引数として自然に収まった。
+
+  - `audit_runtime(..., fn_a=None, fn_b=None, worst_samples=None, worst_radius=1.0,
+    worst_steps=400, worst_seed=0, worst_bounds=None, worst_tol=None)`:
+    `fn_a`/`fn_b`（x を取る決定論的ベンダー実装）＋ `worst_samples`（代表入力列）を渡すと
+    `analyze_worst_case` を実行し、新設の「worstcase 能動探索」phase に典型/最悪発散・
+    再現可能な反例 `x_worst` を含める。`worst_tol` 未指定時は既に計算済みの `eq.atol` を
+    流用（worst-case 探索に別基準を課したい場合は明示的に上書き可能）。
+  - `fn_a`/`fn_b`/`worst_samples` 未指定時は従来通り worstcase phase は現れない（後方互換）。
+  - tests: `test_audit_runtime_worst_case_search_finds_envelope_counterexample`
+    （fp16/fp32 累積精度差のある古典例で、代表サンプルは tol 内でもエンベロープ内の
+    能動探索で tol 超の反例が見つかり BLOCK になることを実証）
+  - verify.py: 116→118 不変条件（45番）
+
 - **audit_runtime(layers_a=...) — attribution.diagnose を層別診断として接続（第16回）**:
   `attribution.diagnose()`（onset/spike 特定＋blame 統合の集大成関数）は実装・テスト済みだが、
   `audit_runtime()` は BLOCK 判定を出すだけで「どの層で・どちらのベンダーが」発散源かを
