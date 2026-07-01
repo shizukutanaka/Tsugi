@@ -856,6 +856,25 @@ def main() -> int:
     check("predicted_flip_bound does not mistake zero observations for zero flip probability (fail-safe)",
           _pfb48(_z48, _delta48) > 0.05)
 
+    # 49. compare_decisions は観測 flip_rate(点推定)でなく flip_rate_ub(Wilson 上側限界)で
+    # 予算判定する（第22回・第21回の同型修正を主判定 compare_decisions にも適用）。
+    from tsugi.decision import compare_decisions as _cd49
+    from tsugi.decision import flip_rate as _fr49
+    _rng49 = np.random.default_rng(5)
+    _n49 = 30
+    _z49 = _rng49.standard_normal((_n49, 20)).astype(np.float32)
+
+    def _vendor49(z, eps, seed):
+        return z + eps * np.random.default_rng(seed).standard_normal(z.shape).astype(np.float32)
+
+    _a49 = _vendor49(_z49, 3e-2, 12)
+    _b49 = _vendor49(_z49, 3e-2, 13)
+    check("small batch (n=30) has zero observed flips (test setup)",
+          _fr49(_a49, _b49) == 0.0)
+    _rep49 = _cd49(_a49, _b49, flip_budget=0.03)
+    check("compare_decisions does not mistake zero observed flips for in-budget (fail-safe, no false-OK)",
+          _rep49.flip_rate_ub > 0.03 and _rep49.max_risk >= portability.Risk.WARN)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

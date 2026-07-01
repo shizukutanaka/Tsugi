@@ -316,6 +316,7 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
 @dataclass
 class DecisionReport(FindingReport):
     flip_rate: float = 0.0
+    flip_rate_ub: float = 0.0
     n: int = 0
     flipped_margin_median: float = 0.0
     overall_margin_median: float = 0.0
@@ -334,7 +335,8 @@ class DecisionReport(FindingReport):
               if self.top_p > 0 else "")
         ti = f", tie={self.tie_rate * 100:.1f}%" if self.tie_rate > 0 else ""
         return super().to_text(
-            header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}% "
+            header=(f"decision equivalence: flip_rate={self.flip_rate * 100:.2f}%"
+                    f"(≤{self.flip_rate_ub * 100:.2f}% Wilson) "
                     f"(n={self.n}, bound≤{self.predicted_bound * 100:.2f}%, "
                     f"systematic={self.systematic_frac * 100:.0f}%{tk}{tp}{ti}, "
                     f"flipped-margin {self.flipped_margin_median:.3g} "
@@ -344,25 +346,36 @@ class DecisionReport(FindingReport):
 
 def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
                       ref: np.ndarray | None = None, topk: int = 1,
-                      top_p: float = 0.0, temperature: float = 1.0) -> DecisionReport:
+                      top_p: float = 0.0, temperature: float = 1.0,
+                      confidence: float = 0.95) -> DecisionReport:
     """タスクレベルの等価判定（数値でなく判断のフリップで測る）。
 
     flip_budget: 許容する判断フリップ率（タスク予算・例 0.001 = 0.1%）。
     ref: マージン基準の logit（既定 a）。
     topk: >1 なら生成タスク向けに top-k 候補集合フリップ率も併記する。
     bound は *残差*（argmax 保存的な系統成分を除いた成分）で評価し系統発散の過大評価を排す。
+
+    fail-safe: 予算判定には観測 flip_rate（点推定）でなく flip_rate_ub（Wilson 上側限界）を
+    使う。n が小さい評価バッチではたまたま観測フリップが少なくても母集団の真の率は
+    高いことがある（第21回の predicted_flip_bound と同型の盲点・rule-of-three）。
+    n が大きければ上限は点推定にほぼ収束し挙動は変わらない。
     """
+    from .rollout import flip_rate_upper_bound
     flips = decision_flips(a, b)
     ref_logits = a if ref is None else ref
     m = margin(ref_logits)
     fm = m[flips]
     decomp = decompose_divergence(a, b)
+    n = int(np.argmax(a, axis=-1).size)
+    fr = flip_rate(a, b)
+    fr_ub = flip_rate_upper_bound(int(round(fr * n)), n, confidence=confidence) if n else 0.0
     rep = DecisionReport(
-        flip_rate=flip_rate(a, b),
-        n=int(np.argmax(a, axis=-1).size),
+        flip_rate=fr,
+        flip_rate_ub=fr_ub,
+        n=n,
         flipped_margin_median=float(np.median(fm)) if fm.size else 0.0,
         overall_margin_median=float(np.median(m)) if m.size else 0.0,
-        predicted_bound=predicted_flip_bound(ref_logits, decomp["residual"]),
+        predicted_bound=predicted_flip_bound(ref_logits, decomp["residual"], confidence=confidence),
         systematic_frac=decomp["systematic_frac"],
         topk=topk,
         topk_flip_rate=topk_flip_rate(a, b, topk) if topk > 1 else flip_rate(a, b),
@@ -374,11 +387,11 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
         rep.add(Risk.WARN, "task",
                 f"同点率 {rep.tie_rate * 100:.1f}%: argmax が規約依存（量子化/マスク）。"
                 "ベンダー間の tie-break 規約差で数値発散ゼロでもフリップしうる（誤帰属に注意）")
-    if rep.flip_rate > flip_budget:
-        risk = Risk.BLOCK if rep.flip_rate > max(_FLIP_BLOCK_RATIO * flip_budget, _FLIP_BLOCK_MIN) else Risk.WARN
+    if rep.flip_rate_ub > flip_budget:
+        risk = Risk.BLOCK if rep.flip_rate_ub > max(_FLIP_BLOCK_RATIO * flip_budget, _FLIP_BLOCK_MIN) else Risk.WARN
         rep.add(risk, "task",
-                f"判断フリップ率 {rep.flip_rate * 100:.2f}% > 予算 {flip_budget * 100:.2f}% "
-                "→ ベンダー間でユーザーに見える予測が変わる")
+                f"判断フリップ率 {rep.flip_rate * 100:.2f}%（上側限界 {rep.flip_rate_ub * 100:.2f}%）"
+                f"> 予算 {flip_budget * 100:.2f}% → ベンダー間でユーザーに見える予測が変わる")
     elif rep.flip_rate > 0.0:
         rep.add(Risk.INFO, "task",
                 f"判断フリップ {rep.flip_rate * 100:.2f}%（予算内）・near-tie に集中")

@@ -340,3 +340,16 @@ n=20 の代表集合で margin<2δ が 0 件のケースで、旧ロジックな
 収束するため）。`flip_bound_from_divergence`（propagation→decision 橋）にも自動波及。
 残る同型候補: `decision.regression_flip_rate`/`binary_flip_rate`/`ranking_flip_rate` も
 n 件のサンプルからの単純比率（点推定）。小標本での過信リスクは同様に残る（未着手・P2）。
+
+**Q58.** Q57 は `predicted_flip_bound`（第2ベンダー実行前の *予測*）を直したが、
+`compare_decisions` 自体の予算判定（第2ベンダーを *実際に* 走らせた後の主判定）は
+どうか？
+→ ✅ **修正済**（第22回）: `compare_decisions` の BLOCK/WARN 判定は観測 `flip_rate`
+（点推定 k/n）を直接 `flip_budget` と比較していた——これは `decision` モジュールの
+主判定であり `predicted_flip_bound` より製品経路として遥かに中心的。n が小さい評価
+バッチ（例 n=30）でたまたま観測フリップが 0 件でも、母集団の真のフリップ率が予算を
+超えている可能性は排除できない。`DecisionReport.flip_rate_ub`（Wilson 上側限界・
+`rollout.flip_rate_upper_bound` を再利用）を追加し、予算判定はこちらを使うよう修正。
+n=30 で観測フリップ 0 件・真の率が予算超のケースで、旧ロジックなら OK（偽OK）だったのが
+新ロジックで WARN 以上に正しく倒れることを実証。既存の大 N テスト（n=2000-4000）は
+すべて無回帰で通過（Wilson 上限は大 N で点推定に相対誤差 20% 未満で収束）。

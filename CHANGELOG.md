@@ -5,6 +5,25 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **decision.compare_decisions — 主判定も Wilson 上側限界(flip_rate_ub)を使用（第22回）**:
+  第21回は `predicted_flip_bound`（第2ベンダー実行 *前* の予測）を修正したが、
+  `compare_decisions` 自体の予算判定（第2ベンダーを実際に走らせた *後* の主判定）は
+  依然として観測 `flip_rate`（点推定 k/n）を直接 `flip_budget` と比較していた。
+  こちらは decision モジュールの中心的な製品判定であり、predicted_flip_bound より
+  影響範囲が大きい。
+
+  - `DecisionReport` に `flip_rate_ub: float` フィールドを追加（Wilson 上側限界・
+    `rollout.flip_rate_upper_bound` を再利用）。
+  - `compare_decisions(..., confidence: float = 0.95)`: BLOCK/WARN の予算判定に
+    `flip_rate`（点推定）でなく `flip_rate_ub` を使うよう変更。
+  - 実証: n=30 の小評価バッチで観測フリップ 0 件・真のフリップ率は予算超のケースで、
+    旧ロジックなら「予算内」（偽OK）だったのが、新ロジックで正しく WARN 以上になる。
+  - 既存の大 N テスト（n=2000-4000）はすべて無回帰で通過（Wilson 上限は大 N で
+    点推定に相対誤差 20% 未満で収束・境界値ギリギリのテストケースも確認済み）。
+  - tests: `test_compare_decisions_uses_flip_rate_ub_for_small_batch`
+  - verify.py: 126→128 不変条件（49番）
+  - docs/SOCRATIC-50-improvements.md に Q58 を追加。
+
 - **decision.predicted_flip_bound — 点推定でなく Wilson 上側限界で判定（第21回）**:
   第20回の Q55/Q57 で示した「点推定でなく上側限界で判定」パターンが calibration 以外にも
   波及するかを検証した結果、`predicted_flip_bound(ref_logits, delta)` = P(margin<2δ) も

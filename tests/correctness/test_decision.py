@@ -178,6 +178,38 @@ def test_compare_decisions_blocks_high_flip_rate():
     assert not rep.ok                     # 予算超で BLOCK
 
 
+def test_compare_decisions_uses_flip_rate_ub_for_small_batch():
+    """compare_decisions は観測 flip_rate（点推定）でなく flip_rate_ub（Wilson 上側限界）で
+    予算判定する（第22回・第21回 predicted_flip_bound と同型の修正を主判定にも適用）。
+
+    小さい評価バッチ（n=30）でたまたま観測フリップが 0 件でも、母集団の真のフリップ率が
+    予算を超えている可能性は排除できない。旧ロジック（点推定のみ）なら「予算内」と
+    誤判定するケースで、flip_rate_ub を使う新ロジックが正しく WARN/BLOCK に倒すことを実証。
+    """
+    from tsugi.report import Risk as _Risk
+    rng = np.random.default_rng(5)
+    n = 30
+    z = rng.standard_normal((n, 20)).astype(np.float32)
+    a = _vendor(z, 3e-2, 12)   # seed=6 の組が「観測フリップ 0 件だが真の率は高い」を再現する
+    b = _vendor(z, 3e-2, 13)
+    budget = 0.03
+
+    assert flip_rate(a, b) == 0.0, "観測フリップ 0 件が前提（テストケース不成立）"
+    rep = compare_decisions(a, b, flip_budget=budget)
+    assert rep.flip_rate_ub > budget, (
+        f"小標本の不確実性が上側限界に反映されていない: flip_rate_ub={rep.flip_rate_ub}")
+    assert rep.max_risk >= _Risk.WARN, (
+        f"観測フリップ 0 件を過信して予算内(OK)のまま（偽OK 復活）: {rep.to_text()}")
+
+    # n が大きければ flip_rate_ub は点推定に近づき（相対差 <20%）、既存挙動（多数フリップで
+    # BLOCK）は不変。フリップ率自体は 0 でないので絶対誤差でなく相対誤差で比較する。
+    z_large = _logits(n=4000, c=200)
+    a_large, b_large = _vendor(z_large, 1e-1, 1), _vendor(z_large, 1e-1, 2)
+    rep_large = compare_decisions(a_large, b_large, flip_budget=0.001)
+    assert rep_large.flip_rate_ub / rep_large.flip_rate < 1.2
+    assert not rep_large.ok
+
+
 def test_systematic_affine_divergence_does_not_flip():
     # argmax 保存的な系統発散(スケール×1.5・一様シフト)は数値大でもフリップ 0・残差 ~0
     z = _logits(n=3000, c=300)
@@ -316,6 +348,7 @@ def main() -> int:
         test_numerical_divergence_not_sufficient_for_task_divergence,
         test_compare_decisions_reports_topk,
         test_compare_decisions_blocks_high_flip_rate,
+        test_compare_decisions_uses_flip_rate_ub_for_small_batch,
         test_systematic_affine_divergence_does_not_flip,
         test_residual_bound_tighter_than_total_for_systematic,
         test_flip_bound_from_divergence_bridges_propagation_to_task,
