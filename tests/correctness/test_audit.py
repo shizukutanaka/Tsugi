@@ -256,6 +256,44 @@ def test_audit_runtime_includes_decision_when_logits_given():
     assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
 
 
+def test_audit_runtime_supports_non_classification_tasks():
+    """audit_runtime(task=...) が decision.compare_task に委譲する（第15回）。
+
+    decision.compare_task（regression/binary/ranking）は実装・テスト済みだが、
+    audit_runtime は常に compare_decisions（分類 argmax 専用）を呼んでいた
+    （第11-14回で見つけた「機能は実装済みだが facade 未接続」と同型の欠陥）。
+    回帰モデル（価格/物理量）・二値分類（診断/異常検知）・検索/推薦（ranking）は
+    argmax を持たないため、従来は decision 層の恩恵を受けられなかった。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((32, 32)).astype(np.float32)
+
+    # regression: 許容(rtol)超の乖離は BLOCK
+    reg_a = rng.standard_normal(500)
+    reg_b = reg_a * 2.0   # 100% 乖離 → rtol=1e-3 を大きく超える
+    ad_reg = audit_runtime(a, a.copy(), K=256, logits_a=reg_a, logits_b=reg_b,
+                           task="regression", flip_budget=0.001,
+                           task_kwargs={"rtol": 0.01})
+    dp_reg = next(p for p in ad_reg.phases if p.name.startswith("decision"))
+    assert "regression" in dp_reg.name
+    assert dp_reg.max_risk == Risk.BLOCK
+
+    # binary: しきい値をまたぐ反転は BLOCK
+    bin_a = np.full(200, 0.9)
+    bin_b = np.full(200, 0.1)   # 閾値 0.5 を挟んで全反転
+    ad_bin = audit_runtime(a, a.copy(), K=256, logits_a=bin_a, logits_b=bin_b,
+                           task="binary", flip_budget=0.001)
+    dp_bin = next(p for p in ad_bin.phases if p.name.startswith("decision"))
+    assert "binary" in dp_bin.name
+    assert dp_bin.max_risk == Risk.BLOCK
+
+    # 既定（classification）は従来通り compare_decisions を使う（後方互換）
+    la = rng.standard_normal((500, 50)).astype(np.float32)
+    ad_default = audit_runtime(a, a.copy(), K=256, logits_a=la, logits_b=la.copy())
+    dp_default = next(p for p in ad_default.phases if p.name.startswith("decision"))
+    assert dp_default.name == "decision タスクレベル等価"   # task サフィックス無し = classification
+
+
 def test_audit_runtime_adds_rollout_phase_when_gen_length_given():
     # gen_length を渡すと per-token フリップを生成長へ合成する rollout 層が増える（新視点9）
     rng = np.random.default_rng(0)
@@ -392,6 +430,7 @@ def main() -> int:
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
+        test_audit_runtime_supports_non_classification_tasks,
         test_audit_runtime_adds_rollout_phase_when_gen_length_given,
         test_audit_rollout_is_fail_safe_with_zero_observed_flips,
         test_audit_cross_vendor_folds_batch_variance_floor,

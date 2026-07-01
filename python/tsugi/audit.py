@@ -273,14 +273,18 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
                   flip_budget: float = 0.001, oracle=None, provenance=None,
-                  gen_length: int = 0) -> Audit:
+                  gen_length: int = 0, task: str = "classification",
+                  task_kwargs: dict | None = None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
       - env があれば envelope.check_tensor（本番入力が認証前提内か）
       - calibration.check_systematic（max_abs の盲点に隠れる系統バイアス）
       - equivalence + nondeterminism（noise_floor を織り込んだ 3 状態帰属）
-      - logits があれば decision.compare_decisions（タスク判断フリップ）
+      - logits があれば decision 層（タスク判断フリップ）:
+        task="classification"（既定）は compare_decisions（argmax・多クラス専用）。
+        task="regression"/"binary"/"ranking" は compare_task へ委譲（非分類タスクの
+        出荷判断・decision.compare_task はテスト済みだが従来 audit_runtime に未接続だった）。
       - oracle があれば correctness 層: oracle_check（oracle 自体の信頼性）＋
         detect_shared_mode（a≈b でも両方 oracle と不一致＝共有モード障害）
     すべて実データで *決定済み* なので静的 verdict に算入する（when="decided"）。
@@ -291,7 +295,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     import numpy as np
 
     from .calibration import check_systematic
-    from .decision import compare_decisions
+    from .decision import compare_decisions, compare_task
     from .envelope import check_tensor
     from .equivalence import compare_gemm
     from .nondeterminism import attribute
@@ -327,17 +331,25 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                          f"（max_abs 検出限界 {sysrep.floor_rel * 100:.1f}% の下に隠れる）")
     ad.phases.append(eqp)
 
-    # decision: タスク判断のフリップ（最終単位）
+    # decision: タスク判断のフリップ（最終単位）。既定は分類（argmax）・非分類は compare_task へ委譲。
     if logits_a is not None and logits_b is not None:
-        dr = compare_decisions(np.asarray(logits_a), np.asarray(logits_b),
-                               flip_budget=flip_budget)
-        dp = AuditPhase("decision タスクレベル等価", "decided", dr.max_risk)
-        dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
-                        f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
+        if task == "classification":
+            dr = compare_decisions(np.asarray(logits_a), np.asarray(logits_b),
+                                   flip_budget=flip_budget)
+            dp = AuditPhase("decision タスクレベル等価", "decided", dr.max_risk)
+            dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
+                            f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
+        else:
+            tr = compare_task(np.asarray(logits_a), np.asarray(logits_b), task=task,
+                              flip_budget=flip_budget, **(task_kwargs or {}))
+            dp = AuditPhase(f"decision タスクレベル等価({task})", "decided", tr.max_risk)
+            dp.lines.append(f"{task} フリップ率 {tr.flip_rate * 100:.2f}% "
+                            f"(予算 {flip_budget * 100:.2f}%・n={tr.n})")
         ad.phases.append(dp)
 
-        # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）
-        if gen_length > 0:
+        # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）。
+        # 自己回帰トークン選択（argmax）の概念ゆえ分類タスクに限る（regression/binary/ranking は対象外）。
+        if gen_length > 0 and task == "classification":
             from .rollout import analyze_rollout, flip_rate_upper_bound
             # fail-safe: 点推定 dr.flip_rate でなく上側信頼限界を使う。0 フリップ観測でも
             # p=0 と過信せず、複利増幅した survival を過大評価しない（rollout_from_logits と整合）。

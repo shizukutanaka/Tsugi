@@ -5,6 +5,25 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit_runtime(task=...) — 非分類タスク（回帰/二値/ランキング）を decision 層に接続（第15回）**:
+  `decision.compare_task()`（regression/binary/ranking）は実装・テスト済みだが、
+  `audit_runtime()` は常に `compare_decisions()`（分類 argmax 専用）を呼んでおり、
+  非分類タスクは decision 層の恩恵を受けられなかった（第11-14回で見つけた
+  「機能は実装済みだが facade 未接続」と同型の欠陥の4件目）。回帰モデル（価格/物理量）・
+  二値分類（診断/異常検知）・検索/推薦（ranking）は argmax を持たないため、
+  この接続漏れは分類以外のワークロード全体が対象外になっていたことを意味する。
+
+  - `audit_runtime(..., task: str = "classification", task_kwargs: dict | None = None)`:
+    `task` が `"classification"` 以外（`"regression"`/`"binary"`/`"ranking"`）なら
+    `decision.compare_task(task=task, **task_kwargs)` に委譲する。
+  - decision phase 名に `(task)` サフィックスを付け、どちらの経路を通ったか明示。
+  - rollout（自己回帰 per-token フリップ合成）は argmax トークン選択の概念に依存するため
+    `task == "classification"` の場合のみ発火するよう明示的にガード。
+  - `task` 未指定時は従来通り `compare_decisions`（後方互換・挙動不変）。
+  - tests: `test_audit_runtime_supports_non_classification_tasks`
+    （regression の 100% 乖離・binary の閾値またぎ反転をそれぞれ BLOCK 判定・既定 classification 確認）
+  - verify.py: 112→114 不変条件（43番）
+
 - **audit_cross_vendor(robust=...) — Q49 の外れ値頑健 noise floor を実機入口に接続（第14回）**:
   `nondeterminism.compare_stable` は `robust=True`（10-90 パーセンタイル幅・単発グリッチに
   頑健・SOCRATIC Q49 で修正済み）をサポートするが、GPU 実機向けの主要入口

@@ -735,6 +735,24 @@ def main() -> int:
     check("audit_cross_vendor(robust=True) resists single-glitch noise inflation (Q49 entry-point fix)",
           "EQUIVALENT" in _eq_rob.to_text() and "INDISTINGUISHABLE" not in _eq_rob.to_text())
 
+    # 43. audit_runtime(task=...) が decision.compare_task に委譲する（第15回）
+    # compare_task(regression/binary/ranking) は実装済みだが audit_runtime は常に
+    # compare_decisions（分類 argmax 専用）を呼んでいた（非分類タスクが未接続だった）。
+    from tsugi.audit import audit_runtime as _art
+    _a43 = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    _reg_a = np.random.default_rng(1).standard_normal(300)
+    _reg_b = _reg_a * 2.0   # 100% 乖離 → 明確な回帰フリップ
+    _ad_reg = _art(_a43, _a43.copy(), K=64, logits_a=_reg_a, logits_b=_reg_b,
+                  task="regression", flip_budget=0.001, task_kwargs={"rtol": 0.01})
+    _dp_reg = next(p for p in _ad_reg.phases if p.name.startswith("decision"))
+    check("audit_runtime(task='regression') delegates to compare_task and detects real divergence",
+          "regression" in _dp_reg.name and _dp_reg.max_risk == portability.Risk.BLOCK)
+    _la43 = np.random.default_rng(2).standard_normal((300, 20)).astype(np.float32)
+    _ad_default43 = _art(_a43, _a43.copy(), K=64, logits_a=_la43, logits_b=_la43.copy())
+    _dp_default43 = next(p for p in _ad_default43.phases if p.name.startswith("decision"))
+    check("audit_runtime default task remains classification (backward compatible)",
+          _dp_default43.name == "decision タスクレベル等価")
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
