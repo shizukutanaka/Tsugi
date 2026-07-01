@@ -5,6 +5,27 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **calibration.check_systematic — 点推定でなく上側限界(bias+stderr)で判定（第20回）**:
+  第19回の Q55 で指摘した残課題を解消。`systematic_divergence`（RMS 比バイアス）は
+  N 要素からの単一点推定に過ぎず、小テンソル（N 小）ではたまたま小さい bias が出て
+  真の系統誤差を見逃しうる（偽OK）。`rollout.flip_rate_upper_bound`（0 フリップ観測でも
+  p=0 と過信しない）と同じ fail-safe パターンを `calibration.check_systematic` にも適用。
+
+  - `calibration.systematic_divergence_stderr(a, b, n_boot=200, seed=0)`: 要素の
+    ブートストラップ再標本化で bias 推定の標準誤差を実測する新関数。
+  - `CalibrationReport` に `bias_stderr: float` フィールドと `bias_upper_bound`
+    プロパティ（`= |bias| + bias_stderr`）を追加。
+  - `check_systematic()`: 判定に `bias`（点推定）でなく `bias_upper_bound` を使う。
+    N が大きい（典型的な GEMM 出力）場合は stderr が無視できるほど小さく、従来の
+    点推定判定と実質同じ挙動（回帰なし）。
+  - 実証: N=4 の小テンソルで 1 要素だけ 5% 系統摂動させると、bias 点推定は
+    たまたま極小（旧ロジックなら OK 判定）になるが、bias_upper_bound は閾値を
+    大きく超え正しく BLOCK になる。
+  - tests: `test_systematic_check_uses_upper_bound_not_point_estimate_for_small_n`・
+    `test_systematic_check_large_n_unaffected_by_upper_bound`
+  - verify.py: 121→124 不変条件（47番）
+  - docs/SOCRATIC-50-improvements.md の Q55 を修正済みに更新。
+
 - **rollout: 初回発散ステップの中央値を接続（過剰実装の発見・第19回）**:
   ソクラテス式に「不足」（未接続の facade）でなく「過剰」（呼ばれない実装）の観点から
   機械スキャンし直した結果、`rollout.divergence_step_quantile()`（初回発散ステップの

@@ -56,38 +56,80 @@ def systematic_divergence(a: np.ndarray, b: np.ndarray) -> float:
     return rb / ra - 1.0
 
 
+def systematic_divergence_stderr(a: np.ndarray, b: np.ndarray, n_boot: int = 200,
+                                 seed: int = 0) -> float:
+    """systematic_divergence の推定標準誤差をブートストラップで実測する。
+
+    盲点: bias は N 要素から計算した点推定だが、N が小さい（小テンソル）ほど
+    たまたま小さい bias が出て偽OK になりうる（真の系統誤差を運悪く見逃す）。
+    rollout.flip_rate_upper_bound と同じ fail-safe パターン: 点推定でなく
+    *推定の不確実性込みの上側限界* で判定すべき。ここでは要素を復元抽出で
+    再標本化し、bias 統計量のばらつき（標準偏差）を経験的に求める。
+    N が大きければ標準誤差は無視できるほど小さくなり挙動は変わらない。
+    """
+    af = np.asarray(a, dtype=np.float64).ravel()
+    bf = np.asarray(b, dtype=np.float64).ravel()
+    n = af.size
+    if n < 2:
+        return 0.0
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    ra = np.sqrt(np.mean(af[idx] ** 2, axis=1)) + 1e-30
+    rb = np.sqrt(np.mean(bf[idx] ** 2, axis=1))
+    boots = rb / ra - 1.0
+    return float(np.std(boots))
+
+
 @dataclass
 class CalibrationReport(FindingReport):
     """系統バイアス検査の所見（max_abs の盲点を埋める相補計量）。"""
 
     bias: float = 0.0
+    bias_stderr: float = 0.0
     floor_rel: float = 0.0
+
+    @property
+    def bias_upper_bound(self) -> float:
+        """推定不確実性込みの |bias| 上側限界（fail-safe 判定に使う・点推定でなくこちら）。"""
+        return abs(self.bias) + self.bias_stderr
 
     def to_text(self) -> str:  # type: ignore[override]
         return super().to_text(
-            header=f"systematic check (bias={self.bias * 100:+.3f}%, "
+            header=f"systematic check (bias={self.bias * 100:+.3f}%±{self.bias_stderr * 100:.3f}%, "
                    f"max_abs floor={self.floor_rel * 100:.1f}%)",
             empty="(no systematic divergence)")
 
 
 def check_systematic(a: np.ndarray, b: np.ndarray, K: int = 1,
-                     dtype: str = "float16", safety: float = SAFETY) -> CalibrationReport:
+                     dtype: str = "float16", safety: float = SAFETY,
+                     n_boot: int = 200) -> CalibrationReport:
     """系統的スケール/バイアス誤差を検査する（K 不変の閾値 = safety·u）。
 
     閾値は √K を掛けない（系統誤差は累積発散と違い K で増えない）。ゆえに max_abs の
     検出限界（safety·√K·u）が見逃す微小な系統バグを、K に依らず捕まえる。
+
+    fail-safe: 判定には点推定 bias でなく bias_upper_bound（= |bias| + ブートストラップ
+    標準誤差）を使う。小テンソル（N 小）では bias の点推定がたまたま閾値未満になり
+    真の系統誤差を見逃しうる（rollout.flip_rate_upper_bound と同じ「点推定でなく
+    上側限界で判定する」パターン）。N が大きければ標準誤差は無視できるほど小さく、
+    従来の点推定判定と実質同じ挙動になる。
     """
     floor = detectability_floor(K, dtype, 1.0, safety)
-    rep = CalibrationReport(bias=systematic_divergence(a, b), floor_rel=floor["rel"])
+    bias = systematic_divergence(a, b)
+    stderr = systematic_divergence_stderr(a, b, n_boot=n_boot)
+    rep = CalibrationReport(bias=bias, bias_stderr=stderr, floor_rel=floor["rel"])
     thresh = safety * unit_roundoff(dtype)  # scale/K 不変
-    if abs(rep.bias) > thresh:
-        # fail-safe: 閾値超えの系統バイアスは（小さくても）DIVERGENT に倒す。
+    ub = rep.bias_upper_bound
+    if ub > thresh:
+        # fail-safe: 閾値超えの系統バイアス（推定不確実性込み）は（小さくても）DIVERGENT に倒す。
         rep.add(Risk.BLOCK, "scale",
-                f"系統バイアス {rep.bias * 100:+.3f}% > 閾値 {thresh * 100:.3f}% "
+                f"系統バイアス {rep.bias * 100:+.3f}%±{stderr * 100:.3f}%（上側限界 "
+                f"{ub * 100:.3f}%）> 閾値 {thresh * 100:.3f}% "
                 f"→ max_abs 検出限界 {floor['rel'] * 100:.1f}% の下に隠れる系統バグ")
-    elif abs(rep.bias) > _WARN_BIAS_RATIO * thresh:
+    elif ub > _WARN_BIAS_RATIO * thresh:
         rep.add(Risk.WARN, "scale",
-                f"系統バイアス {rep.bias * 100:+.3f}% が閾値 {thresh * 100:.3f}% に近接")
+                f"系統バイアス {rep.bias * 100:+.3f}%±{stderr * 100:.3f}%（上側限界 "
+                f"{ub * 100:.3f}%）が閾値 {thresh * 100:.3f}% に近接")
     return rep
 
 

@@ -313,10 +313,14 @@ attribution.diagnose・worstcase.analyze_worst_case・equivalence.classify_diver
 `to_text()` に両方を表示。
 
 **Q55.** 他にも「歪んだ分布を単一点推定だけで報告している」箇所はないか？
-→ 部分的に対処済み: `nondeterminism.measure_noise_floor` は `spread`（max-min）と
+→ ✅ **修正済**（第20回）: `nondeterminism.measure_noise_floor` は `spread`（max-min）と
 `spread_robust`（10-90パーセンタイル幅）の両方を返す（Q49）。`calibration.check_systematic`
-の `bias` は単一点推定（分布でなく符号付き平均）のまま。**改善: 系統バイアスの
-ばらつき（標準誤差・信頼区間）も返せば、少数サンプルでの過信を防げる。**（未着手・P2）
+の `bias` も単一点推定のままだったが、`systematic_divergence_stderr`（ブートストラップ）を
+追加し `bias_upper_bound = |bias| + stderr` で判定するよう修正（rollout.flip_rate_upper_bound
+と同じ「点推定でなく上側限界で判定」パターン）。N=4 の小テンソルで 1 要素だけ 5% 摂動させると
+bias 点推定はたまたま極小（旧ロジックなら OK）になるが、上側限界は閾値を大きく超え正しく
+BLOCK になることを実証（偽OK 修正）。大 N（典型的な GEMM 出力）では stderr が無視できるほど
+小さく挙動は不変（回帰なし）。
 
 **Q56.** この機械的スキャン手法自体をどう維持するか？
 → 現状は手動実行（第18・19回のように都度 Python ワンライナーで scan）。

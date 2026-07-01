@@ -24,8 +24,10 @@ from tsugi.calibration import (  # noqa: E402
     make_corpus,
     roc_sweep,
     systematic_divergence,
+    systematic_divergence_stderr,
 )
 from tsugi.equivalence import compare_gemm, simulate_vendor_matmul  # noqa: E402
+from tsugi.report import Risk  # noqa: E402
 
 
 def test_floor_grows_with_K():
@@ -56,6 +58,56 @@ def test_systematic_check_catches_what_max_abs_misses():
     rep = check_systematic(base, bug, K, "float16")
     assert not rep.ok                     # 系統検査は捕まえる
     assert abs(rep.bias - 0.005) < 1e-4   # RMS 比が 0.5% を正しく測る
+
+
+def test_systematic_check_uses_upper_bound_not_point_estimate_for_small_n():
+    """check_systematic は小 N で bias 点推定でなく上側限界(bias+stderr)で判定する（第20回）。
+
+    Q55（過不足の続き）: bias は N 要素からの点推定に過ぎない。小テンソルでは、たまたま
+    小さい bias が出て真の系統誤差を見逃す（偽OK）可能性がある。rollout.flip_rate_upper_bound
+    と同じ fail-safe パターン（点推定でなく推定の不確実性込みの上側限界で判定）を
+    systematic_divergence にも適用したことを実証する。
+
+    N=4 の小テンソルで 1 要素だけ 5% 摂動させると、bias 点推定はたまたま極小
+    （旧コードなら OK 相当）になるが、ブートストラップ標準誤差が大きく
+    上側限界は閾値を大きく超える → 新コードは正しく BLOCK にする。
+    """
+    rng = np.random.default_rng(2)
+    n = 4
+    a = rng.standard_normal(n) * 1.0
+    b = a.copy()
+    b[0] *= 1.05   # 1/4 要素だけ 5% 系統摂動（小 N ゆえ RMS 比への寄与は運次第）
+
+    bias = systematic_divergence(a, b)
+    stderr = systematic_divergence_stderr(a, b, n_boot=300, seed=2)
+    from tsugi.tolerance import unit_roundoff
+    from tsugi.constants import SAFETY
+    thresh = SAFETY * unit_roundoff("float16")
+    half = 0.5 * thresh
+
+    # 点推定だけなら OK 判定になるはずの状況を固定（旧ロジックの弱点を再現）
+    assert abs(bias) < half, f"bias 点推定が既に大きい（この検証ケースが機能しない）: {bias}"
+    # だが推定不確実性（stderr）を足すと閾値を大きく超える
+    assert abs(bias) + stderr > thresh, "stderr を足しても閾値を超えない（テストケース不成立）"
+
+    rep = check_systematic(a, b, K=1, dtype="float16")
+    assert rep.max_risk == Risk.BLOCK, (
+        f"小 N の真の系統誤差を上側限界で捕まえられていない（偽OK 復活）: {rep.to_text()}")
+    assert rep.bias_upper_bound > thresh
+
+
+def test_systematic_check_large_n_unaffected_by_upper_bound():
+    """大 N（典型的な GEMM 出力）では stderr が無視できるほど小さく、挙動は点推定判定と同じ。"""
+    rng = np.random.default_rng(0)
+    K = 2048
+    a = rng.standard_normal((64, K)).astype(np.float16)
+    b = rng.standard_normal((K, 64)).astype(np.float16)
+    base = simulate_vendor_matmul(a, b, accum="f32", split_k=1)
+    bug = base * 1.005
+    rep = check_systematic(base, bug, K, "float16")
+    # stderr は bias 本体よりずっと小さい（大 N で推定は安定）
+    assert rep.bias_stderr < abs(rep.bias) * 0.1
+    assert rep.max_risk == Risk.BLOCK  # 従来通り捕まる（回帰なし）
 
 
 def test_systematic_check_passes_legitimate_order_divergence():
@@ -148,6 +200,8 @@ def main() -> int:
         test_roc_sweep_honest_subthreshold_blindspot,
         test_max_abs_misses_subfloor_scale_bug,
         test_systematic_check_catches_what_max_abs_misses,
+        test_systematic_check_uses_upper_bound_not_point_estimate_for_small_n,
+        test_systematic_check_large_n_unaffected_by_upper_bound,
         test_systematic_check_passes_legitimate_order_divergence,
         test_systematic_threshold_is_sensitive_to_safety_constant,
         test_combined_verifier_is_trustworthy_corpus,

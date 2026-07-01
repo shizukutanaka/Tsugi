@@ -821,6 +821,27 @@ def main() -> int:
     check("audit_runtime does not tag a true scale divergence as LAYOUT (no false classification)",
           _eq_true46.max_risk == portability.Risk.BLOCK and "LAYOUT" not in _eq_true46.to_text())
 
+    # 47. calibration.check_systematic は bias 点推定でなく上側限界(bias+stderr)で判定する（第20回）
+    # 小 N テンソルではたまたま小さい bias が出て真の系統誤差を見逃しうる（偽OK）。
+    # rollout.flip_rate_upper_bound と同じ fail-safe パターン（点推定でなく上側限界）を適用。
+    from tsugi.calibration import check_systematic as _cs47
+    from tsugi.calibration import systematic_divergence as _sd47
+    from tsugi.calibration import systematic_divergence_stderr as _sds47
+    from tsugi.tolerance import unit_roundoff
+    _rng47 = np.random.default_rng(2)
+    _a47 = _rng47.standard_normal(4) * 1.0
+    _b47 = _a47.copy()
+    _b47[0] *= 1.05
+    _bias47 = _sd47(_a47, _b47)
+    _stderr47 = _sds47(_a47, _b47, n_boot=300, seed=2)
+    _thresh47 = SAFETY * unit_roundoff("float16")
+    check("small-N point-estimate bias alone looks negligible (reproduces the false-OK setup)",
+          abs(_bias47) < 0.5 * _thresh47)
+    check("small-N upper bound (bias+stderr) exceeds threshold where point estimate alone would not",
+          abs(_bias47) + _stderr47 > _thresh47)
+    check("check_systematic uses the upper bound and correctly BLOCKs the small-N case (no false-OK)",
+          _cs47(_a47, _b47, K=1, dtype="float16").max_risk == portability.Risk.BLOCK)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
