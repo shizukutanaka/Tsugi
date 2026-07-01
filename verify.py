@@ -684,6 +684,33 @@ def main() -> int:
           "sample 実測" in _num_yes.to_text()
           and "scale=1.0 仮定" not in _num_yes.to_text())
 
+    # 41. audit(sample=...) は増幅 op（reduce/exp）の cond を empirical_cond で自動実測する（第13回）
+    # sample を渡しても cond=1 のまま「下界」WARN するだけだった（Q7/Q8/Q11 の未接続）を解消。
+    import tsugi as _ts
+    from tsugi import tile as _tile
+
+    @_ts.jit
+    def _sm_kernel(x, out, N, BN):
+        p = _ts.program_id(0)
+        row = _tile.load(x, (p * BN, 0), (BN, N))
+        m = _tile.reduce(row, 1, "max")
+        e = _tile.exp(row - m)
+        s = _tile.reduce(e, 1, "sum")
+        _tile.store(out, (p * BN, 0), (e / s).to(_ts.float16))
+
+    from tsugi.autotune import TileConfig as _TC
+    _xsm = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    _mod_sm = _ts.trace(_sm_kernel, (_xsm, _xsm.copy(), 16, 16), {}, (0,))
+    _cfg_sm = _TC(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
+    _a_no = audit(_mod_sm, _cfg_sm, block_dims=(16,))
+    _a_yes = audit(_mod_sm, _cfg_sm, block_dims=(16,), sample=_xsm)
+    _prop_no = next(p for p in _a_no.phases if "propagation" in p.name.lower())
+    _prop_yes = next(p for p in _a_yes.phases if "propagation" in p.name.lower())
+    check("audit(sample=...) measures empirical_cond for amplifying ops (no longer static lower bound)",
+          "実測済み" in _prop_yes.to_text() and "静的 cond=1 は" not in _prop_yes.to_text())
+    check("empirical_cond changes model_divergence vs the cond=1 static default",
+          _prop_yes.to_text() != _prop_no.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

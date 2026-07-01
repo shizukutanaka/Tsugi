@@ -210,6 +210,17 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     # --- 静的: 合成的等価性（per-kernel 等価 ⇏ per-model 等価） ---
     gops = _graph_ops(module, cfg)
     if gops:
+        from .propagation import empirical_cond, is_amplifier
+
+        # sample があれば増幅 op（reduce/softmax/exp）の cond を実データから実測する
+        # （Q7/Q8/Q11: 静的 cond=1 は well-conditioned 仮定の下界・empirical_cond で置換）。
+        cond_measured = False
+        if sample is not None:
+            for o in gops:
+                if is_amplifier(o.kind) and o.cond == 1.0:
+                    o.cond = empirical_cond(sample, o.kind)
+                    cond_measured = True
+
         pr = propagate(gops)
         ratio = pr.model_divergence / (pr.naive_sum + 1e-30)
         # 発散が深さ/増幅でナイーブ和を大きく超えるならモデルレベルで要注意。
@@ -224,13 +235,17 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             prop.lines.append("単一 op グラフ: 伝播増幅なし。多 op モデルでは深さ・"
                               "条件数で累積（cond は実機/モデル依存・既定 1）")
         # 正直さ: データ依存増幅 op（reduce/exp）に静的 cond=1 を当てるのは *下界*。
-        from .propagation import is_amplifier
         amps = sorted({o.kind for o in gops if is_amplifier(o.kind)})
-        if amps and all(o.cond == 1.0 for o in gops):
+        if amps and cond_measured:
+            prop.lines.append(
+                f"データ依存増幅 op {amps} の cond を sample から実測済み（empirical_cond）: "
+                "静的下界の過小評価を解消")
+        elif amps and all(o.cond == 1.0 for o in gops):
             prop.max_risk = Risk.WARN
             prop.lines.append(
                 f"データ依存増幅 op {amps} が存在: 静的 cond=1 は *下界*（過小評価）。"
-                "真の増幅は empirical_cond / audit_runtime で実データから定量化せよ")
+                "真の増幅は empirical_cond / audit_runtime で実データから定量化せよ"
+                "（audit(sample=...) を渡せば自動実測）")
         # propagation → decision の橋: 静的発散を代表 logit でタスクフリップ率に翻訳
         if ref_logits is not None:
             from .decision import flip_bound_from_divergence

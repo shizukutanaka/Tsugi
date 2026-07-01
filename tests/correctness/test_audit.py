@@ -90,6 +90,37 @@ def test_audit_propagates_amplification_through_traced_softmax():
     assert "下界" in text and ("exp" in text or "reduce" in text)
 
 
+def test_audit_sample_auto_measures_empirical_cond():
+    """audit(sample=...) は増幅 op（reduce/exp）の cond を empirical_cond で自動実測する（第13回）。
+
+    従来は sample を渡しても propagation の cond=1（well-conditioned 仮定）のままで、
+    「静的 cond=1 は下界」と WARN するだけだった（Q7/Q8/Q11 の未接続）。
+    sample があるのに empirical_cond を呼ばないのは sample を活かしきれていない。
+    本修正: sample 提供時は増幅 op の cond を実データから測り、model_divergence を
+    実測値に更新する（過小評価の是正）。sample 未指定時は従来通り下界 WARN のまま。
+    """
+    x = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    mod = tsugi.trace(_softmax_row, (x, x.copy(), 16, 16), {}, (0,))
+    cfg = TileConfig(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
+
+    a_no_sample = audit(mod, cfg, block_dims=(16,))
+    a_with_sample = audit(mod, cfg, block_dims=(16,), sample=x)
+    prop_no = next(p for p in a_no_sample.phases if "propagation" in p.name.lower())
+    prop_yes = next(p for p in a_with_sample.phases if "propagation" in p.name.lower())
+
+    # sample 無し: 従来通り「下界」WARN のまま（cond=1 が変更されない）
+    assert "下界" in prop_no.to_text()
+    # sample 有り: 実測済みを明示し、「cond=1 は下界」誘導文言は出ない（もう cond=1 でないから）
+    text_yes = prop_yes.to_text()
+    assert "実測済み" in text_yes
+    assert "静的 cond=1 は" not in text_yes
+    # 実測 cond は softmax の reduce（相殺しうる）で 1 でない値を返しうる →
+    # model_divergence が sample 無し版と異なる（過小評価が是正された証拠）
+    div_no = float(prop_no.to_text().split("モデル発散(予測)=")[1].split()[0])
+    div_yes = float(text_yes.split("モデル発散(予測)=")[1].split()[0])
+    assert div_yes != div_no, "sample の有無で model_divergence が変わらない（empirical_cond 未使用の疑い）"
+
+
 def test_propagation_phase_runs_on_module():
     # 統合された propagation が per-model 発散を出す（単一 matmul は増幅なし=INFO）
     mod, block, cfg = _demo_module()
@@ -313,6 +344,7 @@ def main() -> int:
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
         test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,
+        test_audit_sample_auto_measures_empirical_cond,
         test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,
         test_runtime_phase_excluded_from_verdict,

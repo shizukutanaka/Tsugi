@@ -5,6 +5,24 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit(sample=...) が empirical_cond を自動実測（第13回）**:
+  propagation 層は増幅 op（reduce/softmax/exp）の条件数 `cond` を静的には常に 1.0
+  （well-conditioned 仮定）とし、`empirical_cond(sample, kind)` という実測関数は存在するのに
+  `audit()` から一度も呼ばれていなかった（Q7/Q8/Q11 の未接続 — 関数はあるが経路が繋がっていない）。
+  第12回で `certify_from_sample` を接続したのと同型の欠陥を propagation 層でも発見・修正。
+
+  - `audit(module, cfg, ..., sample=sample)`: `sample` が与えられると、グラフ中の増幅 op
+    （`is_amplifier(kind)` かつ `cond==1.0`）の `cond` を `empirical_cond(sample, kind)` で
+    実測してから `propagate()` する。
+  - 実証: softmax カーネル（reduce×2/exp）を trace した例で、`sample` 無しは
+    `model_divergence≈1.17e-2`（cond=1 の過小評価）、`sample` 有りは `≈7.82e-2`
+    （実測 cond≈2.8 を反映）——約 6.7 倍の過小評価が是正される。
+  - `sample` 未指定時は従来通り「静的 cond=1 は下界」WARN を維持（後方互換・情報を隠さない）。
+    `sample` 有り時は「実測済み」に文言を切替え、`audit(sample=...)` へ誘導する文言も追加。
+  - tests: `test_audit_sample_auto_measures_empirical_cond`
+    （sample 有無で model_divergence が変わることを固定・text の分岐を検証）
+  - verify.py: 108→110 不変条件（41番）
+
 - **audit() facade に certify_from_sample を接続（第12回）**:
   第11回で `envelope.certify_from_sample` を追加したが、製品の主要 facade である
   `tsugi.audit.audit()` は依然 `certify_gemm(K, "float16", 1.0)` の scale=1 固定のままだった
