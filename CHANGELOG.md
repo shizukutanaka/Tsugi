@@ -5,6 +5,16 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **docs/FEATURE-AUDIT.md — 機能過不足の台帳（第23回）**:
+  機能を「不足（未接続・未実装）」「過剰（実装したが価値未提供）」「適正」に選別した
+  自己完結の監査ドキュメント。セッション文脈なしの読者（人間・AI）がこのファイルだけで
+  作業を引き継げるよう、用語定義・全項目へのファイルパス・根拠 commit hash を付し、
+  優先度順（P0: compare_task の Wilson 化と実機 e2e / P1: torch 経路接続・codegen・
+  scale 伝播・スキャン CI 化 / P2: SOCRATIC 残項目）で列挙。過去に解消した
+  「facade 未接続」8 件・「点推定の過信」4 件を再発防止の参照事例として表に固定し、
+  意図的に非接続のメタツール群（B-2）と削除候補ゼロの判断基準（B-3）も明記。
+  デッドコードスキャンのワンライナーを引き継ぎ手順（D 節）に収録。
+
 - **decision.compare_decisions — 主判定も Wilson 上側限界(flip_rate_ub)を使用（第22回）**:
   第21回は `predicted_flip_bound`（第2ベンダー実行 *前* の予測）を修正したが、
   `compare_decisions` 自体の予算判定（第2ベンダーを実際に走らせた *後* の主判定）は
