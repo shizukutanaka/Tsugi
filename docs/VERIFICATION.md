@@ -100,3 +100,8 @@ CLI: `python -m tsugi.portcheck [kernel.py]`（audit へ委譲）。
 - GPU codegen 本体（MLIR→PTX/AMDGCN）— `lowering.py` が仕様。
 - 実機のクロスベンダー出力で `audit_runtime` を駆動し、`noise_floor` を実測して
   tolerance/calibration/decision へ供給する経路。
+
+## 機能の過不足
+
+現状の不足（未接続・未実装）・過剰（実装したが未接続だったもの・解消済み）を
+優先度つきで一覧化した台帳: [docs/FEATURE-AUDIT.md](FEATURE-AUDIT.md)。

@@ -24,13 +24,45 @@
 
 ---
 
+## 過不足一覧（インデックス）
+
+全項目を 1 行 1 件で見渡す表。ID から本文（A/B 節）の詳細に辿れる。
+散文を読まずにこの表だけで全体像を把握できることを意図している。
+
+| ID | 分類 | 優先度 | 対象 | 状態 | 一行要約 |
+|---|---|---|---|---|---|
+| A-1 | 不足 | P0 | `decision.py:306` `compare_task()` | 未着手 | regression/binary/ranking の予算判定が点推定のまま（`TaskReport` に `flip_rate_ub` 無し） |
+| A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
+| A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 未着手 | `audit_fx` しか呼ばず、`audit_runtime()` の豊富な検証が torch 経路に届かない |
+| A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
+| A-5 | 不足 | P1 | `propagation.py` `propagate()` | 未着手 | 正規化層（LayerNorm/RMSNorm）による scale リセットを追えない |
+| A-6 | 不足 | P1 | facade 未接続スキャン全般 | 未着手 | デッドコード／未接続検出が手動のまま（CI 化されていない） |
+| A-7 | 不足 | P2 | `decision.py` 統計判定 | 未着手 | per-sample δ・多 seed 分布報告が単一 seed のまま |
+| A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
+| A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
+| A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
+| A-11 | 不足 | P2 | 開発運用 | 未着手 | 残りのマジックナンバー定数化・依存ライセンス自動監査・遅延 import 方針 |
+| B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
+| B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
+| B-1c | 過剰(接続済) | — | `nondeterminism` robust noise floor | 解消済み(4d68287) | 外れ値頑健な床が `audit_cross_vendor()` に未接続だった |
+| B-1d | 過剰(接続済) | — | `decision.compare_task` | 解消済み(f44f889) | 非分類タスク判定が `audit_runtime()` から呼ばれていなかった |
+| B-1e | 過剰(接続済) | — | `attribution.diagnose` | 解消済み(fc55388) | 層別診断＋責帰の集大成関数が未接続だった |
+| B-1f | 過剰(接続済) | — | `worstcase.analyze_worst_case` | 解消済み(f7bdec4) | 唯一の能動探索層が未接続だった |
+| B-1g | 過剰(接続済) | — | `equivalence.classify_divergence` | 解消済み(72a79e2) | LAYOUT／真の発散の判別が未接続だった |
+| B-1h | 過剰(接続済) | — | `rollout.divergence_step_quantile` | 解消済み(2db24d6) | 完全デッドコードだったが統計的価値があり接続を選択 |
+| B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 4 箇所 | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
+| B-2 | 過剰(意図的) | — | メタツール群（`calibration.make_corpus` 等 6 件） | 維持（正当） | 検証器の校正用・テスト専用・CLI 等で facade 非接続が正しい |
+| B-3 | 削除候補 | — | （該当なし） | ゼロ件 | 現時点で真のデッドコードは無い（B-1h が唯一の候補で接続済み） |
+
+---
+
 ## A. 不足（deficiency）— 優先度順
 
-フォーマット: `[優先度] 対象 — 何が無いか / なぜ危険か / 推奨アクション`
+フォーマット: `[ID][優先度] 対象 — 何が無いか / なぜ危険か / 推奨アクション`
 
 ### P0（次に着手すべき）
 
-1. **`python/tsugi/decision.py:306` `compare_task()` の予算判定が点推定のまま**
+1. **[A-1] `python/tsugi/decision.py:306` `compare_task()` の予算判定が点推定のまま**
    - 何が無いか: regression/binary/ranking タスクの BLOCK/WARN 判定が観測フリップ率
      `fr`（= k/n の点推定）を直接 `flip_budget` と比較している。分類タスク用の
      `compare_decisions()` は Wilson 上側限界 `flip_rate_ub` で判定するよう修正済み
@@ -45,7 +77,7 @@
      参照実装: commit 39ce477 の `compare_decisions` への同型修正と
      `tests/correctness/test_decision.py::test_compare_decisions_uses_flip_rate_ub_for_small_batch`。
 
-2. **実機 GPU での end-to-end 検証が一度もない**
+2. **[A-2] 実機 GPU での end-to-end 検証が一度もない**
    - 何が無いか: 全検証層は CPU シミュレーション（NumPy oracle・擬似ベンダー）でのみ検証済み。
      NVIDIA/AMD 実機での動作確認はゼロ（`docs/SOCRATIC-50-improvements.md` の Q50）。
    - なぜ危険か: 「検証器が実機で正しい」という主張自体が未検証。SAFETY 係数（4.0）等の
@@ -56,7 +88,7 @@
 
 ### P1（P0 の次）
 
-3. **`python/tsugi_torch/__init__.py` `_tsugi_compile()` が `audit_fx` しか呼ばない**
+3. **[A-3] `python/tsugi_torch/__init__.py` `_tsugi_compile()` が `audit_fx` しか呼ばない**
    - 何が無いか: torch.compile バックエンド経路は FX グラフの静的監査
      （`fxbridge.audit_fx`: 増幅 op・モデル発散・非決定 op・dynamic shape 検出）のみ。
      `audit_runtime()` が持つ豊富な検証（worstcase 能動探索・attribution 層別診断・
@@ -67,7 +99,7 @@
      best-effort で取り出し、`audit()` の `sample=` / `ref_logits=` に相当する情報を
      警告メッセージに追加する段階的接続。フル接続は実行時出力が要るため codegen 後。
 
-4. **GPU codegen 未実装**
+4. **[A-4] GPU codegen 未実装**
    - 何が無いか: `python/tsugi/lowering.py` は tile op → NVVM/ROCDL/SPIRV の対応表
      （データ）のみで、実際の PTX/AMDGCN 生成は無い。バックエンドは eager 素通し
      （その旨を明示的に warn する誠実な実装にはなっている）。
@@ -75,14 +107,14 @@
    - 推奨アクション: LLVM/MLIR 環境が要る Phase 4 作業。ロードマップは
      `python/tsugi_torch/__init__.py` の docstring に 5 段階で記載済み。
 
-5. **`python/tsugi/propagation.py` が正規化層での scale リセットを追えない（Q11）**
+5. **[A-5] `python/tsugi/propagation.py` が正規化層での scale リセットを追えない（Q11）**
    - 何が無いか: `propagate()` は相対発散を op 列に沿って合成するが、LayerNorm/RMSNorm が
      活性の scale を正規化して発散の絶対量をリセットする効果をモデル化していない（amp≈1 と単純化）。
    - なぜ危険か: 深いモデルでの発散予測が過大（偽BLOCK 側）または構造誤りになりうる。
    - 推奨アクション: `GraphOp` に scale 伝播を追加し、正規化 op で発散を再基準化する版を
      検討。residual（`residual=True` の √ 合成）と同様の一次近似でよい。
 
-6. **facade 未接続・デッドコードの機械的スキャンが手動のまま（Q56）**
+6. **[A-6] facade 未接続・デッドコードの機械的スキャンが手動のまま（Q56）**
    - 何が無いか: 「実装済みだが facade から呼ばれない関数」を検出する仕組みが CI に無い。
      過去にこの型の欠陥が 8 件見つかっている（下記セクション B）。
    - なぜ危険か: 新機能を追加するたびに同型の欠陥（機能はあるが届かない）が再発しうる。
@@ -92,15 +124,15 @@
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
-7. **統計判定の残り**: `decision.py` の per-sample δ（Q19: δ_abs=δ_rel·RMS は平均であって
+7. **[A-7] 統計判定の残り**: `decision.py` の per-sample δ（Q19: δ_abs=δ_rel·RMS は平均であって
    最悪ケースでない）、多 seed 分布報告（Q48: 「発散 ~2000倍」等の数字が単一 seed）。
-8. **scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
+8. **[A-8] scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
-9. **タスクモデルの拡張**: Q21（代表 logit はキャリブレーション集合から、というガイド）、
+9. **[A-9] タスクモデルの拡張**: Q21（代表 logit はキャリブレーション集合から、というガイド）、
    Q22/Q32（beam search・温度サンプリング下の分布一致）、Q31（oracle がある時の accuracy 差併記）。
-10. **検証基盤の構造**: Q33/Q34（`verify.py` 単一巨大 main() の関数分割・test との重複整理）、
+10. **[A-10] 検証基盤の構造**: Q33/Q34（`verify.py` 単一巨大 main() の関数分割・test との重複整理）、
     Q38（カバレッジ計測）、Q43（乱数依存テストの境界余裕点検）。
-11. **開発運用**: Q4/Q5（残りのマジックナンバーの named constant 化）、Q42（依存ライセンス
+11. **[A-11] 開発運用**: Q4/Q5（残りのマジックナンバーの named constant 化）、Q42（依存ライセンス
     自動監査）、Q46（遅延 import の方針明文化）。
 
 ---
