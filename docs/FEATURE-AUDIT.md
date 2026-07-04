@@ -31,7 +31,7 @@
 
 | ID | 分類 | 優先度 | 対象 | 状態 | 一行要約 |
 |---|---|---|---|---|---|
-| A-1 | 不足 | P0 | `decision.py:306` `compare_task()` | 未着手 | regression/binary/ranking の予算判定が点推定のまま（`TaskReport` に `flip_rate_ub` 無し） |
+| A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
 | A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 未着手 | `audit_fx` しか呼ばず、`audit_runtime()` の豊富な検証が torch 経路に届かない |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
@@ -50,7 +50,7 @@
 | B-1f | 過剰(接続済) | — | `worstcase.analyze_worst_case` | 解消済み(f7bdec4) | 唯一の能動探索層が未接続だった |
 | B-1g | 過剰(接続済) | — | `equivalence.classify_divergence` | 解消済み(72a79e2) | LAYOUT／真の発散の判別が未接続だった |
 | B-1h | 過剰(接続済) | — | `rollout.divergence_step_quantile` | 解消済み(2db24d6) | 完全デッドコードだったが統計的価値があり接続を選択 |
-| B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 4 箇所 | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
+| B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 5 箇所（A-1 含む） | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477/6e044f3) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
 | B-2 | 過剰(意図的) | — | メタツール群（`calibration.make_corpus` 等 6 件） | 維持（正当） | 検証器の校正用・テスト専用・CLI 等で facade 非接続が正しい |
 | B-3 | 削除候補 | — | （該当なし） | ゼロ件 | 現時点で真のデッドコードは無い（B-1h が唯一の候補で接続済み） |
 
@@ -62,20 +62,19 @@
 
 ### P0（次に着手すべき）
 
-1. **[A-1] `python/tsugi/decision.py:306` `compare_task()` の予算判定が点推定のまま**
-   - 何が無いか: regression/binary/ranking タスクの BLOCK/WARN 判定が観測フリップ率
-     `fr`（= k/n の点推定）を直接 `flip_budget` と比較している。分類タスク用の
+1. **[A-1] ✅ 解消済み(commit 6e044f3)** `python/tsugi/decision.py` `compare_task()` の
+   予算判定が点推定のままだった問題
+   - 何が無かったか: regression/binary/ranking タスクの BLOCK/WARN 判定が観測フリップ率
+     `fr`（= k/n の点推定）を直接 `flip_budget` と比較していた。分類タスク用の
      `compare_decisions()` は Wilson 上側限界 `flip_rate_ub` で判定するよう修正済み
-     （commit 39ce477）だが、非分類 3 タスクは未修正。
-   - なぜ危険か: 小さい評価バッチ（例 n=30）でたまたま観測フリップ 0 件でも母集団の
-     真の率は予算超でありうる。0 件観測を「フリップ率 0%」と過信するのは偽OK の温床
-     （rule of three: 0/n 観測でも真の p は ~3/n までありうる）。
-   - 推奨アクション: `rollout.flip_rate_upper_bound(k, n, confidence)`（`python/tsugi/rollout.py`・
-     Wilson 上側限界の既存実装）を再利用し、`TaskReport` に `flip_rate_ub` フィールドを追加、
-     判定をそちらに切り替える。**注意**: ranking の 1D 単一クエリ入力は返り値が 0.0/1.0 の
-     決定的結果（サンプリングされた推定値でない）なので Wilson 拡張を適用しないこと。
-     参照実装: commit 39ce477 の `compare_decisions` への同型修正と
-     `tests/correctness/test_decision.py::test_compare_decisions_uses_flip_rate_ub_for_small_batch`。
+     （commit 39ce477）だったが、非分類 3 タスクは未修正だった。
+   - 修正内容: `rollout.flip_rate_upper_bound(k, n, confidence)` を再利用し、
+     `TaskReport` に `flip_rate_ub` フィールドを追加、判定をそちらに切り替えた。
+     ranking の 1D 単一クエリ入力（返り値が 0.0/1.0 の決定的結果）には Wilson 拡張を
+     適用せず、2D バッチ入力はクエリ数（`a_.shape[0]`）を試行数として widening する。
+     tests: `test_compare_task_uses_flip_rate_ub_for_small_batch`・
+     `test_compare_task_ranking_single_query_no_wilson_widening`。
+     verify.py 不変条件 50 番。詳細は CHANGELOG.md の commit 6e044f3 に対応するエントリを参照。
 
 2. **[A-2] 実機 GPU での end-to-end 検証が一度もない**
    - 何が無いか: 全検証層は CPU シミュレーション（NumPy oracle・擬似ベンダー）でのみ検証済み。
