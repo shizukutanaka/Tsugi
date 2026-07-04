@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 133/133 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 135/135 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -42,6 +42,7 @@
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
 | A-11 | 不足 | P2 | 開発運用 | 未着手 | 残りのマジックナンバー定数化・依存ライセンス自動監査・遅延 import 方針 |
+| A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 未着手 | SSA の operand/result 参照から実 DAG を再構築せず線形化。fork/merge（attention・residual）を無視 |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
 | B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
 | B-1c | 過剰(接続済) | — | `nondeterminism` robust noise floor | 解消済み(4d68287) | 外れ値頑健な床が `audit_cross_vendor()` に未接続だった |
@@ -52,6 +53,7 @@
 | B-1h | 過剰(接続済) | — | `rollout.divergence_step_quantile` | 解消済み(2db24d6) | 完全デッドコードだったが統計的価値があり接続を選択 |
 | B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 5 箇所（A-1 含む） | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477/6e044f3) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
 | B-1j | 過剰(接続済) | — | `envelope.check_outlier_features`/`check_softmax_input` | 解消済み(067f5d5) | envelope phase が check_tensor しか呼ばず、outlier feature 検出・softmax exp-overflow 検査が未接続だった |
+| B-1k | 過剰(接続済) | — | `decision.binary_margin` | 解消済み(4abeaa9) | compare_decisions にある near-tie 健全性チェックが compare_task(binary) に存在しない構造的非対称だった |
 | B-2 | 過剰(意図的) | — | メタツール群（`calibration.make_corpus` 等 6 件） | 維持（正当） | 検証器の校正用・テスト専用・CLI 等で facade 非接続が正しい |
 | B-3 | 削除候補 | — | （該当なし） | ゼロ件 | 現時点で真のデッドコードは無い（B-1h が唯一の候補で接続済み） |
 
@@ -116,11 +118,33 @@
 
 6. **[A-6] facade 未接続・デッドコードの機械的スキャンが手動のまま（Q56）**
    - 何が無いか: 「実装済みだが facade から呼ばれない関数」を検出する仕組みが CI に無い。
-     過去にこの型の欠陥が 8 件見つかっている（下記セクション B）。
+     過去にこの型の欠陥が 10 件見つかっている（下記セクション B）。
    - なぜ危険か: 新機能を追加するたびに同型の欠陥（機能はあるが届かない）が再発しうる。
-     実際に commit b0e7da3〜72a79e2 の間、毎回のように発見された。
+     実際に commit b0e7da3〜4abeaa9 の間、毎回のように発見された。
    - 推奨アクション: セクション D のスキャン手法を `verify.py` の不変条件にする。
      module-private helper の false positive を除外リストで管理する保守コストと相談。
+
+12. **[A-12] `audit()` の propagation phase が SSA の実 DAG 構造を捨てて線形化している**
+   - 何が無いか: `python/tsugi/ir.py` の `Op` は `operands: list[Value]` / `result: Value` を
+     持ち、SSA 参照から本物のデータフロー DAG（フォーク・マージ）を再構築できる情報を
+     既に保持している。だが `audit.py:_graph_ops()` は `module.kernels[i].body` を
+     単純に線形走査するだけで、この operand/result 参照を一切見ない——結果として
+     `propagation.propagate_dag()`（フォーク→マージを表現できる一般化版・
+     `merge_divergence` で相関/非相関の合成則も実装済み）は `tests/correctness/test_propagation.py`
+     と `verify.py` からしか呼ばれず、`audit()` は常に線形版 `propagate()` しか使わない。
+   - なぜ危険か: 実際の transformer は multi-head attention（並列ヘッドの fork→merge）や
+     residual 接続（恒等路 + 変換路の merge）という非線形 DAG 構造を持つ。線形化は
+     これらの構造を無視し、発散予測を歪める（fork/merge の合成則は correlated/非correlated
+     で大きく異なる——`propagate_dag` のテストが実測発散を正しく上界することを既に検証済み）。
+     `check_softmax_input`/`binary_margin` の facade 未接続と違い、これは「関数を呼ぶだけ」
+     では直らない——SSA グラフから fork/merge ノードリストを再構築するアルゴリズムの新規実装が要る。
+   - 推奨アクション: `_graph_ops` を SSA use-def グラフ対応に書き換える:
+     (1) 各 `Op.result` を消費する後続 op を数え、2 つ以上あればそこが fork 点、
+     (2) 各 `Op.operands` が異なる祖先系列から来ていればそこが merge 点（residual add 等）、
+     (3) 得られたネストしたノードリストを `propagate_dag(nodes, correlated=...)` に渡す。
+     既存の K ループ dot 集約ロジック（`_graph_ops` の `run_dots` 処理）との整合が要る。
+     スコープが大きいため、他の facade 未接続修正（1 関数呼び出しの追加）と違って
+     設計込みの複数ラウンドの作業になる見込み。
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
@@ -158,6 +182,7 @@ facade から実際に呼ばれるかを必ず確認する）。
 | `equivalence.classify_divergence` | レイアウト不一致（転置・値は正しい）と真の数値発散の判別が未接続で、診断の手がかりを捨てていた | 72a79e2 |
 | `rollout.divergence_step_quantile` | 完全デッドコード（テストからも呼ばれない）だった。削除でなく接続を選択：初回発散の中央値は平均より系統的に小さく（幾何分布の右裾）、平均だけの報告は楽観バイアス | 2db24d6 |
 | `envelope.check_outlier_features`/`check_softmax_input` | `audit_runtime()` の envelope phase が `check_tensor()` しか呼ばず、outlier feature（massive activations）検出と fp16 softmax exp-overflow 検査が実行時監査に一切届いていなかった | 067f5d5 |
+| `decision.binary_margin` | `compare_decisions`（分類）は near-tie 健全性チェック（フリップは決定境界近傍に集中すべき）を持つが、`compare_task(binary)` にはこの診断ロジック自体が丸ごと存在しなかった。単なる関数未接続でなく機能の構造的非対称 | 4abeaa9 |
 
 同系統の「点推定の過信」も 5 箇所で解消済み: `rollout`（平均に加え中央値を報告・2db24d6）、
 `calibration.check_systematic`（bias±ブートストラップ標準誤差の上側限界で判定・7057d6c）、
