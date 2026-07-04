@@ -313,7 +313,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
 
     from .calibration import check_systematic
     from .decision import compare_decisions, compare_task
-    from .envelope import check_tensor
+    from .envelope import check_outlier_features, check_softmax_input, check_tensor
     from .equivalence import DV_LAYOUT, classify_divergence, compare_gemm
     from .nondeterminism import attribute
 
@@ -321,7 +321,11 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     af = np.asarray(a_out, dtype=np.float64)
     bf = np.asarray(b_out, dtype=np.float64)
 
-    # envelope: 本番入力（両ベンダー出力）が認証前提内か
+    # envelope: 本番入力（両ベンダー出力）が認証前提内か。
+    # check_softmax_input（fp16 exp-overflow）・check_outlier_features（単一 scale 仮定の
+    # 破綻）は実装・テスト済みだったが従来この phase から呼ばれていなかった
+    # （FEATURE-AUDIT.md A-1 と同型の facade 未接続。envelope.check_tensor だけが
+    # 呼ばれ、同モジュールの他の検査が製品経路に届いていなかった）。
     if env is not None:
         ep = AuditPhase("envelope 実行時エンベロープ", "decided", Risk.OK)
         for name, x in (("A", af), ("B", bf)):
@@ -329,6 +333,16 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             ep.max_risk = max(ep.max_risk, r.max_risk)
             ep.lines.append(f"{name}: {'IN' if r.in_envelope else 'OUT'}-envelope "
                             f"(max_risk={r.max_risk.name})")
+            outlier = check_outlier_features(x)
+            if outlier.findings:   # .ok は BLOCK 未満なら True なので WARN を見逃す・findings で判定
+                ep.max_risk = max(ep.max_risk, outlier.max_risk)
+                ep.lines.append(f"{name}: {outlier.to_text()}")
+        if logits_a is not None and logits_b is not None:
+            for name, lg in (("A", logits_a), ("B", logits_b)):
+                sm = check_softmax_input(np.asarray(lg), env)
+                if sm.findings:
+                    ep.max_risk = max(ep.max_risk, sm.max_risk)
+                    ep.lines.append(f"{name} logits: {sm.to_text()}")
         ad.phases.append(ep)
 
     # equivalence（ノイズ床を織り込んだ 3 状態）+ systematic（相補・偽OK 対策）

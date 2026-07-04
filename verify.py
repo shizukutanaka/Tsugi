@@ -896,6 +896,27 @@ def main() -> int:
     check("compare_task(ranking) with 1D single-query input applies no Wilson widening",
           _repr50.flip_rate_ub == _repr50.flip_rate)
 
+    # 51. audit_runtime の envelope phase が check_outlier_features・check_softmax_input を
+    # 接続する（同型スキャンで発見: envelope.check_tensor だけが呼ばれ、同モジュールの
+    # outlier feature 検出・softmax exp-overflow 検査が実行時監査に届いていなかった）。
+    from tsugi.envelope import certify_gemm as _cg51
+    _rng51 = np.random.default_rng(0)
+    _a51 = _rng51.standard_normal((32, 256)).astype(np.float32) * 0.1
+    _a51[:, 5] *= 20   # outlier channel（check_tensor 単独では IN-envelope のまま）
+    _env51 = _cg51(K=256, dtype="float32", scale=1.0)
+    _ad51 = audit_runtime(_a51, _a51.copy(), K=256, env=_env51, noise_floor=1e-6)
+    _ep51 = next(p for p in _ad51.phases if p.name.startswith("envelope"))
+    check("audit_runtime envelope phase surfaces outlier features (check_outlier_features wired)",
+          _ep51.max_risk == portability.Risk.WARN and "outlier" in _ep51.to_text())
+    _a51b = _rng51.standard_normal((16, 16)).astype(np.float32)
+    _logits51 = np.array([[0.0, 12.5, 3.0]], dtype=np.float32)   # > ln(65504)=11.09 fp16
+    _env51b = _cg51(K=128, dtype="float16", scale=1.0)
+    _ad51b = audit_runtime(_a51b, _a51b.copy(), K=128, env=_env51b, noise_floor=1e-4,
+                           logits_a=_logits51, logits_b=_logits51)
+    _ep51b = next(p for p in _ad51b.phases if p.name.startswith("envelope"))
+    check("audit_runtime envelope phase surfaces fp16 softmax exp-overflow (check_softmax_input wired)",
+          _ep51b.max_risk == portability.Risk.BLOCK and "softmax" in _ep51b.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

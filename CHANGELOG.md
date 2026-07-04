@@ -5,6 +5,29 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit_runtime の envelope phase — check_outlier_features・check_softmax_input を接続（第26回）**:
+  A-1（compare_task）の修正作業中に行った関数参照スキャンの副産物として発見。
+  `envelope.check_outlier_features()`（outlier feature／massive activations による
+  単一 scale 仮定の破綻検出）と `envelope.check_softmax_input()`（fp16 softmax の
+  exp-overflow 検出）はどちらも実装・テスト済みだったが、`audit_runtime()` の
+  envelope phase は `check_tensor()` しか呼んでおらず、同モジュールの他の実行時検査が
+  一切製品経路に届いていなかった（第11-25回で見つけた「機能は実装済みだが facade
+  未接続」と同型の欠陥）。
+
+  - envelope phase（`env is not None` の時）で両ベンダーの出力に `check_outlier_features`
+    を追加実行。outlier channel（LLM の massive activations）が単一 global scale 仮定を
+    破っている場合に WARN を verdict に反映する。
+  - `logits_a`/`logits_b` も併せて渡された場合、両者に `check_softmax_input` を実行し、
+    fp16 の exp-overflow（`ln(65504)≈11.09` 超）を BLOCK として反映する。
+  - **実装中に見つけた自己バグ**: `FindingReport.ok` は `max_risk < BLOCK` を返すため
+    `if not r.ok:` で判定すると WARN 相当の findings（outlier 検出等）が黙って
+    落ちる。`if r.findings:`（非空判定）に修正して初めて正しく動作した——「過信した
+    条件分岐で warn を握りつぶす」という、このプロジェクトが繰り返し警戒してきた
+    問題を実装中に自分でも踏んで直した。
+  - `env`/`logits` 未指定時は従来通りこれらの検査は現れない（後方互換）。
+  - tests: `test_audit_runtime_envelope_wires_outlier_and_softmax_checks`
+  - verify.py: 131→133 不変条件（51番）
+
 - **decision.compare_task — 非分類タスクも Wilson 上側限界(flip_rate_ub)を使用（第25回）**:
   `docs/FEATURE-AUDIT.md` の P0 項目 A-1 を解消。`compare_decisions()`（分類・argmax）は
   commit 39ce477 で観測 flip_rate の点推定でなく `flip_rate_ub`（Wilson 上側限界・

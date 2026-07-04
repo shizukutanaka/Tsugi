@@ -317,6 +317,41 @@ def test_audit_runtime_passes_equivalent_within_noise():
     assert {"envelope", "equivalence"} <= names
 
 
+def test_audit_runtime_envelope_wires_outlier_and_softmax_checks():
+    """audit_runtime の envelope phase が check_outlier_features・check_softmax_input を
+    接続する（FEATURE-AUDIT.md 由来の追加調査で発見・修正）。
+
+    両関数は実装・テスト済みだったが、envelope phase は check_tensor しか呼んでおらず、
+    outlier feature（massive activations・単一 scale 仮定の破綻）や softmax の
+    fp16 exp-overflow が実行時監査に一切反映されていなかった。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((32, 256)).astype(np.float32) * 0.1
+    a[:, 5] *= 20   # outlier channel（check_tensor 単独では IN-envelope のまま）
+    b = a.copy()
+    env = certify_gemm(K=256, dtype="float32", scale=1.0)
+
+    ad = audit_runtime(a, b, K=256, env=env, noise_floor=1e-6)
+    ep = next(p for p in ad.phases if p.name.startswith("envelope"))
+    assert ep.max_risk == Risk.WARN, f"outlier feature が envelope phase に反映されていない: {ep.to_text()}"
+    assert "outlier" in ep.to_text()
+
+    # softmax: fp16 exp-overflow な logit を渡すと BLOCK になる
+    a2 = rng.standard_normal((16, 16)).astype(np.float32)
+    logits = np.array([[0.0, 12.5, 3.0]], dtype=np.float32)   # > ln(65504)=11.09
+    env2 = certify_gemm(K=128, dtype="float16", scale=1.0)
+    ad2 = audit_runtime(a2, a2.copy(), K=128, env=env2, noise_floor=1e-4,
+                        logits_a=logits, logits_b=logits)
+    ep2 = next(p for p in ad2.phases if p.name.startswith("envelope"))
+    assert ep2.max_risk == Risk.BLOCK, f"softmax exp-overflow が envelope phase に反映されていない: {ep2.to_text()}"
+    assert "softmax" in ep2.to_text()
+
+    # env はあるが logits を渡さない場合は softmax チェックをスキップする（後方互換）
+    ad3 = audit_runtime(a2, a2.copy(), K=128, env=env2, noise_floor=1e-4)
+    ep3 = next(p for p in ad3.phases if p.name.startswith("envelope"))
+    assert "softmax" not in ep3.to_text()
+
+
 def test_audit_runtime_blocks_real_divergence():
     # 5% 系統スケール誤差 → BLOCK（max_abs か系統バイアスのいずれかが捕捉）
     rng = np.random.default_rng(0)
@@ -536,6 +571,7 @@ def main() -> int:
         test_audit_runtime_layer_diagnosis_pinpoints_divergent_layer,
         test_audit_runtime_worst_case_search_finds_envelope_counterexample,
         test_audit_runtime_passes_equivalent_within_noise,
+        test_audit_runtime_envelope_wires_outlier_and_softmax_checks,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
