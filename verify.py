@@ -917,6 +917,21 @@ def main() -> int:
     check("audit_runtime envelope phase surfaces fp16 softmax exp-overflow (check_softmax_input wired)",
           _ep51b.max_risk == portability.Risk.BLOCK and "softmax" in _ep51b.to_text())
 
+    # 52. compare_task(binary) が compare_decisions と同型の near-tie 健全性チェックを持つ
+    # （binary_margin は実装・テスト済みだったがこの診断には未接続だった）。
+    _a52 = np.concatenate([np.full(500, 0.501), np.full(500, 0.95)])
+    _b52_ok = _a52.copy()
+    _b52_ok[:500] = 0.499   # 閾値付近のみフリップ（正常系）
+    _rep52_ok = _ct50(_a52, _b52_ok, task="binary", flip_budget=0.6)
+    check("compare_task(binary) does not warn when flips concentrate in near-tie tail (no false alarm)",
+          not any("near-tie" in f.message for f in _rep52_ok.findings))
+    _b52_bad = _a52.copy()
+    _b52_bad[500:] = 0.05   # 確信領域までフリップ（異常系）
+    _rep52_bad = _ct50(_a52, _b52_bad, task="binary", flip_budget=0.6)
+    check("compare_task(binary) warns when flips reach the confident region (binary_margin wired)",
+          any("near-tie" in f.message for f in _rep52_bad.findings)
+          and _rep52_bad.flipped_margin_median > _rep52_bad.overall_margin_median)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

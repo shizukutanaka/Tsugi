@@ -5,6 +5,26 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **decision.compare_task(binary) — compare_decisions と同型の near-tie 健全性チェックを接続（第27回）**:
+  第26回の envelope phase の修正作業と同じ関数参照スキャンから発見。
+  `compare_decisions()`（分類）はフリップが決定境界近傍（低マージン・near-tie）に
+  集中するはずという健全性チェックを持ち、確信領域（高マージン）まで巻き込むフリップは
+  系統的発散の兆候として WARN する。`decision.binary_margin()`（binary タスク版の margin）は
+  実装・テスト済みだったが、この診断ロジック自体が `compare_task()` に一切実装されて
+  いなかった——単なる関数未接続でなく、`compare_decisions` にある診断能力そのものが
+  `compare_task` 側には存在しない構造的な非対称。
+
+  - `TaskReport` に `flipped_margin_median`/`overall_margin_median` フィールドを追加
+    （`DecisionReport` と同名・同役割）。
+  - `compare_task(task="binary")` で `binary_margin()` を使いフリップサンプルと全体の
+    マージン中央値を計算し、フリップ中央値が全体中央値の `_NEAR_TIE_MARGIN_FRAC`（0.5）倍を
+    超えたら WARN（`compare_decisions` と同じ閾値定数を再利用）。
+  - regression/ranking はマージンの概念が確立していないため対象外（0.0 のまま・将来課題）。
+  - 実証: 閾値付近のみがフリップする正常系では警告なし、確信領域（0.95→0.05 等）まで
+    フリップする異常系では正しく WARN が立つことを両方確認。
+  - tests: `test_compare_task_binary_warns_when_flips_not_near_tie`
+  - verify.py: 133→135 不変条件（52番）
+
 - **audit_runtime の envelope phase — check_outlier_features・check_softmax_input を接続（第26回）**:
   A-1（compare_task）の修正作業中に行った関数参照スキャンの副産物として発見。
   `envelope.check_outlier_features()`（outlier feature／massive activations による

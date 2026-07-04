@@ -262,11 +262,14 @@ class TaskReport(FindingReport):
     k: int = 10                  # ranking のみ
     atol: float = 0.0            # regression のみ
     rtol: float = 1e-3           # regression のみ
+    flipped_margin_median: float = 0.0   # binary のみ（near-tie 健全性チェック用）
+    overall_margin_median: float = 0.0   # binary のみ
 
     def to_text(self) -> str:  # type: ignore[override]
         detail = ""
         if self.task == "binary":
-            detail = f", threshold={self.threshold}"
+            detail = (f", threshold={self.threshold}, flipped-margin "
+                      f"{self.flipped_margin_median:.3g} vs overall {self.overall_margin_median:.3g}")
         elif self.task == "ranking":
             detail = f", k={self.k}"
         elif self.task == "regression":
@@ -301,15 +304,28 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
     複数試行から推定した比率ではないため Wilson widening を適用しない
     （flip_rate_ub = flip_rate のまま）。ranking の 2D 入力（クエリのバッチ）は
     クエリ数（a_.shape[0]）を試行数として widening する。
+
+    binary タスクは compare_decisions と同型の near-tie 健全性チェックも行う: フリップは
+    決定境界近傍（低マージン）に集中するはずで、確信領域（高マージン）まで巻き込む
+    フリップは系統的発散の兆候（binary_margin は実装・テスト済みだったが従来この
+    チェックには使われていなかった——compare_decisions にあって compare_task に無い
+    診断だった）。
     """
     from .rollout import flip_rate_upper_bound
     a_ = np.asarray(a, dtype=np.float64)
     b_ = np.asarray(b, dtype=np.float64)
     n = int(a_.ravel().size)
+    flipped_margin_median = 0.0
+    overall_margin_median = 0.0
     if task == "regression":
         fr = regression_flip_rate(a_, b_, atol=atol, rtol=rtol)
     elif task == "binary":
         fr = binary_flip_rate(a_, b_, threshold=threshold)
+        bm = binary_margin(a_, threshold=threshold)
+        bflips = (a_.ravel() >= threshold) != (b_.ravel() >= threshold)
+        fm = bm[bflips]
+        flipped_margin_median = float(np.median(fm)) if fm.size else 0.0
+        overall_margin_median = float(np.median(bm)) if bm.size else 0.0
     elif task == "ranking":
         fr = ranking_flip_rate(a_, b_, k=k)
     else:
@@ -322,7 +338,9 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
                                        confidence=confidence)
                  if n_trials else fr)
     rep = TaskReport(task=task, flip_rate=fr, flip_rate_ub=fr_ub, n=n,
-                     threshold=threshold, k=k, atol=atol, rtol=rtol)
+                     threshold=threshold, k=k, atol=atol, rtol=rtol,
+                     flipped_margin_median=flipped_margin_median,
+                     overall_margin_median=overall_margin_median)
     if fr_ub > flip_budget:
         risk = Risk.BLOCK if fr_ub > max(10 * flip_budget, 0.01) else Risk.WARN
         rep.add(risk, "task",
@@ -330,6 +348,11 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
                 f"> 予算 {flip_budget * 100:.2f}% → ベンダー間でユーザーに見える判断が変わる")
     elif fr > 0.0:
         rep.add(Risk.INFO, "task", f"{task} フリップ {fr * 100:.2f}%（予算内）")
+    if (task == "binary" and overall_margin_median > 0
+            and flipped_margin_median > _NEAR_TIE_MARGIN_FRAC * overall_margin_median):
+        rep.add(Risk.WARN, "task",
+                "binary フリップが near-tie 裾に集中していない → 確信予測まで変化・"
+                "系統的発散を疑う")
     return rep
 
 

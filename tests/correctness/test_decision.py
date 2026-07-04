@@ -377,6 +377,31 @@ def test_compare_task_binary_ok_for_large_margin():
     assert rep.max_risk.value == 0   # OK
 
 
+def test_compare_task_binary_warns_when_flips_not_near_tie():
+    """compare_task(task="binary") が compare_decisions と同型の near-tie 健全性
+    チェックを持つ（binary_margin は実装・テスト済みだったがこの診断には未接続だった）。
+
+    フリップは決定境界近傍（低マージン）に集中するはず。確信領域（高マージン）まで
+    巻き込むフリップは系統的発散の兆候であり、near-tie の裾だけがフリップする
+    正常系と区別して WARN すべき。
+    """
+    # near-tie のみがフリップ（正常系）: WARN が出ない
+    a_neartie = np.concatenate([np.full(500, 0.501), np.full(500, 0.95)])
+    b_neartie = a_neartie.copy()
+    b_neartie[:500] = 0.499   # 閾値付近の半分だけが跨ぐ
+    rep_ok = compare_task(a_neartie, b_neartie, task="binary", flip_budget=0.6)
+    assert not any("near-tie" in f.message for f in rep_ok.findings)
+
+    # 確信領域までフリップ（異常系）: WARN が出る
+    a_confident = a_neartie.copy()
+    b_confident = a_confident.copy()
+    b_confident[500:] = 0.05   # 確信領域（0.95）が 0.05 まで動く
+    rep_warn = compare_task(a_confident, b_confident, task="binary", flip_budget=0.6)
+    assert any("near-tie" in f.message for f in rep_warn.findings), (
+        f"確信領域までのフリップを見逃した: {rep_warn.to_text()}")
+    assert rep_warn.flipped_margin_median > rep_warn.overall_margin_median
+
+
 def test_compare_task_unknown_raises():
     # 未知タスク種別は ValueError を投げる（静かに誤計算しない）
     try:
@@ -425,6 +450,7 @@ def main() -> int:
         test_compare_task_uses_flip_rate_ub_for_small_batch,
         test_compare_task_ranking_single_query_no_wilson_widening,
         test_compare_task_binary_ok_for_large_margin,
+        test_compare_task_binary_warns_when_flips_not_near_tie,
         test_compare_task_unknown_raises,
     ]
     for t in tests:
