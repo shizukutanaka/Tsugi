@@ -5,6 +5,34 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **decision.compare_task — 非分類タスクも Wilson 上側限界(flip_rate_ub)を使用（第25回）**:
+  `docs/FEATURE-AUDIT.md` の P0 項目 A-1 を解消。`compare_decisions()`（分類・argmax）は
+  commit 39ce477 で観測 flip_rate の点推定でなく `flip_rate_ub`（Wilson 上側限界・
+  `rollout.flip_rate_upper_bound` を再利用）で予算判定するよう修正済みだったが、
+  同モジュールの非分類版 `compare_task()`（regression/binary/ranking）だけが
+  取り残されていた。
+
+  - `TaskReport` に `flip_rate_ub: float` フィールドを追加。`compare_task(..., confidence=0.95)`
+    の BLOCK/WARN 判定を観測 `fr`（点推定）から `fr_ub`（Wilson 上側限界）に切り替え。
+  - **ranking タスクの特殊扱い**: `ranking_flip_rate()` は 1D 入力（単一クエリ）だと
+    複数試行の推定比率でなく *決定的* な 0.0/1.0（集合が一致するか否かの厳密な結果）を
+    返す。サンプリングされた推定値でないものに信頼区間を付けるのは統計的に無意味なため、
+    この場合は widening を適用しない（`flip_rate_ub = flip_rate`）。2D バッチ入力
+    （複数クエリ）はクエリ数（`a_.shape[0]`）を試行数として widening する
+    （`a_.ravel().size` ではない——これは要素数であり試行数でない）。
+  - **既存テストの是正**: `test_compare_task_regression_blocks_large_value_drift` は
+    `flip_budget` を渡さない（既定 `0.0` = 「未来永劫ゼロフリップ」の意）まま厳密に
+    同一の入力（`a`, `a.copy()`）で OK を検証していた。有限標本からは「今後も永久に
+    ゼロ」は証明不能（Wilson 上限は n=1000 でも厳密な 0 を返さない）ため、他のテストと
+    同じ非ゼロ budget（`0.01`）を渡すよう是正。これは緩和でなく、このプロジェクトが
+    一貫して採ってきた「点推定を信じない」設計判断をテストに反映しただけ。
+  - 実証: n=30・観測フリップ 0 件（regression）で旧ロジックなら OK だったのが、
+    新ロジックで正しく WARN 以上になる（rule of three）。大 N の既存テストは
+    無回帰で通過。1D ranking では widening が適用されないことも固定。
+  - tests: `test_compare_task_uses_flip_rate_ub_for_small_batch`・
+    `test_compare_task_ranking_single_query_no_wilson_widening`
+  - verify.py: 128→131 不変条件（50番）
+
 - **docs/FEATURE-AUDIT.md — 過不足一覧表とドキュメント接続（第24回）**:
   第23回で作成した台帳の内容は正確だったが、「リスト化」の核心である一覧性と、
   README/VERIFICATION からの入口リンクが欠けていた（ドキュメント版の facade 未接続）。

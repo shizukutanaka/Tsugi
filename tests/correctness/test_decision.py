@@ -299,7 +299,73 @@ def test_compare_task_regression_blocks_large_value_drift():
     rep = compare_task(a, b, task="regression", flip_budget=0.05, rtol=0.01)
     assert rep.flip_rate > 0.0
     assert rep.max_risk.value >= 2   # WARN or BLOCK
-    assert compare_task(a, a.copy(), task="regression", rtol=0.01).max_risk.value == 0
+    # flip_budget=0.01（非ゼロ・他のテストと同じ規模）: n=1000 で観測フリップ 0 件なら
+    # Wilson 上限（≈0.27%）も budget を十分下回り OK。flip_budget=0.0（「未来永劫ゼロ
+    # フリップ」の意）は fail-safe の下では有限標本から証明不能なので使わない
+    # （compare_decisions と同型の判断・第25回相当の修正）。
+    assert compare_task(a, a.copy(), task="regression", flip_budget=0.01, rtol=0.01).max_risk.value == 0
+
+
+def test_compare_task_uses_flip_rate_ub_for_small_batch():
+    """compare_task(task="regression") は観測 flip_rate（点推定）でなく flip_rate_ub
+    （Wilson 上側限界）で予算判定する（A-1 の修正・compare_decisions と同型）。
+
+    小さい評価バッチ（n=30）で全要素が許容内（観測フリップ 0 件）でも、母集団の真の
+    フリップ率が予算を超えている可能性は排除できない。0 件観測を「フリップ率 0%」と
+    過信するのは偽OK の温床（rule of three）。
+    """
+    rng = np.random.default_rng(0)
+    n = 30
+    a = rng.standard_normal(n)
+    b = a.copy()   # 全要素が許容内 → 観測フリップは厳密に 0 件
+    budget = 0.03  # 3%（n=30 では rule-of-three 的に上限が budget を遥かに超える）
+
+    rep = compare_task(a, b, task="regression", flip_budget=budget, rtol=0.01)
+    assert rep.flip_rate == 0.0, "観測フリップ 0 件が前提（テストケース不成立）"
+    assert rep.flip_rate_ub > budget, (
+        f"小標本の不確実性が上側限界に反映されていない: flip_rate_ub={rep.flip_rate_ub}")
+    assert rep.max_risk.value >= 2, (
+        f"観測フリップ 0 件を過信して予算内(OK)のまま（偽OK 復活）: {rep.to_text()}")
+
+    # n が大きければ flip_rate_ub は点推定に近づき、既存挙動（多数フリップで BLOCK）は不変
+    rng2 = np.random.default_rng(2)
+    a_large = rng2.standard_normal(1000).astype(np.float32)
+    b_large = a_large + 5.0 * rng2.standard_normal(1000).astype(np.float32)
+    rep_large = compare_task(a_large, b_large, task="regression", flip_budget=0.05, rtol=0.01)
+    assert rep_large.flip_rate > 0.0
+    assert rep_large.flip_rate_ub / rep_large.flip_rate < 1.2
+    assert rep_large.max_risk.value >= 2
+
+
+def test_compare_task_ranking_single_query_no_wilson_widening():
+    """ranking タスクの 1D 入力（単一クエリ）は決定的な結果ゆえ Wilson widening を
+    適用しない（flip_rate_ub == flip_rate）。複数試行から推定した比率ではなく、
+    1 回の厳密な集合比較結果だから信頼区間を付けるのは統計的に無意味。
+
+    2D バッチ入力（複数クエリ）はクエリ数を試行数として widening が適用されることも
+    併せて確認する（決定的でなく複数試行の平均比率だから）。
+    """
+    rng = np.random.default_rng(1)
+    docs = 100
+    scores_a = rng.standard_normal(docs)
+    scores_b_close = scores_a + 1e-9 * rng.standard_normal(docs)   # top-k 不変
+    scores_b_far = rng.standard_normal(docs)                        # top-k ほぼ確実に変わる
+
+    rep_close = compare_task(scores_a, scores_b_close, task="ranking", k=10)
+    assert rep_close.flip_rate == 0.0
+    assert rep_close.flip_rate_ub == rep_close.flip_rate, "1D ranking で widening が適用されている"
+
+    rep_far = compare_task(scores_a, scores_b_far, task="ranking", k=10, flip_budget=0.0)
+    assert rep_far.flip_rate == 1.0
+    assert rep_far.flip_rate_ub == 1.0
+    assert rep_far.max_risk.value >= 2
+
+    # 2D バッチ入力（クエリ 5 件）はクエリ数を試行数として widening が働く
+    A = np.vstack([scores_a] * 5)
+    B = np.vstack([scores_b_close] * 5)
+    rep_batch = compare_task(A, B, task="ranking", k=10)
+    assert rep_batch.flip_rate == 0.0
+    assert rep_batch.flip_rate_ub > 0.0, "2D ranking で widening が働いていない（n_trials 誤り）"
 
 
 def test_compare_task_binary_ok_for_large_margin():
@@ -356,6 +422,8 @@ def main() -> int:
         test_binary_flip_rate_detects_threshold_crossing,
         test_ranking_flip_rate_measures_top_k_set_change,
         test_compare_task_regression_blocks_large_value_drift,
+        test_compare_task_uses_flip_rate_ub_for_small_batch,
+        test_compare_task_ranking_single_query_no_wilson_widening,
         test_compare_task_binary_ok_for_large_margin,
         test_compare_task_unknown_raises,
     ]

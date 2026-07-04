@@ -256,6 +256,7 @@ class TaskReport(FindingReport):
 
     task: str = "regression"     # "regression" / "binary" / "ranking"
     flip_rate: float = 0.0
+    flip_rate_ub: float = 0.0
     n: int = 0
     threshold: float = 0.5       # binary のみ
     k: int = 10                  # ranking のみ
@@ -271,14 +272,16 @@ class TaskReport(FindingReport):
         elif self.task == "regression":
             detail = f", atol={self.atol:.1e}, rtol={self.rtol:.1e}"
         return super().to_text(
-            header=(f"task={self.task} flip_rate={self.flip_rate * 100:.2f}% "
+            header=(f"task={self.task} flip_rate={self.flip_rate * 100:.2f}%"
+                    f"(≤{self.flip_rate_ub * 100:.2f}% Wilson) "
                     f"(n={self.n}{detail})"),
             empty=f"(no {self.task} decision flips — task-equivalent)")
 
 
 def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
                  flip_budget: float = 0.0, threshold: float = 0.5, k: int = 10,
-                 atol: float = 0.0, rtol: float = 1e-3) -> TaskReport:
+                 atol: float = 0.0, rtol: float = 1e-3,
+                 confidence: float = 0.95) -> TaskReport:
     """非分類タスク（回帰/バイナリ/ランキング）のタスクレベル等価判定。
 
     task: "regression"（値の許容乖離）/ "binary"（sigmoid+threshold）/
@@ -289,7 +292,17 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
       - regression モデル（価格/物理量/埋め込み距離）
       - バイナリ分類（医療診断/スパム/異常検知）
       - 検索・推薦（上位 k 件が変わるか）
+
+    fail-safe: 予算判定には観測 flip_rate（点推定）でなく flip_rate_ub（Wilson 上側限界・
+    rollout.flip_rate_upper_bound を再利用）を使う。compare_decisions と同型の盲点
+    （小標本での 0 件観測を「フリップ率 0%」と過信する偽OK）を同様に埋める。
+
+    ranking の 1D 入力（単一クエリ）は集合一致/不一致の *決定的* な 0.0/1.0 を返し、
+    複数試行から推定した比率ではないため Wilson widening を適用しない
+    （flip_rate_ub = flip_rate のまま）。ranking の 2D 入力（クエリのバッチ）は
+    クエリ数（a_.shape[0]）を試行数として widening する。
     """
+    from .rollout import flip_rate_upper_bound
     a_ = np.asarray(a, dtype=np.float64)
     b_ = np.asarray(b, dtype=np.float64)
     n = int(a_.ravel().size)
@@ -301,13 +314,20 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
         fr = ranking_flip_rate(a_, b_, k=k)
     else:
         raise ValueError(f"unknown task: {task!r} (regression/binary/ranking)")
-    rep = TaskReport(task=task, flip_rate=fr, n=n,
+    if task == "ranking" and a_.ndim == 1:
+        fr_ub = fr    # 決定的な単一比較結果（推定値でない）ゆえ信頼区間は無意味
+    else:
+        n_trials = int(a_.shape[0]) if task == "ranking" else n
+        fr_ub = (flip_rate_upper_bound(int(round(fr * n_trials)), n_trials,
+                                       confidence=confidence)
+                 if n_trials else fr)
+    rep = TaskReport(task=task, flip_rate=fr, flip_rate_ub=fr_ub, n=n,
                      threshold=threshold, k=k, atol=atol, rtol=rtol)
-    if fr > flip_budget:
-        risk = Risk.BLOCK if fr > max(10 * flip_budget, 0.01) else Risk.WARN
+    if fr_ub > flip_budget:
+        risk = Risk.BLOCK if fr_ub > max(10 * flip_budget, 0.01) else Risk.WARN
         rep.add(risk, "task",
-                f"{task} フリップ率 {fr * 100:.2f}% > 予算 {flip_budget * 100:.2f}%"
-                " → ベンダー間でユーザーに見える判断が変わる")
+                f"{task} フリップ率 {fr * 100:.2f}%（上側限界 {fr_ub * 100:.2f}%）"
+                f"> 予算 {flip_budget * 100:.2f}% → ベンダー間でユーザーに見える判断が変わる")
     elif fr > 0.0:
         rep.add(Risk.INFO, "task", f"{task} フリップ {fr * 100:.2f}%（予算内）")
     return rep

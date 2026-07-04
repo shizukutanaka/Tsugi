@@ -875,6 +875,27 @@ def main() -> int:
     check("compare_decisions does not mistake zero observed flips for in-budget (fail-safe, no false-OK)",
           _rep49.flip_rate_ub > 0.03 and _rep49.max_risk >= portability.Risk.WARN)
 
+    # 50. compare_task(regression/binary/ranking) が同様に flip_rate_ub(Wilson 上側限界)で
+    # 予算判定する（FEATURE-AUDIT.md A-1: compare_decisions のみ修正済みで非分類 3 タスクが
+    # 取り残されていた欠陥の解消）。ranking の 1D 単一クエリは決定的結果ゆえ widening 対象外。
+    from tsugi.decision import compare_task as _ct50
+    _rng50 = np.random.default_rng(0)
+    _n50 = 30
+    _a50 = _rng50.standard_normal(_n50)
+    _b50 = _a50.copy()   # 全要素が許容内 → 観測フリップは厳密に 0 件
+    _rep50 = _ct50(_a50, _b50, task="regression", flip_budget=0.03, rtol=0.01)
+    check("compare_task(regression) has zero observed flips (test setup)",
+          _rep50.flip_rate == 0.0)
+    check("compare_task(regression) does not mistake zero observed flips for in-budget (no false-OK)",
+          _rep50.flip_rate_ub > 0.03 and _rep50.max_risk >= portability.Risk.WARN)
+    # ranking の 1D（単一クエリ）は決定的結果ゆえ widening 無し（flip_rate_ub == flip_rate）
+    _rng50b = np.random.default_rng(1)
+    _sa50 = _rng50b.standard_normal(100)
+    _sb50 = _sa50 + 1e-9 * _rng50b.standard_normal(100)
+    _repr50 = _ct50(_sa50, _sb50, task="ranking", k=10)
+    check("compare_task(ranking) with 1D single-query input applies no Wilson widening",
+          _repr50.flip_rate_ub == _repr50.flip_rate)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
