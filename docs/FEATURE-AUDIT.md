@@ -51,6 +51,7 @@
 | B-1g | 過剰(接続済) | — | `equivalence.classify_divergence` | 解消済み(72a79e2) | LAYOUT／真の発散の判別が未接続だった |
 | B-1h | 過剰(接続済) | — | `rollout.divergence_step_quantile` | 解消済み(2db24d6) | 完全デッドコードだったが統計的価値があり接続を選択 |
 | B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 5 箇所（A-1 含む） | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477/6e044f3) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
+| B-1j | 過剰(接続済) | — | `envelope.check_outlier_features`/`check_softmax_input` | 解消済み(067f5d5) | envelope phase が check_tensor しか呼ばず、outlier feature 検出・softmax exp-overflow 検査が未接続だった |
 | B-2 | 過剰(意図的) | — | メタツール群（`calibration.make_corpus` 等 6 件） | 維持（正当） | 検証器の校正用・テスト専用・CLI 等で facade 非接続が正しい |
 | B-3 | 削除候補 | — | （該当なし） | ゼロ件 | 現時点で真のデッドコードは無い（B-1h が唯一の候補で接続済み） |
 
@@ -156,11 +157,12 @@ facade から実際に呼ばれるかを必ず確認する）。
 | `worstcase.analyze_worst_case` | 唯一の能動的最悪ケース探索が未接続で、検証がすべて受動的サンプル比較だった | f7bdec4 |
 | `equivalence.classify_divergence` | レイアウト不一致（転置・値は正しい）と真の数値発散の判別が未接続で、診断の手がかりを捨てていた | 72a79e2 |
 | `rollout.divergence_step_quantile` | 完全デッドコード（テストからも呼ばれない）だった。削除でなく接続を選択：初回発散の中央値は平均より系統的に小さく（幾何分布の右裾）、平均だけの報告は楽観バイアス | 2db24d6 |
+| `envelope.check_outlier_features`/`check_softmax_input` | `audit_runtime()` の envelope phase が `check_tensor()` しか呼ばず、outlier feature（massive activations）検出と fp16 softmax exp-overflow 検査が実行時監査に一切届いていなかった | 067f5d5 |
 
-同系統の「点推定の過信」も 4 箇所で解消済み: `rollout`（平均に加え中央値を報告・2db24d6）、
+同系統の「点推定の過信」も 5 箇所で解消済み: `rollout`（平均に加え中央値を報告・2db24d6）、
 `calibration.check_systematic`（bias±ブートストラップ標準誤差の上側限界で判定・7057d6c）、
 `decision.predicted_flip_bound`（Wilson 上側限界・3a00c5b）、
-`decision.compare_decisions`（同・39ce477）。
+`decision.compare_decisions`（同・39ce477）、`decision.compare_task`（同・6e044f3）。
 
 ### B-2. 意図的に facade 非接続（正当。削除も接続も不要）
 
