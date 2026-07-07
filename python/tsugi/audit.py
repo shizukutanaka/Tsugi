@@ -332,6 +332,19 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     af = np.asarray(a_out, dtype=np.float64)
     bf = np.asarray(b_out, dtype=np.float64)
 
+    # 形状不一致は即 BLOCK で打ち切る（誤ったテンソルを渡した・カーネルが間違った
+    # 形状を返した等の構造的バグの証拠）。以降の全 phase は af/bf が同形状である
+    # ことを前提に素朴な要素ごとの演算（引き算・比較）を行うため、ここで拒否しないと
+    # NumPy の暗黙 broadcast に頼ることになり、broadcast が偶然成立する形状の組では
+    # 偽 DIVERGENT にも偽 OK にもなりうる（equivalence.compare の同型修正と対）。
+    if af.shape != bf.shape:
+        sp = AuditPhase("equivalence 数値等価性", "decided", Risk.BLOCK)
+        sp.lines.append(f"[SHAPE MISMATCH] a.shape={af.shape} vs b.shape={bf.shape} "
+                        "→ 比較不能な構造的発散（broadcast による偽比較を拒否）")
+        ad.phases.append(sp)
+        ad.stamp(**(provenance or {}))
+        return ad
+
     # envelope: 本番入力（両ベンダー出力）が認証前提内か。
     # check_softmax_input（fp16 exp-overflow）・check_outlier_features（単一 scale 仮定の
     # 破綻）は実装・テスト済みだったが従来この phase から呼ばれていなかった

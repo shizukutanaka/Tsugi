@@ -51,6 +51,14 @@ class EquivalenceReport:
     # NaN は element-wise 比較で必ず mismatch になるが、その原因が「精度差」か
     # 「overflow/NaN 伝播」かを区別しないと根本原因診断ができない。
     has_non_finite: bool = False
+    # 形状不一致を明示的に追跡する（NumPy の暗黙 broadcast による偽比較を防ぐ）。
+    # a.shape != b.shape は素朴な element-wise 引き算では broadcast され、
+    # 偶然 shape が合う（例 (64,1) vs (64,64)）と誤って比較が成立してしまう。
+    # 形状不一致自体が構造的なバグの証拠（誤ったテンソルを渡した・カーネルが
+    # 間違った形状を返した等）であり、broadcast で握りつぶさず即 DIVERGENT にする。
+    shape_mismatch: bool = False
+    shape_a: tuple = ()
+    shape_b: tuple = ()
 
     # report.FindingReport は所見リスト型。等価判定はスカラ計量なので継承せず、
     # 共通の判定インターフェース（risk/max_risk/ok）だけ揃えて第一級レポートにする。
@@ -67,6 +75,9 @@ class EquivalenceReport:
         return self.equivalent
 
     def to_text(self) -> str:
+        if self.shape_mismatch:
+            return (f"[SHAPE MISMATCH] a.shape={self.shape_a} vs b.shape={self.shape_b} "
+                    "→ 比較不能な構造的発散（broadcast による偽比較を拒否）")
         status = "EQUIVALENT" if self.equivalent else "DIVERGENT"
         nan_tag = " [NaN/Inf検出]" if self.has_non_finite else ""
         return (f"[{status}]{nan_tag} max_abs={self.max_abs_err:.3e} max_rel={self.max_rel_err:.3e} "
@@ -131,8 +142,21 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
 
 
 def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> EquivalenceReport:
-    af = a.astype(np.float64)
-    bf = b.astype(np.float64)
+    a_raw = np.asarray(a)
+    b_raw = np.asarray(b)
+    # 形状不一致を最初に検査する。NumPy の暗黙 broadcast（例 (64,1) と (64,64)・
+    # スカラと行列）に頼って比較すると、方向次第で偽 DIVERGENT にも偽 OK にもなりうる
+    # （broadcast された片方の値が他方に「たまたま」一致すれば equivalent=True になる）。
+    # 形状不一致は誤ったテンソルを渡した／カーネルが間違った形状を返したという
+    # 構造的な証拠なので、broadcast で握りつぶさず比較不能な発散として即座に返す。
+    if a_raw.shape != b_raw.shape:
+        return EquivalenceReport(
+            equivalent=False, max_abs_err=float("inf"), max_rel_err=float("inf"),
+            n_mismatch=0, n_total=0, atol=atol, rtol=rtol,
+            shape_mismatch=True, shape_a=tuple(a_raw.shape), shape_b=tuple(b_raw.shape),
+        )
+    af = a_raw.astype(np.float64)
+    bf = b_raw.astype(np.float64)
     # NaN/Inf を先に検出する（精度発散とデータ破壊を区別するため）。
     # NaN は close[] を常に False にするため mismatch にカウントされるが、
     # has_non_finite=True により診断層が「overflow/NaN 伝播」と識別できる。

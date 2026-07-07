@@ -372,6 +372,33 @@ def test_audit_runtime_envelope_wires_outlier_and_softmax_checks():
     assert "softmax" not in ep3.to_text()
 
 
+def test_audit_runtime_rejects_shape_mismatch_without_broadcast():
+    """audit_runtime は形状不一致の a_out/b_out を broadcast せず即 BLOCK にする。
+
+    従来 `cross = np.abs(af - bf).max()` が af/bf の broadcast に頼っていた
+    （broadcast 可能な形状の組では偽 DIVERGENT/偽OK になりうる。broadcast 不能な
+    組では ValueError で丸ごとクラッシュしうる）。equivalence.compare の同型修正
+    （shape_mismatch フィールド）を audit_runtime の入口にも適用する。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 8)).astype(np.float32)
+    b_first_row_only = a[0].copy()   # vendor B のバグ: 先頭行しか返さない（形状 (8,)）
+
+    ad = audit_runtime(a, b_first_row_only, K=64, noise_floor=1e-6)
+    assert not ad.portable, "形状不一致を portable=True にしてはいけない（偽OK）"
+    assert ad.max_risk == Risk.BLOCK
+    eqp = next(p for p in ad.phases if p.name.startswith("equivalence"))
+    assert "SHAPE MISMATCH" in eqp.to_text()
+
+    # 完全に非互換な形状（broadcast 不能）でもクラッシュせず同様に BLOCK
+    ad2 = audit_runtime(a, rng.standard_normal((3, 5)).astype(np.float32), K=64, noise_floor=1e-6)
+    assert not ad2.portable and ad2.max_risk == Risk.BLOCK
+
+    # 同形状の既存経路は無回帰
+    ad3 = audit_runtime(a, a.copy(), K=64, noise_floor=1e-6)
+    assert ad3.portable
+
+
 def test_audit_runtime_blocks_real_divergence():
     # 5% 系統スケール誤差 → BLOCK（max_abs か系統バイアスのいずれかが捕捉）
     rng = np.random.default_rng(0)
@@ -593,6 +620,7 @@ def main() -> int:
         test_audit_runtime_worst_case_search_finds_envelope_counterexample,
         test_audit_runtime_passes_equivalent_within_noise,
         test_audit_runtime_envelope_wires_outlier_and_softmax_checks,
+        test_audit_runtime_rejects_shape_mismatch_without_broadcast,
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence,
         test_audit_runtime_includes_decision_when_logits_given,

@@ -944,6 +944,27 @@ def main() -> int:
     check("audit() occupancy phase follows targets, not a hardcoded vendor pair",
           "amd_cdna" not in _occ53b.to_text() and "amd_rdna" in _occ53b.to_text())
 
+    # 54. equivalence.compare は形状不一致を NumPy の暗黙 broadcast に委ねず即 DIVERGENT
+    # にする（broadcast による偽OK/偽BLOCK を防ぐ・vendor が誤った形状を返すバグの実証）。
+    _rng54 = np.random.default_rng(0)
+    _a54 = _rng54.standard_normal((8, 8)).astype(np.float32)
+    _b54_bug = _a54[0].copy()   # vendor バグ: 先頭行しか返さない（形状 (8,)）
+    _rep54 = compare(_a54, _b54_bug, "float32")
+    check("compare() flags shape mismatch instead of silently broadcasting (no false-OK)",
+          _rep54.shape_mismatch and not _rep54.equivalent)
+    check("compare() same-shape path is unaffected (no regression)",
+          compare(_a54, _a54.copy(), "float32").equivalent
+          and not compare(_a54, _a54.copy(), "float32").shape_mismatch)
+
+    # 55. audit_runtime も同型の形状ガードを持つ（equivalence phase の broadcast 依存を排除）。
+    from tsugi.audit import audit_runtime as _art55
+    _ad55 = _art55(_a54, _b54_bug, K=64, noise_floor=1e-6)
+    check("audit_runtime rejects shape-mismatched a_out/b_out without broadcasting (no false-OK)",
+          not _ad55.portable and _ad55.max_risk == portability.Risk.BLOCK)
+    _ad55b = _art55(_a54, _a54.copy(), K=64, noise_floor=1e-6)
+    check("audit_runtime same-shape path is unaffected (no regression)",
+          _ad55b.portable)
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

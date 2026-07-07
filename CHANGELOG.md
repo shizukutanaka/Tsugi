@@ -4,6 +4,33 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Fixed
+- **equivalence.compare / audit_runtime — 形状不一致の暗黙 broadcast を排除（市販品質強化）**:
+  `_compare_with()`（`compare`/`compare_gemm` の共通実装）と `audit_runtime()` の
+  equivalence phase は、a/b の形状が異なる場合でも NumPy の暗黙 broadcast に頼って
+  `a - b` を計算していた。broadcast 可能な形状の組（例 `(64,1)` vs `(64,64)`・スカラ vs
+  行列）では、方向次第で **偽 DIVERGENT にも偽OK にもなりうる**——後者が特に危険。
+
+  実証したシナリオ: ベンダー B が実装バグで先頭 1 行しか返さない
+  （`b = a[0]`、形状 `(8,)` vs `a` の `(8,8)`）場合、旧実装は NumPy の
+  broadcast で「なんとなく比較が成立」してしまい、本来 BLOCK すべき構造的バグを
+  見逃しうる。`classify_divergence()` は既に要素数不一致を `DV_DIVERGENT` として
+  明示的に扱っており、「形状不一致は比較不能な構造的発散」が設計意図として
+  正しいことは既に確立されていた——`_compare_with`/`audit_runtime` だけがこの
+  原則から外れていた。
+
+  - `EquivalenceReport` に `shape_mismatch: bool`・`shape_a`/`shape_b: tuple` を追加。
+    `_compare_with()` は形状比較を最初に行い、不一致なら broadcast する前に
+    `equivalent=False, shape_mismatch=True` を返す。
+  - `audit_runtime()` は `af`/`bf` 計算直後に形状を検査し、不一致なら以降の全 phase
+    （decision・correctness・attribution・worstcase 等、いずれも同形状前提）に
+    入らず equivalence phase のみで BLOCK を返す。broadcast 不能な形状の組
+    （ValueError でクラッシュしうる）でも同様に安全に BLOCK する。
+  - 既存の同形状経路は完全に無回帰（`shape_mismatch=False` のまま）。
+  - tests: `test_shape_mismatch_is_not_silently_broadcast`（equivalence）・
+    `test_audit_runtime_rejects_shape_mismatch_without_broadcast`（audit）
+  - verify.py: 137→141 不変条件（54-55番）
+
 ### Added
 - **audit() の occupancy phase — targets 全体を報告するよう修正（第28回）**:
   第27回と同じ関数参照スキャンの継続から発見。`occupancy.cross_vendor_occupancy()`

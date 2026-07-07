@@ -55,6 +55,38 @@ def test_f16_accum_detected_as_divergent():
     assert rep.max_abs_err > 1e-2
 
 
+def test_shape_mismatch_is_not_silently_broadcast():
+    """compare() は形状不一致を NumPy の暗黙 broadcast に委ねず即 DIVERGENT にする。
+
+    素朴な element-wise 比較（NaN/Inf 検出後の a-b）は shape が違っても NumPy の
+    broadcast ルールが適用可能なら暗黙に実行されてしまう。方向次第で偽 DIVERGENT にも
+    偽 OK にもなりうる —— 後者が特に危険（発散を等価と誤判定）。
+
+    ここでは「vendor B が実装バグで先頭 1 行しか返さない」という現実的なシナリオを
+    実証する: (8,8) の a に対し b=a[0]（形状 (8,)）を渡すと、NumPy の broadcast は
+    a の全行と b を比較し、a の各行が b（=a の 0 行目）と一致していなくても
+    element-wise 比較自体は「実行できてしまう」——broadcast された a-b の結果次第では
+    誤って equivalent と判定されうる。shape_mismatch により比較そのものを拒否すべき。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 8)).astype(np.float32)
+    b_first_row_only = a[0].copy()   # vendor B のバグ: 先頭行しか返さない（shape (8,)）
+
+    rep = compare(a, b_first_row_only, "float32")
+    assert rep.shape_mismatch, f"形状不一致が検出されていない: {rep.to_text()}"
+    assert not rep.equivalent, "形状不一致を equivalent=True にしてはいけない（偽OK）"
+    assert rep.shape_a == (8, 8) and rep.shape_b == (8,)
+    assert "SHAPE MISMATCH" in rep.to_text()
+
+    # broadcast可能でない完全に非互換な形状でもクラッシュせず shape_mismatch を返す
+    rep2 = compare(a, rng.standard_normal((3, 5)).astype(np.float32), "float32")
+    assert rep2.shape_mismatch and not rep2.equivalent
+
+    # 同形状の通常経路は無回帰（shape_mismatch=False のまま）
+    rep3 = compare(a, a.copy(), "float32")
+    assert rep3.equivalent and not rep3.shape_mismatch
+
+
 def test_report_fields():
     a, b = _inputs()
     ref = simulate_vendor_matmul(a, b)
@@ -203,6 +235,7 @@ def main() -> int:
         test_identical_is_equivalent,
         test_f32_vs_f32_within_tolerance,
         test_f16_accum_detected_as_divergent,
+        test_shape_mismatch_is_not_silently_broadcast,
         test_report_fields,
         test_uniform_risk_interface,
         test_classify_layout_vs_numerical_divergence,
