@@ -37,6 +37,35 @@ def _grep(pattern: str, *globs: str) -> list[str]:
     return hits
 
 
+def _orphan_tests() -> list[str]:
+    """`tests/correctness/test_*.py` に定義された test_* 関数が、各ファイルの
+    `main()` のテストリストに登録されているか（= 少なくとも一度は実行されるか）を
+    機械的に検査する。
+
+    各テストファイルは手書きの `tests = [...]` リストで実行対象を選ぶ構造になっている
+    （pytest 等のディスカバリ機構でなく明示的な列挙）。これは「テストを書いたが
+    リスト登録を忘れ、一度も実行されない」という静かな品質劣化を招きうる——
+    このプロジェクトが本番コードの「facade 未接続」（実装したが呼ばれない関数）で
+    繰り返し見つけてきた欠陥のテスト層版。def 行以外の場所に関数名が 1 回以上
+    出現すれば「リストで参照されている」とみなす（簡易ヒューリスティック・
+    docstring 等でのコメント言及も出現としてカウントするため false negative
+    （見逃し）はあっても false positive（誤検出）は起きにくい）。
+    """
+    import re
+
+    orphans: list[str] = []
+    for p in sorted((ROOT / "tests" / "correctness").glob("test_*.py")):
+        try:
+            src = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        for fn in re.findall(r"^def (test_[a-zA-Z0-9_]*)\(", src, re.M):
+            refs = len(re.findall(rf"\b{re.escape(fn)}\b", src)) - 1  # -1 = def 行自身
+            if refs == 0:
+                orphans.append(f"{p.name}:{fn}")
+    return orphans
+
+
 def main() -> int:
     # 1. 課金コード不在（絶対禁止）
     billing = [h for h in _grep("stripe", "*.py") + _grep("Stripe", "*.py")
@@ -964,6 +993,16 @@ def main() -> int:
     _ad55b = _art55(_a54, _a54.copy(), K=64, noise_floor=1e-6)
     check("audit_runtime same-shape path is unaffected (no regression)",
           _ad55b.portable)
+
+    # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
+    # （= 一度は実行される）ことを機械検査する。「facade 未接続」と同型の欠陥が
+    # テスト層で起きるのを防ぐ恒常ゲート（FEATURE-AUDIT.md A-6 の一部を解消）。
+    _orphans = _orphan_tests()
+    check("no orphan test functions (all registered in a main() test list)",
+          not _orphans)
+    if _orphans:
+        for o in _orphans:
+            print(f"    orphan: {o}")
 
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "

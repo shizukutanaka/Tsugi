@@ -4,6 +4,23 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **verify.py — orphan テスト（未登録テスト）の恒常検査を追加（市販品質強化）**:
+  `docs/FEATURE-AUDIT.md` A-6（facade 未接続の機械的スキャンが手動のまま）を
+  部分的に解消。各テストファイルは `main()` の手書き `tests = [...]` リストで
+  実行対象を選ぶ構造だが、この構造は「テストを書いたがリスト登録を忘れ、一度も
+  実行されない」という静かな品質劣化を招きうる——本番コードの「facade 未接続」
+  （実装したが呼ばれない関数）と同型の欠陥がテスト層で起きる経路。
+
+  - `verify._orphan_tests()`: `tests/correctness/test_*.py` の各 `test_*` 関数が
+    ファイル内で def 行以外に 1 回以上出現するか（≒ リスト登録されているか）を
+    正規表現で検査する。
+  - 新しい plant-and-detect のスモークテスト（一時ファイルで意図的に orphan 関数を
+    仕込み、検出器がそれだけを正しく検出し登録済み関数を誤検出しないことを確認）
+    で検出器自体が機能することを確認済み。
+  - 現時点で orphan テストはゼロ（既存 26 ファイルは全テスト登録済み）。
+  - verify.py: 141→142 不変条件（56番）
+
 ### Fixed
 - **equivalence.compare / audit_runtime — 形状不一致の暗黙 broadcast を排除（市販品質強化）**:
   `_compare_with()`（`compare`/`compare_gemm` の共通実装）と `audit_runtime()` の
