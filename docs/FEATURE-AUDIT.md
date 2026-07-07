@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 135/135 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 137/137 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -54,6 +54,7 @@
 | B-1i | 過剰(点推定→上側限界) | — | `rollout`/`calibration`/`decision` 5 箇所（A-1 含む） | 解消済み(2db24d6/7057d6c/3a00c5b/39ce477/6e044f3) | 点推定の過信（小 N で偽OK）を Wilson／ブートストラップ上側限界に修正 |
 | B-1j | 過剰(接続済) | — | `envelope.check_outlier_features`/`check_softmax_input` | 解消済み(067f5d5) | envelope phase が check_tensor しか呼ばず、outlier feature 検出・softmax exp-overflow 検査が未接続だった |
 | B-1k | 過剰(接続済) | — | `decision.binary_margin` | 解消済み(4abeaa9) | compare_decisions にある near-tie 健全性チェックが compare_task(binary) に存在しない構造的非対称だった |
+| B-1l | 過剰(接続済) | — | `occupancy.cross_vendor_occupancy` | 解消済み(d6f2457) | occupancy phase が nvidia/amd_cdna の 2 者間ギャップにハードコードされ、targets の amd_rdna が未報告だった |
 | B-2 | 過剰(意図的) | — | メタツール群（`calibration.make_corpus` 等 6 件） | 維持（正当） | 検証器の校正用・テスト専用・CLI 等で facade 非接続が正しい |
 | B-3 | 削除候補 | — | （該当なし） | ゼロ件 | 現時点で真のデッドコードは無い（B-1h が唯一の候補で接続済み） |
 
@@ -183,6 +184,7 @@ facade から実際に呼ばれるかを必ず確認する）。
 | `rollout.divergence_step_quantile` | 完全デッドコード（テストからも呼ばれない）だった。削除でなく接続を選択：初回発散の中央値は平均より系統的に小さく（幾何分布の右裾）、平均だけの報告は楽観バイアス | 2db24d6 |
 | `envelope.check_outlier_features`/`check_softmax_input` | `audit_runtime()` の envelope phase が `check_tensor()` しか呼ばず、outlier feature（massive activations）検出と fp16 softmax exp-overflow 検査が実行時監査に一切届いていなかった | 067f5d5 |
 | `decision.binary_margin` | `compare_decisions`（分類）は near-tie 健全性チェック（フリップは決定境界近傍に集中すべき）を持つが、`compare_task(binary)` にはこの診断ロジック自体が丸ごと存在しなかった。単なる関数未接続でなく機能の構造的非対称 | 4abeaa9 |
+| `occupancy.cross_vendor_occupancy` | `audit()` の他フェーズ（portability・feasibility）は `targets` を尊重するのに、occupancy phase だけが `occupancy_gap(cfg,"nvidia","amd_cdna")` に固定され、`targets` に `amd_rdna` が含まれていても一切報告していなかった | d6f2457 |
 
 同系統の「点推定の過信」も 5 箇所で解消済み: `rollout`（平均に加え中央値を報告・2db24d6）、
 `calibration.check_systematic`（bias±ブートストラップ標準誤差の上側限界で判定・7057d6c）、
