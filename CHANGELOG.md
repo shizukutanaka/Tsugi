@@ -4,6 +4,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-07
+「実装済みだが facade（`audit`/`audit_runtime`/`audit_cross_vendor`）から呼ばれない」
+欠陥を系統的なソース参照スキャンで 11 件発見・接続（`certify_from_sample`・
+`empirical_cond`・robust noise floor・`compare_task`・`attribution.diagnose`・
+`worstcase.analyze_worst_case`・`classify_divergence`・`divergence_step_quantile`・
+envelope の outlier/softmax 検査・`binary_margin`・occupancy の全 targets 対応）。
+同様に「点推定を過信する」小標本での偽OK パターンを 5 箇所で Wilson／ブートストラップ
+上側限界に修正。市販品質強化として equivalence/audit_runtime の形状不一致 silent
+broadcast を排除し、orphan テスト（未登録で一度も実行されないテスト）の恒常検査を追加。
+機能過不足の台帳 `docs/FEATURE-AUDIT.md` を新設し README/VERIFICATION から接続。
+詳細は下記全項目・根拠 commit hash 付き。テスト 26 ファイル / verify 142 不変条件。
+
 ### Added
 - **verify.py — orphan テスト（未登録テスト）の恒常検査を追加（市販品質強化）**:
   `docs/FEATURE-AUDIT.md` A-6（facade 未接続の機械的スキャンが手動のまま）を
