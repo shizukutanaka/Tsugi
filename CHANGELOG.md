@@ -5,6 +5,24 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **audit() の occupancy phase — targets 全体を報告するよう修正（第28回）**:
+  第27回と同じ関数参照スキャンの継続から発見。`occupancy.cross_vendor_occupancy()`
+  （全ベンダーの占有率を一度に返す・実装・テスト済み）は `audit()` から一切呼ばれておらず、
+  occupancy phase は `occupancy_gap(cfg, "nvidia", "amd_cdna")` という **2 者間ギャップに
+  ハードコード**されていた。`audit()` の他フェーズ（portability・feasibility）はすべて
+  `targets` パラメータ（既定 `("nvidia", "amd_cdna", "amd_rdna")`）を尊重するのに、
+  occupancy phase だけが `targets` を無視し `amd_rdna` の占有率を一切報告していなかった。
+
+  - `cross_vendor_occupancy(cfg, vendors=targets)` に切り替え、`targets` に含まれる
+    全ベンダーの占有率を報告。最大ギャップとそのペアも明示。
+  - `targets` を絞れば occupancy phase の報告もそれに追従する（ハードコードでないことを
+    テストで固定）。
+  - 実証: 既定 `targets` では `amd_rdna` が occupancy phase のテキストに一切現れなかった
+    ことを確認した上で修正。`targets=("nvidia", "amd_rdna")` に絞ると `amd_cdna` は
+    正しく消え `amd_rdna` が現れることも確認。
+  - tests: `test_audit_occupancy_phase_covers_all_targets`
+  - verify.py: 135→137 不変条件（53番）
+
 - **decision.compare_task(binary) — compare_decisions と同型の near-tie 健全性チェックを接続（第27回）**:
   第26回の envelope phase の修正作業と同じ関数参照スキャンから発見。
   `compare_decisions()`（分類）はフリップが決定境界近傍（低マージン・near-tie）に

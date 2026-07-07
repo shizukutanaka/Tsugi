@@ -37,6 +37,26 @@ def test_audit_aggregates_all_static_phases():
             "propagation", "runtime"} <= names
 
 
+def test_audit_occupancy_phase_covers_all_targets():
+    """audit() の occupancy phase が targets 全体を報告する（従来 nvidia/amd_cdna の
+    2 者間ギャップに固定されており、targets に amd_rdna が含まれていても一切
+    報告されなかった。cross_vendor_occupancy は実装・テスト済みだったが未接続だった）。
+    """
+    mod, block, cfg = _demo_module()
+    ad_default = audit(mod, cfg, block_dims=block)
+    occ_default = next(p for p in ad_default.phases if p.name.startswith("occupancy"))
+    assert "amd_rdna" in occ_default.to_text(), (
+        f"既定 targets（amd_rdna 含む）なのに occupancy phase に amd_rdna が現れない: "
+        f"{occ_default.to_text()}")
+
+    # targets を絞ると occupancy phase もそれに追従する（ハードコードでないことの証拠）
+    ad_restricted = audit(mod, cfg, block_dims=block, targets=("nvidia", "amd_rdna"))
+    occ_restricted = next(p for p in ad_restricted.phases if p.name.startswith("occupancy"))
+    text = occ_restricted.to_text()
+    assert "amd_cdna" not in text, f"targets から除外した amd_cdna が occupancy phase に残っている: {text}"
+    assert "amd_rdna" in text and "nvidia" in text
+
+
 def test_graph_ops_collapses_kloop_dots_into_one_matmul():
     # K ループの dot 群（load で分断）は 1 つの matmul(K=反復×BK) に集約される
     mod, block, cfg = _demo_module()
@@ -555,6 +575,7 @@ def main() -> int:
     ok = True
     tests = [
         test_audit_aggregates_all_static_phases,
+        test_audit_occupancy_phase_covers_all_targets,
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
         test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,

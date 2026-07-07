@@ -147,7 +147,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     from .calibration import detectability_floor
     from .envelope import certify_from_sample, certify_gemm
     from .feasibility import cross_vendor_feasibility, first_vendor_only
-    from .occupancy import occupancy_gap
+    from .occupancy import cross_vendor_occupancy
     from .portability import analyze
     from .propagation import propagate
     from .tolerance import explain
@@ -182,11 +182,22 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         a.phases.append(feas)
 
         # --- 静的: 占有率ギャップ（速度の片寄り） ---
-        gap = occupancy_gap(cfg, "nvidia", "amd_cdna")
+        # 従来は nvidia/amd_cdna の 2 者間ギャップに固定されており、targets に amd_rdna が
+        # 含まれていても一切報告されなかった（cross_vendor_occupancy は実装済みだが未使用・
+        # portability/feasibility phase は targets 全体を見るのにここだけ 2 者固定だった）。
+        # targets 全体を計測し、最大ギャップとどのペアで生じたかを報告する。
+        occ_map = cross_vendor_occupancy(cfg, vendors=targets)
+        pairs = [(u, v) for i, u in enumerate(targets) for v in targets[i + 1:]]
+        gaps = [(u, v, abs(occ_map[u].occupancy - occ_map[v].occupancy)) for u, v in pairs]
+        worst_gap = max((g for _, _, g in gaps), default=0.0)
         occ = AuditPhase("occupancy 占有率", "decided",
-                         Risk.WARN if gap >= 0.25 else Risk.INFO)
-        occ.lines.append(f"NVIDIA↔AMD CDNA 占有率差 = {gap:.0%}"
-                         + ("（性能が片方だけ崩れる）" if gap >= 0.25 else ""))
+                         Risk.WARN if worst_gap >= 0.25 else Risk.INFO)
+        for v in targets:
+            occ.lines.append(f"{v}: occupancy={occ_map[v].occupancy:.0%}")
+        if gaps:
+            wu, wv, wg = max(gaps, key=lambda t: t[2])
+            occ.lines.append(f"最大ギャップ = {wu}↔{wv} {wg:.0%}"
+                             + ("（性能が片方だけ崩れる）" if wg >= 0.25 else ""))
         a.phases.append(occ)
 
     # --- 静的: 数値等価性の目安（導出許容 + 認証エンベロープ + 検出限界） ---

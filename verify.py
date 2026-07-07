@@ -932,6 +932,18 @@ def main() -> int:
           any("near-tie" in f.message for f in _rep52_bad.findings)
           and _rep52_bad.flipped_margin_median > _rep52_bad.overall_margin_median)
 
+    # 53. audit() の occupancy phase が targets 全体を報告する（従来 nvidia/amd_cdna の
+    # 2 者間ギャップにハードコードされ、targets に amd_rdna があっても未報告だった。
+    # cross_vendor_occupancy は実装・テスト済みだったが未接続だった）。
+    _ad53 = audit(mod, dcfg, block_dims=block)
+    _occ53 = next(p for p in _ad53.phases if p.name.startswith("occupancy"))
+    check("audit() occupancy phase reports amd_rdna with default targets (cross_vendor_occupancy wired)",
+          "amd_rdna" in _occ53.to_text())
+    _ad53b = audit(mod, dcfg, block_dims=block, targets=("nvidia", "amd_rdna"))
+    _occ53b = next(p for p in _ad53b.phases if p.name.startswith("occupancy"))
+    check("audit() occupancy phase follows targets, not a hardcoded vendor pair",
+          "amd_cdna" not in _occ53b.to_text() and "amd_rdna" in _occ53b.to_text())
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")
