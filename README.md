@@ -97,7 +97,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
                                                                 └ ROCDL → AMDGCN
 ```
 
-詳細: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / 仕様: [docs/SPEC.md](docs/SPEC.md)（DSL/コンパイラ）・[docs/SPEC-verification.md](docs/SPEC-verification.md)（検証 API）/ 検証層の全体マップ: [docs/VERIFICATION.md](docs/VERIFICATION.md) / 機能過不足の台帳（引き継ぎの起点）: [docs/FEATURE-AUDIT.md](docs/FEATURE-AUDIT.md)
+詳細: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / 仕様: [docs/SPEC.md](docs/SPEC.md)（DSL/コンパイラ）・[docs/SPEC-verification.md](docs/SPEC-verification.md)（検証 API）/ 検証層の全体マップ: [docs/VERIFICATION.md](docs/VERIFICATION.md) / 機能過不足の台帳（引き継ぎの起点）: [docs/FEATURE-AUDIT.md](docs/FEATURE-AUDIT.md) / Claude モデル使い分け表（個人用メモ）: [docs/MODEL-USAGE-GUIDE.md](docs/MODEL-USAGE-GUIDE.md)
 
 
 ## 実装状況（正直な現在地・主張と実装の一致）

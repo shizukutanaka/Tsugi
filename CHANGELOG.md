@@ -4,6 +4,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **docs/MODEL-USAGE-GUIDE.md — Claude モデル使い分け表（個人用メモ）**:
+  このセッションで実際に観測された `/model` 切り替えパターン（戦略的・探索的な
+  指示の直前は Fable 5、スコープの定まった継続作業の直前は Sonnet 5）を根拠に、
+  Tsugi 開発における Haiku/Sonnet/Opus/Fable 5 の使い分けと、Agent（サブエージェント）・
+  `/loop` スキルの活用余地をまとめた。汎用的なモデル比較でなく、このユーザーの
+  実際の作業パターンに基づく実務指針。README から接続。
+
 ## [0.3.0] — 2026-07-07
 「実装済みだが facade（`audit`/`audit_runtime`/`audit_cross_vendor`）から呼ばれない」
 欠陥を系統的なソース参照スキャンで 11 件発見・接続（`certify_from_sample`・
