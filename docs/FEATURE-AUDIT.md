@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 144/144 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 147/147 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -35,7 +35,7 @@
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
 | A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 一部解消(efdc027) | nondeterminism 警告は接続済み。worstcase/attribution/LAYOUT/タスク別 decision は依然未接続 |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
-| A-5 | 不足 | P1 | `propagation.py` `propagate()` | 未着手 | 正規化層（LayerNorm/RMSNorm）による scale リセットを追えない |
+| A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | P2 | `decision.py` 統計判定 | 未着手 | per-sample δ・多 seed 分布報告が単一 seed のまま |
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
@@ -118,12 +118,23 @@
    - 推奨アクション: LLVM/MLIR 環境が要る Phase 4 作業。ロードマップは
      `python/tsugi_torch/__init__.py` の docstring に 5 段階で記載済み。
 
-5. **[A-5] `python/tsugi/propagation.py` が正規化層での scale リセットを追えない（Q11）**
+5. **[A-5] 一部解消(commit 425fc22)** `python/tsugi/propagation.py` が正規化層での
+   scale リセットを追えない（Q11）
    - 何が無いか: `propagate()` は相対発散を op 列に沿って合成するが、LayerNorm/RMSNorm が
      活性の scale を正規化して発散の絶対量をリセットする効果をモデル化していない（amp≈1 と単純化）。
    - なぜ危険か: 深いモデルでの発散予測が過大（偽BLOCK 側）または構造誤りになりうる。
-   - 推奨アクション: `GraphOp` に scale 伝播を追加し、正規化 op で発散を再基準化する版を
-     検討。residual（`residual=True` の √ 合成）と同様の一次近似でよい。
+   - **一部解消済み**: `propagate()` 自体の数値モデルはまだ scale リセットを考慮しないが
+     （恣意的な減衰係数を未検証のまま導入するリスクを避けるため意図的に据え置き）、
+     `fxbridge.audit_fx()` に `has_normalization: bool` を追加し、正規化層があるグラフでは
+     `model_divergence` が「scale リセット効果を未考慮の保守的な上界」であることを
+     `_tsugi_compile()` の警告メッセージで明示するようにした。ユーザーが過大な
+     WARN を額面通り受け取り過剰反応しないための透明性確保。
+   - 推奨アクション（残る本体）: `GraphOp` に scale 伝播を追加し、正規化 op で発散を
+     再基準化する版を検討。ただし減衰係数は理論的検証済みの値であるべき——例えば
+     `residual=True` の √ 合成は実際の pre-norm transformer 数値実験で検証済みだったが、
+     正規化層の scale-invariance を反映する減衰係数はまだ検証されていない。
+     未検証のまま導入すると過大な dilution が偽OK の温床になりうるため、
+     実際の LayerNorm/RMSNorm 実装に対する数値実験による検証が先決。
 
 6. **[A-6] ✅ 解消済み(commit 88846ec)** facade 未接続・デッドコードの機械的
    スキャンが手動のままだった問題（Q56）
