@@ -87,6 +87,21 @@ def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
     return ops
 
 
+def _is_normalization(target_name: str) -> bool:
+    """op 名が LayerNorm/RMSNorm 系（正規化）かを判定する。
+
+    正規化層は数学的にほぼ scale-invariant（LN(c·x)≈LN(x)・c は正のスカラー）。
+    上流で蓄積した *スケール型* のクロスベンダー乖離を実質的にリセットする効果を持つが、
+    propagation.propagate() の現行モデルはこれを考慮せず reduce と同じ増幅則を適用する
+    （FEATURE-AUDIT.md A-5）。安全な方向の近似だが恣意的な減衰係数を検証なしに導入する
+    リスクを避けるため、まずは正規化層の存在を可視化するに留める
+    （model_divergence は正規化層が多いモデルほど保守的な上界＝実際より緩めに
+    見積もっている可能性が高いという事実を隠さない）。
+    """
+    t = target_name.lower()
+    return "layer_norm" in t or "rms_norm" in t or "_norm" in t
+
+
 def fx_call_target_names(gm: Any) -> list[str]:
     """FX グラフの呼び出しノードの raw target 名を列挙する（非決定 op 照合用）。
 
@@ -123,6 +138,15 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
         for node in gm.graph.nodes
         if getattr(node, "op", None) in _CALL_OPS
     )
+    # 正規化層（LayerNorm/RMSNorm）の有無を検出する。propagate() はこれらを scale-invariant
+    # と扱わず通常の reduce と同じ増幅則を適用するため、正規化層があるモデルでは
+    # model_divergence が実際より保守的（過大）な上界になっている可能性が高い
+    # （FEATURE-AUDIT.md A-5・fail-safe の安全な方向だが、隠さず明示する）。
+    has_normalization = any(
+        _is_normalization(str(getattr(node, "target", "")))
+        for node in gm.graph.nodes
+        if getattr(node, "op", None) in _CALL_OPS
+    )
     out = {
         "n_ops": len(ops),
         "model_divergence": rep.model_divergence,
@@ -132,6 +156,7 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
         "nondeterministic_ops": list(nondet.nondet_ops),
         "requires_noise_floor": nondet.requires_noise_floor,
         "has_dynamic_shapes": has_dynamic_shapes,
+        "has_normalization": has_normalization,
         "task_flip_bound": None,
     }
     if ref_logits is not None:

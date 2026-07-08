@@ -66,6 +66,15 @@ def _deterministic_graph():
     ])
 
 
+def _normalization_graph():
+    return _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.native_layer_norm.default"),
+        _Node("output", "output"),
+    ])
+
+
 def test_tsugi_compile_warns_about_nondeterministic_ops():
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -85,6 +94,26 @@ def test_tsugi_compile_no_nondeterminism_tag_for_deterministic_graph():
     assert len(w) == 1
     msg = str(w[0].message)
     assert "non-deterministic" not in msg, f"決定論的グラフに nondeterminism タグが誤って付いた: {msg}"
+
+
+def test_tsugi_compile_warns_about_normalization_layers():
+    """正規化層（LayerNorm/RMSNorm）を含むグラフでは、model_divergence が
+    scale リセット効果を未考慮の保守的な上界であることを警告に明示する（FEATURE-AUDIT.md A-5）。
+    """
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        _tsugi_compile(_normalization_graph(), [])
+    assert len(w) == 1
+    msg = str(w[0].message)
+    assert "has_normalization" in msg, f"正規化層の情報が警告に含まれない: {msg}"
+    assert "保守的な上界" in msg
+
+    # 正規化層の無いグラフにはこのタグが付かない
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter("always")
+        _tsugi_compile(_deterministic_graph(), [])
+    assert len(w2) == 1
+    assert "has_normalization" not in str(w2[0].message)
 
 
 def test_tsugi_compile_forward_delegates_to_eager():
@@ -116,6 +145,7 @@ def main() -> int:
     tests = [
         test_tsugi_compile_warns_about_nondeterministic_ops,
         test_tsugi_compile_no_nondeterminism_tag_for_deterministic_graph,
+        test_tsugi_compile_warns_about_normalization_layers,
         test_tsugi_compile_forward_delegates_to_eager,
     ]
     for t in tests:

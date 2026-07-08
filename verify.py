@@ -1114,6 +1114,33 @@ def main() -> int:
           len(_w58) == 1 and "scatter_add" in str(_w58[0].message)
           and "noise floor" in str(_w58[0].message))
 
+    # 59. audit_fx/_tsugi_compile が正規化層（LayerNorm/RMSNorm）を検出し、
+    # model_divergence が scale リセット効果を未考慮の保守的な上界であることを警告する
+    # （FEATURE-AUDIT.md A-5）。恣意的な減衰係数の導入でなく、既知の過大評価バイアスを
+    # 隠さず可視化する fail-safe な選択。
+    from tsugi_torch.fxbridge import audit_fx as _afx59
+    _gm_norm59 = _GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default", (8, 512)),
+        _Node58("call_function", "aten.native_layer_norm.default"),
+        _Node58("output", "output"),
+    ])
+    check("audit_fx detects normalization layers (has_normalization=True)",
+          _afx59(_gm_norm59)["has_normalization"])
+    with _warnings58.catch_warnings(record=True) as _w59:
+        _warnings58.simplefilter("always")
+        _compile58(_gm_norm59, [])
+    check("_tsugi_compile surfaces the normalization scale-reset caveat in its warning",
+          len(_w59) == 1 and "has_normalization" in str(_w59[0].message))
+    _gm_no_norm59 = _GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default", (8, 512)),
+        _Node58("call_function", "aten._softmax.default"),
+        _Node58("output", "output"),
+    ])
+    check("audit_fx does not flag has_normalization for a graph without norm ops",
+          not _afx59(_gm_no_norm59)["has_normalization"])
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -50,10 +50,17 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             nondet = (f" [non-deterministic: {rep['nondeterministic_ops']} → "
                      "noise floor 実測が必須（静的許容では不十分）]"
                      if rep["requires_noise_floor"] else "")
+            # 正規化層（LayerNorm/RMSNorm）はほぼ scale-invariant で、上流のスケール型
+            # クロスベンダー乖離を実質的にリセットする効果を持つが、propagate() は
+            # これを考慮しない（FEATURE-AUDIT.md A-5）。安全な方向（過大評価）だが、
+            # ユーザーが WARN を額面通り受け取り過剰反応しないよう明示する。
+            norm = (" [has_normalization: model_divergence は正規化層のscaleリセット効果を"
+                   "未考慮の保守的な上界（実際の発散はこれより小さい可能性）]"
+                   if rep.get("has_normalization") else "")
             warnings.warn(
                 f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
-                f"{task}{dyn}{nondet} (cond=1 lower bound). "
+                f"{task}{dyn}{nondet}{norm} (cond=1 lower bound). "
                 "cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない

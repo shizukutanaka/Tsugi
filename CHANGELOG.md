@@ -5,6 +5,26 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **正規化層（LayerNorm/RMSNorm）の scale リセット効果を可視化（FEATURE-AUDIT.md A-5）**:
+  `propagation.propagate()` は正規化層をほぼ scale-invariant（`LN(c·x)≈LN(x)`）だと
+  扱わず、通常の reduce と同じ増幅則を適用する。実際には正規化層が上流のスケール型
+  クロスベンダー乖離を実質的にリセットするため、`model_divergence` は正規化層が
+  多いモデルほど**実際より緩めの保守的な上界**になっている可能性が高い
+  （A-5 の指摘: 深いモデルで発散予測が過大＝偽BLOCK 側に倒れうる）。
+
+  恣意的な減衰係数を未検証のまま伝播モデルに導入するのは危険（過大な dilution は
+  逆に偽OK の温床になりうる）と判断し、まずは**正規化層の存在自体を可視化する**に
+  留めた——このプロジェクトが既に採用している「cond=1 は下界」のような透明性パターンと同じ。
+
+  - `fxbridge.audit_fx()`: `has_normalization: bool` を追加（`layer_norm`/`rms_norm`/`_norm`
+    を含む op 名を検出。`_kind_of` が reduce に畳む際の判定基準と同じ substring 集合を再利用）。
+  - `tsugi_torch._tsugi_compile()`: `has_normalization` が真なら警告に
+    `[has_normalization: model_divergence は正規化層のscaleリセット効果を未考慮の
+    保守的な上界]` を追加。
+  - tests: `test_audit_fx_detects_normalization_layers`（fxbridge）・
+    `test_tsugi_compile_warns_about_normalization_layers`（tsugi_torch）
+  - verify.py: 144→147 不変条件（59番）
+
 - **tsugi_torch._tsugi_compile — nondeterministic_ops を警告に反映（FEATURE-AUDIT.md A-3 の一部）**:
   `fxbridge.audit_fx()` は `nondeterministic_ops`/`requires_noise_floor`（scatter_add 等
   atomicAdd 由来の非決定 op の静的検出）を既に計算していたが、`_tsugi_compile()` の

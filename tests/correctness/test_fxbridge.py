@@ -163,6 +163,37 @@ def test_audit_fx_warns_dynamic_shapes():
         "shape meta なし → dynamic と誤判定（既定の int 扱いが期待値）"
 
 
+def test_audit_fx_detects_normalization_layers():
+    """LayerNorm/RMSNorm 系の op を検出し has_normalization=True を返す（FEATURE-AUDIT.md A-5）。
+
+    正規化層はほぼ scale-invariant（LN(c·x)≈LN(x)）で、上流のスケール型クロスベンダー
+    乖離を実質的にリセットする効果を持つが、propagation.propagate() はこれを考慮せず
+    通常の reduce と同じ増幅則を適用する。恣意的な減衰係数を未検証のまま導入するのは
+    危険（過大な dilution は偽OK の温床になりうる）なので、まずは正規化層の存在を
+    可視化するに留める——has_normalization=True は「model_divergence はこの効果を
+    未考慮の保守的な上界（実際より緩め）」というシグナル。
+    """
+    norm_gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.native_layer_norm.default"),
+        _Node("output", "output"),
+    ])
+    assert audit_fx(norm_gm)["has_normalization"]
+
+    rms_gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten._rms_norm.default"),
+        _Node("output", "output"),
+    ])
+    assert audit_fx(rms_gm)["has_normalization"]
+
+    # 正規化層が無いグラフは False のまま（既存の _transformer_block は norm を含まない）
+    rep_no_norm = audit_fx(_transformer_block())
+    assert not rep_no_norm["has_normalization"]
+
+
 def test_audit_fx_flags_nondeterministic_atomic_ops():
     # scatter_add 等 atomicAdd 由来の非決定 op を検出し noise floor 実測必須を宣言
     # （PyTorch 公式: https://pytorch.org/docs/stable/notes/randomness.html）
@@ -193,6 +224,7 @@ def main() -> int:
         test_audit_fx_translates_to_task_flip_bound,
         test_audit_fx_ref_scale_from_logits,
         test_audit_fx_warns_dynamic_shapes,
+        test_audit_fx_detects_normalization_layers,
         test_audit_fx_flags_nondeterministic_atomic_ops,
     ]
     for t in tests:
