@@ -38,14 +38,23 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         except Exception:  # noqa: BLE001 — 取れなければ発散のみ報告
             ref_logits = None
         rep = audit_fx(gm, ref_logits=ref_logits)
-        if rep["n_ops"]:
+        # nondeterministic_ops/requires_noise_floor は audit_fx が既に計算済みだが、
+        # 従来この警告メッセージに一切反映されていなかった（audit_fx の戻り値が facade
+        # ＝ユーザー向け警告に届いていない・他ラウンドで見つけた facade 未接続と同型）。
+        # scatter_add 等の atomicAdd 由来 op はグラフに数値 op（matmul/softmax 等）が
+        # 無くても存在しうるため、n_ops==0 でも requires_noise_floor だけで警告を出す。
+        if rep["n_ops"] or rep["requires_noise_floor"]:
             task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%"
                     if rep["task_flip_bound"] is not None else "")
             dyn = " [has_dynamic_shapes: per-shape 再検証が必要]" if rep["has_dynamic_shapes"] else ""
+            nondet = (f" [non-deterministic: {rep['nondeterministic_ops']} → "
+                     "noise floor 実測が必須（静的許容では不十分）]"
+                     if rep["requires_noise_floor"] else "")
             warnings.warn(
                 f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
-                f"{task}{dyn} (cond=1 lower bound). cross-vendor 等価性は実機で audit_cross_vendor を。",
+                f"{task}{dyn}{nondet} (cond=1 lower bound). "
+                "cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない
         pass

@@ -1073,6 +1073,47 @@ def main() -> int:
         for d in _disconnected:
             print(f"    disconnected: {d}")
 
+    # 58. tsugi_torch._tsugi_compile の警告メッセージが nondeterministic_ops/
+    # requires_noise_floor を反映する（audit_fx は計算済みだったが従来この facade
+    # ＝ユーザー向け警告に一切届いていなかった）。torch 無し環境でも duck-typed
+    # スタンドインで検証可能（実 torch.fx との結線は torch 環境が要る）。
+    import warnings as _warnings58
+
+    from tsugi_torch import _tsugi_compile as _compile58
+
+    class _TM58:
+        def __init__(self, shape):
+            self.shape = shape
+
+    class _Node58:
+        def __init__(self, op, target, shape=None):
+            self.op, self.target = op, target
+            self.meta = {"tensor_meta": _TM58(shape)} if shape else {}
+
+    class _Graph58:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+    class _GM58:
+        def __init__(self, nodes):
+            self.graph = _Graph58(nodes)
+
+        def forward(self, *a, **kw):
+            raise RuntimeError("duck-type stand-in")
+
+    _gm_nondet58 = _GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default", (8, 512)),
+        _Node58("call_function", "aten.scatter_add.default"),
+        _Node58("output", "output"),
+    ])
+    with _warnings58.catch_warnings(record=True) as _w58:
+        _warnings58.simplefilter("always")
+        _compile58(_gm_nondet58, [])
+    check("_tsugi_compile warns about nondeterministic ops (audit_fx→warning facade wired)",
+          len(_w58) == 1 and "scatter_add" in str(_w58[0].message)
+          and "noise floor" in str(_w58[0].message))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

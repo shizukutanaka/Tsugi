@@ -5,6 +5,23 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **tsugi_torch._tsugi_compile — nondeterministic_ops を警告に反映（FEATURE-AUDIT.md A-3 の一部）**:
+  `fxbridge.audit_fx()` は `nondeterministic_ops`/`requires_noise_floor`（scatter_add 等
+  atomicAdd 由来の非決定 op の静的検出）を既に計算していたが、`_tsugi_compile()` の
+  ユーザー向け警告メッセージには一切反映されていなかった——audit_fx の戻り値が
+  facade（実際にユーザーへ届く警告）に届いていない、このプロジェクトが繰り返し
+  見つけてきた欠陥と同型。加えて `tsugi_torch._tsugi_compile` には**専用テストが
+  一件も存在しなかった**ことも判明（`test_compile.py` は無関係な `tsugi.compile`
+  DSL フロントエンドのテスト）。
+
+  - `_tsugi_compile()`: `rep["requires_noise_floor"]` が真なら警告に
+    `[non-deterministic: {ops} → noise floor 実測が必須]` を追加。scatter_add 等の
+    op のみを含みグラフに数値 op（matmul 等）が無い場合でも警告が出るよう、
+    警告発火条件を `rep["n_ops"] or rep["requires_noise_floor"]` に拡張。
+  - `tests/correctness/test_tsugi_torch_compile.py`（新規）: torch 無し環境でも
+    duck-typed FX スタンドインで警告文言を検証する 3 テスト。
+  - verify.py: 143→144 不変条件（58番）
+
 - **verify.py — facade 未接続の恒常検査を追加（FEATURE-AUDIT.md A-6 の本体を解消）**:
   このプロジェクトはソース参照スキャンで 11 件の「実装済みだが facade（audit 系）から
   呼ばれない」欠陥を発見・修正してきたが、そのスキャン自体は毎回手動の Python
