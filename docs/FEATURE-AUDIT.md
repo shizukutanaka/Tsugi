@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 143/143 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 144/144 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -33,7 +33,7 @@
 |---|---|---|---|---|---|
 | A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
-| A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 未着手 | `audit_fx` しか呼ばず、`audit_runtime()` の豊富な検証が torch 経路に届かない |
+| A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 一部解消(efdc027) | nondeterminism 警告は接続済み。worstcase/attribution/LAYOUT/タスク別 decision は依然未接続 |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
 | A-5 | 不足 | P1 | `propagation.py` `propagate()` | 未着手 | 正規化層（LayerNorm/RMSNorm）による scale リセットを追えない |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
@@ -91,13 +91,21 @@
 
 ### P1（P0 の次）
 
-3. **[A-3] `python/tsugi_torch/__init__.py` `_tsugi_compile()` が `audit_fx` しか呼ばない**
+3. **[A-3] 一部解消(commit efdc027)** `python/tsugi_torch/__init__.py` `_tsugi_compile()`
+   が `audit_fx` しか呼ばない
    - 何が無いか: torch.compile バックエンド経路は FX グラフの静的監査
      （`fxbridge.audit_fx`: 増幅 op・モデル発散・非決定 op・dynamic shape 検出）のみ。
      `audit_runtime()` が持つ豊富な検証（worstcase 能動探索・attribution 層別診断・
      LAYOUT 判別・タスク別 decision）は torch 経路に届かない。
-   - なぜ危険か: 製品の想定入口は `torch.compile(model, backend="tsugi")`。そこから
-     使えない機能は大半のユーザーに存在しないのと同じ。
+   - **一部解消済み**: `audit_fx` 自体は既に `nondeterministic_ops`/`requires_noise_floor`
+     を計算していたが、`_tsugi_compile()` の警告メッセージにはそれが一切反映されて
+     いなかった（audit_fx の戻り値がユーザー向け警告という facade に届いていない、
+     という同型の未接続）。警告メッセージに non-deterministic op 情報を追加し、
+     `tests/correctness/test_tsugi_torch_compile.py`（新規・torch 無し環境で
+     duck-typed FX スタンドインを使う）で固定した。
+   - なぜ危険か（残る部分）: 製品の想定入口は `torch.compile(model, backend="tsugi")`。
+     そこから使えない機能（worstcase・attribution・LAYOUT 判別・タスク別 decision）は
+     依然として大半のユーザーに存在しないのと同じ。
    - 推奨アクション: example_inputs から実行時検証に必要なデータ（代表テンソル・logits）を
      best-effort で取り出し、`audit()` の `sample=` / `ref_logits=` に相当する情報を
      警告メッセージに追加する段階的接続。フル接続は実行時出力が要るため codegen 後。
