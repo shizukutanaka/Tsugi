@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 137/137 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 143/143 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -36,7 +36,7 @@
 | A-3 | 不足 | P1 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 未着手 | `audit_fx` しか呼ばず、`audit_runtime()` の豊富な検証が torch 経路に届かない |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
 | A-5 | 不足 | P1 | `propagation.py` `propagate()` | 未着手 | 正規化層（LayerNorm/RMSNorm）による scale リセットを追えない |
-| A-6 | 不足 | P1 | facade 未接続スキャン全般 | 未着手 | デッドコード／未接続検出が手動のまま（CI 化されていない） |
+| A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | P2 | `decision.py` 統計判定 | 未着手 | per-sample δ・多 seed 分布報告が単一 seed のまま |
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
@@ -117,13 +117,16 @@
    - 推奨アクション: `GraphOp` に scale 伝播を追加し、正規化 op で発散を再基準化する版を
      検討。residual（`residual=True` の √ 合成）と同様の一次近似でよい。
 
-6. **[A-6] facade 未接続・デッドコードの機械的スキャンが手動のまま（Q56）**
-   - 何が無いか: 「実装済みだが facade から呼ばれない関数」を検出する仕組みが CI に無い。
-     過去にこの型の欠陥が 10 件見つかっている（下記セクション B）。
-   - なぜ危険か: 新機能を追加するたびに同型の欠陥（機能はあるが届かない）が再発しうる。
-     実際に commit b0e7da3〜4abeaa9 の間、毎回のように発見された。
-   - 推奨アクション: セクション D のスキャン手法を `verify.py` の不変条件にする。
-     module-private helper の false positive を除外リストで管理する保守コストと相談。
+6. **[A-6] ✅ 解消済み(commit 88846ec)** facade 未接続・デッドコードの機械的
+   スキャンが手動のままだった問題（Q56）
+   - 何が無かったか: 「実装済みだが facade から呼ばれない関数」を検出する仕組みが
+     CI に無く、毎回手動の Python ワンライナーで実行していた。過去にこの型の
+     欠陥が 11 件見つかっている（下記セクション B）。
+   - 修正内容: `verify._facade_disconnected_functions()` を追加し、セクション D の
+     スキャン手法を `verify.py` の不変条件にした。`_FACADE_DISCONNECT_ALLOWLIST` で
+     意図的な非接続（B-2）と既知の未実装ギャップ（A-12）を理由つきで明示的に除外し、
+     許容リスト外の新規未接続だけを報告する。plant-and-detect のスモークテストで
+     検出器自体が機能することを確認済み。verify.py 不変条件 57 番。
 
 12. **[A-12] `audit()` の propagation phase が SSA の実 DAG 構造を捨てて線形化している**
    - 何が無いか: `python/tsugi/ir.py` の `Op` は `operands: list[Value]` / `result: Value` を
