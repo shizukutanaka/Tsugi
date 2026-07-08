@@ -66,6 +66,65 @@ def _orphan_tests() -> list[str]:
     return orphans
 
 
+# facade 未接続の許容リスト（意図的な非接続・理由つき）。
+# docs/FEATURE-AUDIT.md セクション B-2（意図的に facade 非接続）・A-12（既知の
+# 未実装ギャップ）と対応する。新たに正当な理由で非接続にする関数はここに追記する。
+_FACADE_DISCONNECT_ALLOWLIST: dict[str, str] = {
+    "bisect_onset": "O(log L) の代替探索アルゴリズム。diagnose() は既に全層 divergence "
+                    "を計算済みで恩恵がないため意図的に別 API のまま",
+    "grid_search": "タイル構成探索ユーティリティ（GPU codegen 実装後に本経路へ・pre-codegen）",
+    "make_corpus": "検証器自身を検証するメタツール（開発時の校正用・製品判定経路でない）",
+    "evaluate": "検証器自身を検証するメタツール（開発時の校正用・製品判定経路でない）",
+    "roc_sweep": "検証器自身を検証するメタツール（開発時の校正用・製品判定経路でない）",
+    "op_is_nondeterministic": "nondeterminism_reason の便宜的な bool ラッパ"
+                              "（classify_nondeterminism は reason 文字列側を使う）",
+    "simulate_nondeterministic_reduction": "GPU 実機なしで検証層をテストする CPU シミュレータ"
+                                           "（テスト専用が正当）",
+    "simulate_batch_variant_reduction": "GPU 実機なしで検証層をテストする CPU シミュレータ"
+                                        "（テスト専用が正当）",
+    "occupancy_gap": "cross_vendor_occupancy(vendors=targets) に一般化されたが、"
+                     "2 者間の簡易 API として維持（意図的な下位互換）",
+    "oracle_is_trustworthy": "verify_oracle().ok の便宜ラッパ（audit は verify_oracle を直接使う）",
+    "propagate_dag": "FEATURE-AUDIT.md A-12: SSA の operand/result から fork/merge を"
+                     "再構築するアルゴリズムが要る大規模作業のため意図的に据え置き",
+    "model_tolerance": "propagate(ops).model_divergence の便宜ラッパ",
+    "changed_fields": "certify/is_stale の内部部品（上位関数経由で facade は利用済み）",
+    "simulate_rollout": "GPU 実機なしで検証層をテストする CPU シミュレータ（テスト専用が正当）",
+}
+
+
+def _facade_disconnected_functions() -> list[str]:
+    """`python/tsugi/*.py`・`python/tsugi_torch/*.py` の公開関数のうち、自ファイル内
+    でも他のソースファイルからも一切呼ばれていない（= テストからしか呼ばれない、
+    または完全にデッド）ものを検出する。
+
+    このプロジェクトは 11 件の「実装済みだが facade（audit 系）から呼ばれない」欠陷を
+    ソース参照スキャンで発見・修正してきた（docs/FEATURE-AUDIT.md セクション B-1）。
+    このスキャンを一度きりの手動作業でなく恒常的な不変条件にし、新機能追加のたびに
+    同型の欠陥が紛れ込むのを機械的に検出する。既知の意図的な非接続は
+    `_FACADE_DISCONNECT_ALLOWLIST` で除外し、そこに無い新規の未接続だけを報告する。
+    """
+    import re
+
+    files = list((PY / "tsugi").glob("*.py")) + list((PY / "tsugi_torch").glob("*.py"))
+    texts: dict[Path, str] = {}
+    for p in files:
+        try:
+            texts[p] = p.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+    unexpected: list[str] = []
+    for f, src in sorted(texts.items()):
+        for fn in re.findall(r"^def ([a-z][a-zA-Z0-9_]*)\(", src, re.M):
+            if fn in _FACADE_DISCONNECT_ALLOWLIST:
+                continue
+            in_own = src.count(fn) > 1
+            in_src = any(fn in t for g, t in texts.items() if g != f)
+            if not in_own and not in_src:
+                unexpected.append(f"{f.name}:{fn}")
+    return unexpected
+
+
 def main() -> int:
     # 1. 課金コード不在（絶対禁止）
     billing = [h for h in _grep("stripe", "*.py") + _grep("Stripe", "*.py")
@@ -1003,6 +1062,16 @@ def main() -> int:
     if _orphans:
         for o in _orphans:
             print(f"    orphan: {o}")
+
+    # 57. python/tsugi(_torch)/ の公開関数に新規の facade 未接続（実装済みだが誰からも
+    # 呼ばれない）が紛れていないことを機械検査する（FEATURE-AUDIT.md A-6 の本体を解消）。
+    # 既知の意図的な非接続は _FACADE_DISCONNECT_ALLOWLIST で除外済み。
+    _disconnected = _facade_disconnected_functions()
+    check("no new facade-disconnected functions beyond the documented allowlist",
+          not _disconnected)
+    if _disconnected:
+        for d in _disconnected:
+            print(f"    disconnected: {d}")
 
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "

@@ -5,6 +5,22 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **verify.py — facade 未接続の恒常検査を追加（FEATURE-AUDIT.md A-6 の本体を解消）**:
+  このプロジェクトはソース参照スキャンで 11 件の「実装済みだが facade（audit 系）から
+  呼ばれない」欠陥を発見・修正してきたが、そのスキャン自体は毎回手動の Python
+  ワンライナーで実行していた（第18・19回等）。今回これを恒常的な不変条件にする。
+
+  - `verify._facade_disconnected_functions()`: `python/tsugi/*.py`・
+    `python/tsugi_torch/*.py` の公開関数のうち、自ファイル内でも他ソースからも
+    一切呼ばれていないものを検出する。
+  - `_FACADE_DISCONNECT_ALLOWLIST`: 意図的な非接続（`docs/FEATURE-AUDIT.md` B-2 の
+    メタツール群・シミュレータ・CLI 等）と、既知の未実装ギャップ（A-12: `propagate_dag`
+    の DAG 対応）を理由つきで明示的に除外。許容リストに無い新規の未接続だけを報告する。
+  - plant-and-detect のスモークテストで検出器自体が機能することを確認済み
+    （意図的に非接続の関数を仕込み、それだけを正しく検出することを確認）。
+  - 現時点で許容リスト外の新規未接続はゼロ。
+  - verify.py: 142→143 不変条件（57番）
+
 - **docs/MODEL-USAGE-GUIDE.md — Claude モデル使い分け表（個人用メモ）**:
   このセッションで実際に観測された `/model` 切り替えパターン（戦略的・探索的な
   指示の直前は Fable 5、スコープの定まった継続作業の直前は Sonnet 5）を根拠に、
