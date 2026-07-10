@@ -5,6 +5,23 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **verify.py — 依存ライセンスの自動監査を追加（SOCRATIC-50 Q42）**:
+  `docs/SOCRATIC-50-improvements.md` Q42「依存/ライセンス監査は手動。permissive 主張の
+  自動チェックは？」に対応。`pip-licenses` 等の外部ツールやネットワークアクセスに
+  頼らず、`python/pyproject.toml` の宣言済み依存（`numpy`・`torch`）を正規表現で
+  抽出し、ライセンス許容リスト（両方 permissive・Apache-2.0 本体との配布互換性あり）
+  と照合する恒常ゲートを追加。新規依存を追加する際にライセンス確認を怠ると
+  CI が落ちる。
+
+  - `verify._declared_dependencies(text=None)`: `[project] dependencies` と
+    `[project.optional-dependencies]` のみを対象にする（`[build-system] requires` は
+    ビルド時のみで配布物に含まれないため対象外）。`text` を渡すとテスト用に
+    実ファイルを変更せず検証できる。
+  - `verify._undocumented_dependencies()`: 許容リストに無い依存を列挙。
+  - plant-and-detect の自己検証（合成 TOML 文字列に未文書化の依存を仕込み、
+    検出器がそれだけを正しく検出することを確認）で検出器自体の動作を保証。
+  - verify.py: 147→149 不変条件（60番）
+
 - **正規化層（LayerNorm/RMSNorm）の scale リセット効果を可視化（FEATURE-AUDIT.md A-5）**:
   `propagation.propagate()` は正規化層をほぼ scale-invariant（`LN(c·x)≈LN(x)`）だと
   扱わず、通常の reduce と同じ増幅則を適用する。実際には正規化層が上流のスケール型

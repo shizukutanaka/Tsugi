@@ -66,6 +66,54 @@ def _orphan_tests() -> list[str]:
     return orphans
 
 
+# 依存パッケージのライセンス許容リスト（SOCRATIC-50 Q42）。
+# 全て permissive で本体（Apache-2.0）との配布互換性あり。新規依存を追加する際は
+# 実際のライセンスを確認してからここに追記することを強制する静的ゲート
+# （pip-licenses 等の外部ツール・ネットワークアクセス無しで動作・CPU-only ポリシーと整合）。
+_DEPENDENCY_LICENSE_ALLOWLIST: dict[str, str] = {
+    "numpy": "BSD-3-Clause",
+    "torch": "BSD-3-Clause 系（PyTorch 独自ライセンス・permissive）",
+}
+
+
+def _declared_dependencies(text: str | None = None) -> list[str]:
+    """`python/pyproject.toml` の実行時依存パッケージ名を抽出する（Q42・ライセンス監査用）。
+
+    `[build-system] requires`（ビルド時のみ・配布物に含まれない）は対象外。
+    `[project] dependencies` と `[project.optional-dependencies]` の各エントリのみを見る。
+    TOML パーサ（Python 3.10 では標準ライブラリに `tomllib` が無い）に依存せず、
+    この pyproject.toml の単純な構造に絞った正規表現で抽出する簡易実装。
+    `text` を渡すとその文字列を対象にする（テスト用・実ファイルを変更せず検証できる）。
+    """
+    import re
+
+    if text is None:
+        text = (PY / "pyproject.toml").read_text(encoding="utf-8")
+    raw: list[str] = []
+    m = re.search(r"dependencies\s*=\s*\[(.*?)\]", text, re.S)
+    if m:
+        raw += re.findall(r'"([a-zA-Z0-9_.-]+)', m.group(1))
+    opt_start = text.find("[project.optional-dependencies]")
+    if opt_start >= 0:
+        nxt = text.find("\n[", opt_start + 1)
+        opt_section = text[opt_start:nxt if nxt >= 0 else None]
+        for m2 in re.finditer(r"=\s*\[(.*?)\]", opt_section, re.S):
+            raw += re.findall(r'"([a-zA-Z0-9_.-]+)', m2.group(1))
+    pkgs: list[str] = []
+    for n in raw:
+        pkg = re.split(r"[<>=!~]", n)[0].strip()
+        if pkg and pkg not in pkgs:
+            pkgs.append(pkg)
+    return pkgs
+
+
+def _undocumented_dependencies() -> list[str]:
+    """宣言済み依存のうちライセンス許容リストに無いものを返す（Q42）。空なら全依存が
+    レビュー済みの permissive ライセンス。新規依存の追加漏れチェックに使う恒常ゲート。
+    """
+    return [d for d in _declared_dependencies() if d not in _DEPENDENCY_LICENSE_ALLOWLIST]
+
+
 # facade 未接続の許容リスト（意図的な非接続・理由つき）。
 # docs/FEATURE-AUDIT.md セクション B-2（意図的に facade 非接続）・A-12（既知の
 # 未実装ギャップ）と対応する。新たに正当な理由で非接続にする関数はここに追記する。
@@ -1140,6 +1188,21 @@ def main() -> int:
     ])
     check("audit_fx does not flag has_normalization for a graph without norm ops",
           not _afx59(_gm_no_norm59)["has_normalization"])
+
+    # 60. pyproject.toml の宣言済み依存が全て permissive ライセンス許容リストに載っている
+    # （SOCRATIC-50 Q42: 依存ライセンス自動監査）。新規依存追加時のレビュー漏れを防ぐ
+    # 恒常ゲート。plant-and-detect で検出器自体が機能することも併せて確認する。
+    check("all declared dependencies have a documented permissive license (Q42)",
+          not _undocumented_dependencies())
+    _synthetic_toml60 = (
+        'dependencies = ["numpy>=1.22", "some-undocumented-lib>=1.0"]\n'
+        '[project.optional-dependencies]\n'
+        'torch = ["torch>=2.1"]\n'
+    )
+    _synthetic_undoc60 = [d for d in _declared_dependencies(_synthetic_toml60)
+                          if d not in _DEPENDENCY_LICENSE_ALLOWLIST]
+    check("dependency license scan actually detects an undocumented dependency (plant-and-detect)",
+          _synthetic_undoc60 == ["some-undocumented-lib"])
 
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
