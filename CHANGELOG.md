@@ -5,6 +5,13 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **CONTRIBUTING.md — 遅延 import の方針を明文化（SOCRATIC-50 Q46）**:
+  多くの関数が関数内 import（遅延）を使うが基準が不明瞭だった問題に対応。
+  「Import 方針」節を新設し、標準ライブラリ/numpy はモジュール先頭・facade 層
+  （`audit.py` 等）のサブモジュール間 import は「呼ばれない phase のコスト回避」
+  「循環 import 予防」の 2 点を理由に関数内遅延・他モジュール非依存の葉モジュール
+  （`report.py`・`constants.py` 等）はモジュール先頭でよい、という基準を 1 箇所に明記。
+
 - **verify.py — 依存ライセンスの自動監査を追加（SOCRATIC-50 Q42）**:
   `docs/SOCRATIC-50-improvements.md` Q42「依存/ライセンス監査は手動。permissive 主張の
   自動チェックは？」に対応。`pip-licenses` 等の外部ツールやネットワークアクセスに

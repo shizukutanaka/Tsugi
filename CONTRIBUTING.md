@@ -43,6 +43,13 @@ Conventional Commits: `feat:` `fix:` `refactor:` `docs:` `test:` `chore:`
 - [ ] PII/課金コードを含まない
 - [ ] diff 500行以内（超過は分割）
 
+## Import 方針（SOCRATIC-50 Q46）
+標準ライブラリ・`numpy` はモジュール先頭で import する。`tsugi` 内部のサブモジュール間
+import は、`audit.py` のような facade 層（多数の独立サブモジュールを 1 箇所に束ねる層）
+では関数内で遅延 import する——(1) 呼ばれない phase の import コストを避ける、
+(2) サブモジュール同士の将来的な循環 import を予防する、の 2 点が理由。他モジュールに
+依存しない葉モジュール（`report.py`・`constants.py` 等）はこの限りでなくモジュール先頭で良い。
+
 ## 設計原則
 Carmack（性能）× Martin（単一責任）× Pike（簡潔）。
 ゼロ/最小依存。リファレンス実装先行（OpenCL 失敗の解毒剤）。

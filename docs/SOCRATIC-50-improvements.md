@@ -221,7 +221,10 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 一致させた。`decided_phases` プロパティ（旧 `static_phases` は後方互換エイリアス）。
 
 **Q46.** 多くの関数が関数内 import（遅延）。一貫していない（top と function 内が混在）。
-→ 循環回避のためだが基準が不明瞭。**改善: 遅延 import の方針を 1 行で明文化。**
+→ ✅ **修正済**（`CONTRIBUTING.md` 「Import 方針」節）: 標準ライブラリ/numpy は
+モジュール先頭、facade 層（audit.py 等）のサブモジュール間 import は「呼ばれない phase の
+コスト回避」「循環 import 予防」の 2 点を理由に関数内遅延、他モジュール非依存の葉モジュール
+（report.py・constants.py 等）はモジュール先頭でよい、という基準を明文化した。
 
 **Q47.** report の severity は Risk(IntEnum) だが equivalence は bool(equivalent)。粒度不一致。
 → ✅ **修正済**: EquivalenceReport.risk が equivalent→OK / divergent→BLOCK を返す。全レポートが
