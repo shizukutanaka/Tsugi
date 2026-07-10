@@ -24,10 +24,17 @@ dtype 別デフォルト（fp16=1e-3 / fp32=1e-4 / **fp64=1e-8**）を参照根�
 だった欠陥を発見・修正（fp64 を両 dict に追加）。残: safety 自体の dtype 別チューニングは実機校正待ち。
 
 **Q4.** 検出限界 `0.1*max_normal`（overflow 近接 WARN の 10%）の 0.1 は？
-→ envelope の閾値。任意。**改善: 閾値群（0.1・0.7・1.5・0.5*thresh 等）を名前付き定数化。**
+→ ✅ **修正済**: `envelope._OVERFLOW_WARN_FRAC`/`_EXP_WARN_FRAC`/`_SCALE_BLOCK_RATIO` として
+名前付き定数化済み。`test_envelope_thresholds_are_sensitive_to_their_constants`
+（`tests/correctness/test_envelope.py`）が Q6 の `SAFETY` 感度テストと同型の境界±固定
+（閾値直上/直下で判定が実際に反転することを実証）を追加し、値が判定境界を支配することを
+silent drift から守る。
 
 **Q5.** decision の `confident_k`/裾判定 `0.5 * overall_margin_median` の 0.5 は？
-→ 「near-tie 裾に集中していない」判定の閾値が任意。**改善: 根拠か感度分析を添える。**
+→ ✅ **修正済**: `decision._NEAR_TIE_MARGIN_FRAC` として名前付き定数化済み。
+`test_near_tie_threshold_is_sensitive_to_its_constant`（`tests/correctness/test_decision.py`）
+が同型の境界±固定を追加。根拠自体（0.5 という値の妥当性）は依然経験則だが、
+値を変えた時に判定が実際に反応することは機械的に保証されるようになった。
 
 **Q6.** これらの定数群はテストで固定されているが、値を変えた時の挙動は誰が守る？
 → ✅ **修正済**: `test_systematic_threshold_is_sensitive_to_safety_constant` が定数

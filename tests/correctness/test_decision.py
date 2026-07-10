@@ -90,6 +90,35 @@ def test_flips_concentrate_in_low_margin_tail():
     assert np.median(m[f]) < 0.3 * np.median(m)
 
 
+def test_near_tie_threshold_is_sensitive_to_its_constant():
+    """SOCRATIC-50 Q5: 定数 `_NEAR_TIE_MARGIN_FRAC` が判定境界を *実際に* 支配することを
+    境界±で固定する（Q6 の `SAFETY` 感度テストと同型・silent drift の番人）。
+
+    多数派（999件・margin=M_large・フリップ無し）と少数派（1件・margin=m_flip・
+    フリップ有り）を混ぜると、overall_margin_median は多数派に支配されて M_large に
+    固定され、flipped_margin_median は少数派 1 件の値 m_flip そのものになる。
+    m_flip を `_NEAR_TIE_MARGIN_FRAC・M_large` の直上/直下に置くことで、
+    「フリップが near-tie 裾に集中していない」警告の境界を狙って再現できる。
+    """
+    from tsugi.decision import _NEAR_TIE_MARGIN_FRAC
+
+    def _build(n_large, m_large, m_flip):
+        a = np.zeros((n_large + 1, 2), dtype=np.float64)
+        a[:n_large] = [m_large, 0.0]
+        a[n_large] = [m_flip, 0.0]
+        b = a.copy()
+        b[n_large] = [0.0, m_flip]   # このサンプルだけ argmax が反転する
+        return a.astype(np.float32), b.astype(np.float32)
+
+    def not_concentrated_warned(mult: float) -> bool:
+        a, b = _build(999, 10.0, _NEAR_TIE_MARGIN_FRAC * 10.0 * mult)
+        rep = compare_decisions(a, b, flip_budget=1.0)   # 巨大予算で near-tie 警告だけを見る
+        return any("集中していない" in f.message for f in rep.findings)
+
+    assert not_concentrated_warned(1.01), "閾値直上で「near-tie に集中していない」警告が出ない"
+    assert not not_concentrated_warned(0.99), "閾値直下で警告が誤って出ている"
+
+
 def test_predicted_bound_is_upper_bound():
     z = _logits()
     for eps in (1e-3, 1e-2, 1e-1):
@@ -434,6 +463,7 @@ def main() -> int:
         test_nucleus_flip_rate_is_probability_dependent,
         test_decision_flips_are_scale_invariant,
         test_flips_concentrate_in_low_margin_tail,
+        test_near_tie_threshold_is_sensitive_to_its_constant,
         test_predicted_bound_is_upper_bound,
         test_predicted_bound_uses_wilson_upper_bound_for_small_representative_set,
         test_numerical_divergence_not_sufficient_for_task_divergence,

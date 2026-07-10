@@ -41,7 +41,7 @@
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
-| A-11 | 不足 | P2 | 開発運用 | 一部解消(4605479) | 依存ライセンス自動監査・遅延 import 方針は解消済み。残りはマジックナンバー定数化のみ |
+| A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 未着手 | SSA の operand/result 参照から実 DAG を再構築せず線形化。fork/merge（attention・residual）を無視 |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
 | B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
@@ -179,10 +179,12 @@
    Q22/Q32（beam search・温度サンプリング下の分布一致）、Q31（oracle がある時の accuracy 差併記）。
 10. **[A-10] 検証基盤の構造**: Q33/Q34（`verify.py` 単一巨大 main() の関数分割・test との重複整理）、
     Q38（カバレッジ計測）、Q43（乱数依存テストの境界余裕点検）。
-11. **[A-11] 開発運用**: 残りは Q4/Q5（残りのマジックナンバーの named constant 化）のみ。
-    Q42（依存ライセンス自動監査）は ✅ **解消済み**（commit 4605479・
-    `verify._undocumented_dependencies()`）。Q46（遅延 import の方針明文化）も ✅ **解消済み**
-    （`CONTRIBUTING.md` 「Import 方針」節）。
+11. **[A-11] ✅ 解消済み** 開発運用: Q4/Q5（envelope/decision の残り閾値の named constant
+    化＋境界感度テスト）・Q42（依存ライセンス自動監査・commit 4605479）・Q46（遅延 import
+    の方針明文化・`CONTRIBUTING.md`「Import 方針」節）、いずれも解消済み。
+    Q4/Q5 は定数化済みだった実装に `test_envelope_thresholds_are_sensitive_to_their_constants`・
+    `test_near_tie_threshold_is_sensitive_to_its_constant`（Q6 の `SAFETY` 感度テストと
+    同型の境界±固定）を追加し、値が判定境界を実際に支配することを機械的に保証した。
 
 ---
 

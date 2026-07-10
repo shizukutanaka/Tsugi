@@ -58,6 +58,48 @@ def test_denormal_flagged_for_ftz_divergence():
     assert any("denormal" in f.message or "FTZ" in f.message for f in rep.findings)
 
 
+def test_envelope_thresholds_are_sensitive_to_their_constants():
+    """SOCRATIC-50 Q4: envelope の閾値定数（`_OVERFLOW_WARN_FRAC`・`_SCALE_BLOCK_RATIO`・
+    `_EXP_WARN_FRAC`）が判定境界を *実際に* 支配することを境界±で固定する
+    （Q6 の `SAFETY` 感度テストと同型・silent drift の番人）。
+    """
+    from tsugi.envelope import _EXP_WARN_FRAC, _OVERFLOW_WARN_FRAC, _SCALE_BLOCK_RATIO
+
+    # --- _OVERFLOW_WARN_FRAC: max|x| が dtype 上限の何割で overflow 近接 WARN か ---
+    lim16 = dtype_limits("float16")
+    env_big_scale = certify_gemm(K=64, dtype="float16", scale=1000.0)   # scale 系の副作用を避ける余裕
+
+    def overflow_near_warned(mult: float) -> bool:
+        x = np.full((10000,), 1.0, dtype=np.float32)   # RMS を低く保つ多数派
+        x[0] = _OVERFLOW_WARN_FRAC * lim16.max_normal * mult   # 単一の外れ値で max_abs を制御
+        rep = check_tensor(x, env_big_scale)
+        return any("overflow 近接" in f.message for f in rep.findings)
+
+    assert overflow_near_warned(1.01), "閾値直上で overflow 近接 WARN が出ない"
+    assert not overflow_near_warned(0.99), "閾値直下で overflow 近接 WARN が誤って出ている"
+
+    # --- _SCALE_BLOCK_RATIO: 認証 scale_max の何倍を超えたら BLOCK か ---
+    env = certify_gemm(K=64, dtype="float32", scale=1.0)
+
+    def scale_risk(mult: float) -> Risk:
+        x = np.full((100, 100), env.scale_max * _SCALE_BLOCK_RATIO * mult, dtype=np.float32)
+        return check_tensor(x, env).max_risk
+
+    assert scale_risk(1.01) == Risk.BLOCK, "閾値直上で scale BLOCK にならない"
+    assert scale_risk(0.99) == Risk.WARN, "閾値直下で scale WARN にならない"
+
+    # --- _EXP_WARN_FRAC: exp-overflow 閾値の何割で softmax 近接 WARN か ---
+    lim32 = dtype_limits("float32")
+    env32 = certify_gemm(K=64, dtype="float32", scale=1.0)
+
+    def softmax_risk(mult: float) -> Risk:
+        logit = np.array([[_EXP_WARN_FRAC * lim32.exp_overflow * mult]], dtype=np.float32)
+        return check_softmax_input(logit, env32).max_risk
+
+    assert softmax_risk(1.01) == Risk.WARN, "閾値直上で softmax 近接 WARN にならない"
+    assert softmax_risk(0.99) == Risk.OK, "閾値直下で誤って WARN になっている"
+
+
 def test_nan_is_block():
     env = certify_gemm(K=64, dtype="float16", scale=1.0)
     x = np.array([[1.0, np.nan]], dtype=np.float32)
@@ -210,6 +252,7 @@ def main() -> int:
         test_fp16_overflow_is_block,
         test_scale_exceedance_voids_certification,
         test_denormal_flagged_for_ftz_divergence,
+        test_envelope_thresholds_are_sensitive_to_their_constants,
         test_nan_is_block,
         test_fp16_softmax_logit_overflow,
         test_real_fp16_overflow_actually_happens,

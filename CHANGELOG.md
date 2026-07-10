@@ -5,6 +5,26 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **envelope/decision の閾値定数に境界感度テストを追加（SOCRATIC-50 Q4/Q5・FEATURE-AUDIT.md A-11 完全解消）**:
+  `_OVERFLOW_WARN_FRAC`/`_EXP_WARN_FRAC`/`_SCALE_BLOCK_RATIO`（envelope.py）・
+  `_NEAR_TIE_MARGIN_FRAC`（decision.py）は既に名前付き定数化済みだったが
+  （`docs/SOCRATIC-50-improvements.md` の ✅ マークが付いていなかっただけ——commit 39ce477
+  以前のラウンドで完了していたドキュメント記載漏れ）、Q6 の `SAFETY` 感度テスト
+  （境界±で判定が実際に反転することを固定・silent drift の番人）と同型の検証が
+  この 4 定数には無かった。
+
+  - `test_envelope_thresholds_are_sensitive_to_their_constants`
+    （`tests/correctness/test_envelope.py`）: 3 定数それぞれについて閾値直上/直下で
+    WARN/BLOCK の判定が反転することを固定。`_OVERFLOW_WARN_FRAC` の境界テストは
+    scale 系の副作用（RMS が別の BLOCK 条件を誤って踏む）を避けるため、単一の外れ値
+    要素で `max_abs` だけを制御する疎な配列を使う設計にした。
+  - `test_near_tie_threshold_is_sensitive_to_its_constant`
+    （`tests/correctness/test_decision.py`）: 多数派（999件・margin=M_large・
+    フリップ無し）と少数派（1件・フリップ有り）を混ぜ、`overall_margin_median` を
+    多数派で固定しつつ `flipped_margin_median` を少数派 1 件の値で直接制御する設計で、
+    `_NEAR_TIE_MARGIN_FRAC` の境界を狙って再現する。
+  - これで `docs/FEATURE-AUDIT.md` A-11（開発運用: Q4/Q5/Q42/Q46）が全て解消済みに。
+
 - **CONTRIBUTING.md — 遅延 import の方針を明文化（SOCRATIC-50 Q46）**:
   多くの関数が関数内 import（遅延）を使うが基準が不明瞭だった問題に対応。
   「Import 方針」節を新設し、標準ライブラリ/numpy はモジュール先頭・facade 層
