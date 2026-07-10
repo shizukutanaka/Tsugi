@@ -199,7 +199,12 @@ test から不変条件を生成する。**
 「CI 全通過」記述も実態に合わせて修正。
 
 **Q42.** ライセンス/依存監査は手動。permissive 主張の自動チェックは？
-→ 無い。**改善: 依存ライセンスの自動検査（pip-licenses 等）を verify に追加可能。**
+→ ✅ **修正済**（commit 4605479）: `verify._declared_dependencies()`/
+`_undocumented_dependencies()` が `pyproject.toml` の宣言済み依存を正規表現で抽出し
+（`tomllib` は Python 3.10 で標準ライブラリに無いため未使用）、permissive ライセンス
+許容リスト（`numpy`=BSD-3-Clause・`torch`=BSD-3-Clause 系）と照合する。新規依存が
+リストに無ければ CI が落ちる。plant-and-detect の自己検証で検出器自体の動作を保証済み。
+pip-licenses 等の外部ツール・ネットワークアクセス不要（CPU-only ポリシーと整合）。
 
 **Q43.** 乱数依存テストの flake 耐性は？seed 固定だが境界ケースは脆い。
 → 一部境界（test_single_run_flaky は midpoint で堅牢化済）。**改善: 全乱数テストの境界余裕を点検。**

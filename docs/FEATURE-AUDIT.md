@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 147/147 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 149/149 の機械検証可能な不変条件。
   `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -41,7 +41,7 @@
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
-| A-11 | 不足 | P2 | 開発運用 | 未着手 | 残りのマジックナンバー定数化・依存ライセンス自動監査・遅延 import 方針 |
+| A-11 | 不足 | P2 | 開発運用 | 一部解消(4605479) | 依存ライセンス自動監査は解消済み。残りのマジックナンバー定数化・遅延 import 方針は未着手 |
 | A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 未着手 | SSA の operand/result 参照から実 DAG を再構築せず線形化。fork/merge（attention・residual）を無視 |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
 | B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
@@ -179,8 +179,9 @@
    Q22/Q32（beam search・温度サンプリング下の分布一致）、Q31（oracle がある時の accuracy 差併記）。
 10. **[A-10] 検証基盤の構造**: Q33/Q34（`verify.py` 単一巨大 main() の関数分割・test との重複整理）、
     Q38（カバレッジ計測）、Q43（乱数依存テストの境界余裕点検）。
-11. **[A-11] 開発運用**: Q4/Q5（残りのマジックナンバーの named constant 化）、Q42（依存ライセンス
-    自動監査）、Q46（遅延 import の方針明文化）。
+11. **[A-11] 開発運用**: Q4/Q5（残りのマジックナンバーの named constant 化）、Q46（遅延 import
+    の方針明文化）。Q42（依存ライセンス自動監査）は ✅ **解消済み**（commit 4605479・
+    `verify._undocumented_dependencies()`）。
 
 ---
 
