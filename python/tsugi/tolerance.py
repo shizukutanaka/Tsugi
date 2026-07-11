@@ -18,6 +18,14 @@ TF32 (TensorFloat32) について:
   AMD ROCm は TF32 をサポートしないため、クロスベンダー比較では float32 入出力でも
   TF32 由来の 1e-3 級誤差が生じうる → dtype="tf32" で明示的に緩い許容を使う。
 
+  PyTorch 2.9 での API 変更: allow_tf32（bool）は非推奨となり
+  torch.backends.cuda.matmul.fp32_precision = 'ieee' | 'tf32'（文字列）に移行した
+  （set_float32_matmul_precision('highest')→ieee／'high'・'medium'→tf32 に対応）。
+  **FlexAttention のデフォルト精度がリリース間で ieee→tf32 に回帰した実例がある**
+  （pytorch#161022 とされる）——同じコードでも PyTorch のバージョンが変わるだけで
+  数値が変わりうる実在の事故。provenance（どの PyTorch バージョンで測定したか）の
+  stale 検出が必要な根拠になる（docs/SOURCES.md「torch.compile / Triton の数値精度 API」節）。
+
 FP8 (OCP OFP8: E4M3 / E5M2) について:
   H100/MI300/B200 世代の推論で主流（vLLM ネイティブ・キャリブレーション不要）。
   E4M3=4 指数 3 仮数（max 448・無限大なし・NaN のみ）、E5M2=5 指数 2 仮数（max 57344・inf/nan あり）。

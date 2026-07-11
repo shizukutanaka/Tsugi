@@ -29,6 +29,12 @@ tolerance.derive_tolerance は noise_floor 引数を持つが既定 0（＝決�
 - **浮動小数ノイズは独立ガウスでなく構造的（相関）**（arXiv:2511.00025）。これは calibration の
   系統（RMS 比）検出が必要十分でなく *必要* である根拠を外部から裏づける（max_abs 単独では
   相関誤差を見逃す）。
+- **vLLM batch-invariant モード（`VLLM_BATCH_INVARIANT=1`）は NVIDIA 専用**（Compute
+  Capability ≥ 8.0・RMSNorm/matmul/attention をカバー）。**ROCm/AMD は未対応**——
+  クロスベンダー比較では「NVIDIA 側だけ batch-invariant・AMD 側は従来通りバッチ変動の
+  影響を受ける」という新たな非対称が生じうる。measure_batch_variance は両ベンダーに
+  同じ手法で床を実測するため、この非対称自体（片側の床がもう片側よりゼロに近い）も
+  検出可能（docs/SOURCES.md 参照）。
 """
 from __future__ import annotations
 
@@ -44,11 +50,14 @@ DIVERGENT = "DIVERGENT"
 INDISTINGUISHABLE = "INDISTINGUISHABLE"  # クロス差がノイズ未満＝判定未定義
 
 
-# --- atomicAdd 由来で run-to-run 非決定な演算の静的カタログ（PyTorch 公式由来） ---
+# --- run-to-run 非決定な演算の静的カタログ（PyTorch 公式由来） ---
 # https://pytorch.org/docs/stable/notes/randomness.html
-# これらは GPU で atomicAdd を使い、スレッド到着順で和の順序が変わるため seed 固定でも
-# run-to-run で揺れる。**静的許容（derive_tolerance）だけでは不十分** で、noise floor の
-# *実測*（measure_noise_floor）が必須。値 = 非決定の理由（forward/backward のどちらか）。
+# 大半は GPU で atomicAdd を使い、スレッド到着順で和の順序が変わるため seed 固定でも
+# run-to-run で揺れる。一部（cumsum/kthvalue/median）は atomicAdd ではなく並列 scan の
+# 縮約順序や重複値の選択順が CUDA 実行スケジュールに依存するために揺れる——機構は違うが
+# 「seed 固定でも静的許容だけでは不十分・noise floor 実測が必須」という結論は同じなので
+# 同一カタログに含める。reason 文字列は機構を正確に区別する（catalog の判定は
+# requires_noise_floor に直結するため、機構を誤記すると診断メッセージが偽情報になる）。
 # これは measure_noise_floor の *静的な事前警告* 版: グラフにこれらの op があれば、
 # 実行前に「この比較は noise floor 実測なしには信頼できない」と宣言できる。
 ATOMIC_NONDET_OPS: dict[str, str] = {
@@ -59,6 +68,8 @@ ATOMIC_NONDET_OPS: dict[str, str] = {
     "bincount": "forward atomicAdd（ヒストグラム集計）",
     "scatter_reduce": "forward atomicAdd（reduce='sum' 経路）",
     "index_select_backward": "atomicAdd（gather の逆伝播）",
+    "histc": "forward atomicAdd（CUDA ヒストグラム集計・bincount と同機構）",
+    "put_": "forward atomicAdd（accumulate=True の重複添字・index_put と同機構）",
     # backward が atomicAdd を使う（勾配が run-to-run で揺れる → 学習で顕著）
     "embedding_bag": "backward atomicAdd（埋め込み勾配の集約）",
     "embedding": "backward atomicAdd（重複添字の勾配集約）",
@@ -67,6 +78,10 @@ ATOMIC_NONDET_OPS: dict[str, str] = {
     "adaptive_avg_pool": "backward atomicAdd（プーリング勾配の集約）",
     "grid_sample": "backward atomicAdd（サンプリング勾配の集約）",
     "interpolate": "backward atomicAdd（アップサンプリング勾配の集約）",
+    # atomicAdd ではなく CUDA の並列縮約スケジュール依存で run-to-run 揺れる（PyTorch 公式 doc 掲載）
+    "cumsum": "非atomic・CUDA 並列 scan の縮約順序（浮動小数の結合律非成立で揺れる）",
+    "kthvalue": "非atomic・CUDA 上の重複値の選択順序（同値要素間の tie-break が run ごとに変わる）",
+    "median": "非atomic・CUDA 上の重複値の選択順序（indices 付き median の tie-break が揺れる）",
 }
 
 

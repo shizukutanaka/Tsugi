@@ -143,6 +143,26 @@ def test_atomic_op_catalog_flags_pytorch_nondeterministic_ops():
         assert nondeterminism_reason(name) is None
 
 
+def test_histc_and_put_are_atomic_nondet_ops():
+    # histc(CUDA ヒストグラム)・put_(accumulate=True) も atomicAdd 由来（PyTorch 公式 doc 掲載）
+    for name in ("histc", "put_"):
+        assert op_is_nondeterministic(name), f"{name} を非決定と識別できない"
+        reason = nondeterminism_reason(name)
+        assert reason is not None and "atomicAdd" in reason
+
+
+def test_cumsum_kthvalue_median_are_nondet_but_not_atomic():
+    # cumsum/kthvalue/median は atomicAdd でなく CUDA の並列縮約・tie-break 順序で揺れる
+    # （PyTorch 公式 doc 掲載）。機構が違うため reason 文字列は "atomicAdd" と書いてはいけない
+    # （catalog の requires_noise_floor 判定を偽情報にしないため・機構の正確な区別）。
+    for name in ("cumsum", "kthvalue", "median"):
+        assert op_is_nondeterministic(name), f"{name} を非決定と識別できない"
+        reason = nondeterminism_reason(name)
+        assert reason is not None
+        assert "atomicAdd" not in reason, f"{name} は非atomicなのに reason が atomicAdd と誤記: {reason}"
+        assert "非atomic" in reason
+
+
 def test_op_catalog_tolerates_naming_variants():
     # 表記揺れ（末尾 _・aten 修飾・次元サフィックス）を前方一致で吸収する
     assert op_is_nondeterministic("scatter_add_")
@@ -181,6 +201,8 @@ def main() -> int:
         test_real_divergence_still_detected_above_noise,
         test_single_run_comparison_is_flaky,
         test_atomic_op_catalog_flags_pytorch_nondeterministic_ops,
+        test_histc_and_put_are_atomic_nondet_ops,
+        test_cumsum_kthvalue_median_are_nondet_but_not_atomic,
         test_op_catalog_tolerates_naming_variants,
         test_classify_nondeterminism_requires_noise_floor,
     ]
