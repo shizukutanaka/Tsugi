@@ -19,8 +19,8 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 149/149 の機械検証可能な不変条件。
-  `tests/correctness/` に 26 テストファイル。すべて CPU で実行可能（`python verify.py`）。
+- **検証基盤の規模**: `verify.py` に 153/153 の機械検証可能な不変条件。
+  `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
 
@@ -168,6 +168,10 @@
      既存の K ループ dot 集約ロジック（`_graph_ops` の `run_dots` 処理）との整合が要る。
      スコープが大きいため、他の facade 未接続修正（1 関数呼び出しの追加）と違って
      設計込みの複数ラウンドの作業になる見込み。
+   - 将来の精緻化候補: `equivalence.simulate_vendor_matmul` は累積順序差のみを模擬する
+     単純モデル。テンサーコアのビット精度（累積幅・truncation/RNE 差）を明示的にモデル化する
+     手法が報告されている（docs/SOURCES.md「確度中」節・一次確認前）——`propagate_dag` の
+     fork/merge 構造が入った後、ノード単位の誤差モデルをこの方向に精緻化する余地がある。
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
@@ -248,10 +252,12 @@ facade から実際に呼ばれるかを必ず確認する）。
   上側限界・保守側に倒す（B-1 の修正で徹底済み）。
 - **CPU oracle と検証器の自己検証** — float64 リファレンス＋メタモルフィック検証
   （`oracle_check`）＋検証器の偽OK率測定（`calibration`）で「検証器を信じる根拠」まで検証。
-- **dtype テーブル** — float16/bfloat16/float32/float64/tf32/float8_e4m3/float8_e5m2 の
-  7+1 種を `tolerance.UNIT_ROUNDOFF`・`equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の
-  3 表で整合管理（新 dtype はこの 3 表に同時追加するのが規約）。
-- **機械検証可能な不変条件 128 件**（`verify.py`）と 26 テストファイル・property test
+- **dtype テーブル** — float16/bfloat16/float32/float64/tf32/float8_e4m3/float8_e5m2/
+  mxfp4_e2m1/mxfp6_e2m3/mxfp6_e3m2 の 10+1 種を `tolerance.UNIT_ROUNDOFF`・
+  `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
+  この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
+  （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
+- **機械検証可能な不変条件 153 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

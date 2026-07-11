@@ -5,6 +5,23 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **MXFP4/MXFP6（OCP Microscaling v1.0）dtype 対応・関連研究の SOURCES 反映**:
+  最新論文・仕様の調査で、NVIDIA Blackwell と AMD CDNA4（MI350/355）の両方が
+  HW ネイティブ対応する低精度フォーマットが FP8 に加え MX（Microscaling）ファミリーで
+  あることを確認。既存の FP8 追加時と同型の 3 表パターン（`tolerance.UNIT_ROUNDOFF`・
+  `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS`）で `mxfp4_e2m1`（仮数 1 bit・
+  全 dtype 中最粗）・`mxfp6_e2m3`・`mxfp6_e3m2` を追加。NVFP4（NVIDIA 専用・block 16・
+  E4M3 スケール）は AMD 対応 HW が存在しないため意図的に対象外とし、
+  「dtype 選定自体がクロスベンダー移植性判断」という知見として docstring と
+  `docs/SOURCES.md` に記録した。
+  - `verify.py` 不変条件 33c（mantissa-bit 順序・overflow リスク差）を追加、153/153 に到達。
+  - `docs/SOURCES.md` に MX spec / NVFP4 / torch.compile fp32_precision API（PyTorch 2.9・
+    FlexAttention の ieee→tf32 リリース間回帰）/ vLLM batch-invariant モードの ROCm 非対応を
+    出典つきで追記。arXiv ID を含む検索サマリ由来の主張には「一次確認前」の注記を付け、
+    確度の低い情報を実装値としてハードコードしない fail-safe epistemics を維持。
+  - `docs/FEATURE-AUDIT.md`: dtype テーブル記述を 7+1 種→10+1 種に更新、A-12 に
+    テンサーコアのビット精度モデルによる `simulate_vendor_matmul` 精緻化の将来候補を追記。
+
 - **envelope/decision の閾値定数に境界感度テストを追加（SOCRATIC-50 Q4/Q5・FEATURE-AUDIT.md A-11 完全解消）**:
   `_OVERFLOW_WARN_FRAC`/`_EXP_WARN_FRAC`/`_SCALE_BLOCK_RATIO`（envelope.py）・
   `_NEAR_TIE_MARGIN_FRAC`（decision.py）は既に名前付き定数化済みだったが

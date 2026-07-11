@@ -125,3 +125,59 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
 含意（Tsugi への取り込み）: 実効床 = max(run-to-run ノイズ, **batch-invariance 床**, 数値検出限界)。
 本番でバッチが変動するなら batch-variance を等価判定に織り込む。クロスベンダーでは「タイルが
 違う＝実効バッチが違う」ため、各ベンダーが個別に決定論的でも発散しうる。
+
+## Microscaling (MX) / NVFP4 低精度フォーマット（2025-26）
+
+> `tsugi.tolerance.UNIT_ROUNDOFF` / `tsugi.equivalence.TOLERANCE` / `tsugi.envelope.DTYPE_LIMITS`
+> の mxfp4_e2m1 / mxfp6_e2m3 / mxfp6_e3m2 エントリの根拠。
+
+確度高（一次スペックで確認可能）:
+- **OCP Microscaling Formats (MX) Specification v1.0**（OCP: Open Compute Project）
+  https://www.opencompute.org/documents/ocp-microscaling-formats-mx-v1-0-spec-final-pdf
+  - block=32 要素ごとに 1 個の共有スケール（E8M0・2^-127〜2^127・power-of-two のみ）。
+  - MXFP4 = 要素 E2M1（仮数 1 bit・max=6.0・min_normal=1.0）→ u=2⁻¹（全 dtype 中最粗）。
+  - MXFP6 = E2M3（仮数 3 bit・max=7.5）または E3M2（仮数 2 bit・max=28）。
+  - 丸めモードは実装定義（RNE/確率的丸め=SR）として仕様に残る——クロスベンダー発散源になりうる。
+- **NVIDIA Blackwell アーキテクチャ**（NVIDIA developer blog: "NVIDIA Blackwell Delivers
+  World-Record DeepSeek-R1 Inference Performance" 等の Blackwell Tensor Core 解説）と
+  **AMD CDNA4 (MI350/MI355) アーキテクチャ**（AMD "Introducing AMD CDNA 4 Architecture" blog）
+  は共に MXFP4/MXFP6/MXFP8 を HW ネイティブ対応する——これが Tsugi が MX ファミリーを
+  「クロスベンダー共通フォーマット」としてテーブル化する根拠。
+- **NVFP4**（NVIDIA blog: "Introducing NVFP4 for Efficient and Accurate Low-Precision
+  Inference"）: block=16・スケールは E4M3（power-of-two に限らない・2 段スケーリング）で
+  MX spec の NVFP4 ではない NVIDIA 独自拡張。AMD に対応 HW が存在しない。
+  → NVFP4 は Tsugi の 3 テーブルに**意図的に含めない**（対象外）。NVFP4 で量子化した
+  モデルはクロスベンダー移植それ自体が不能——これは許容誤差のチューニング問題でなく
+  「そもそもこの dtype を選んで良いか」という移植性判断であり、数値許容モデルの範囲外。
+
+確度中（検索サマリ由来・一次確認前——将来の精緻化候補として記録のみ）:
+- テンサーコアのビット精度モデル（arXiv 2512.07004、2511.10909 とされる）: クロスベンダー
+  matmul の発散を累積幅＋truncation/RNE 差として決定論的にモデル化できるとする報告。
+  `tsugi.equivalence.simulate_vendor_matmul` の外部裏づけになりうるが、arXiv ID は
+  検索サマリ経由で得たものであり一次確認前（ハードコード前に確認要）。
+- TBIK（arXiv 2511.17826 とされる）: 縮約木トポロジーが一致すれば TP サイズに依らず
+  ビット一致するという報告。既存の batch-invariance 節（「タイルが違う＝実効バッチが違う」）
+  の一般化に相当しうるが同様に一次確認前。
+
+## torch.compile / Triton の数値精度 API（2025-26 動向）
+
+> `tsugi.tolerance` の TF32 記述・`tsugi.nondeterminism` カタログの根拠追補。
+
+- **PyTorch 2.9: fp32 精度 API の変更**。`torch.backends.cuda.matmul.allow_tf32`（bool）は
+  非推奨となり `torch.backends.cuda.matmul.fp32_precision = 'ieee' | 'tf32'`（文字列）へ移行。
+  `set_float32_matmul_precision('highest')`→ieee ／ `'high'`・`'medium'`→tf32 に対応。
+  PyTorch リリースノート・`torch.backends.cuda` ドキュメント参照。
+  - **FlexAttention のデフォルト精度がリリース間で ieee→tf32 に回帰した実例**
+    （GitHub pytorch/pytorch issue #161022 とされる）——同じコードでも PyTorch の
+    バージョンが変わると数値が変わりうる実例。provenance の stale 検出が必要な根拠。
+- **vLLM batch-invariant モード**（`VLLM_BATCH_INVARIANT=1`。vLLM ドキュメント／
+  Thinking Machines Lab のバッチ不変カーネルを取り込んだもの）: RMSNorm/matmul/attention の
+  縮約順序をバッチサイズ非依存に固定する。**NVIDIA（Compute Capability ≥ 8.0）専用——
+  ROCm/AMD は未対応**。クロスベンダー比較では「片側だけ batch-invariant」という
+  新たな非対称が生じうる（AMD 側は従来通りバッチ変動の影響を受ける）。
+- Triton: `tl.dot(input_precision=)` に `ieee`/`tf32`/`tf32x3`、環境変数
+  `TRITON_F32_DEFAULT` で既定精度を制御可能（Triton ドキュメント）。
+- NeurIPS 2025「Understanding and Mitigating Numerical Sources of Nondeterminism in
+  LLM Inference」（arXiv 2506.09501 とされる）・SGLang の deterministic mode ブログ:
+  vLLM のバッチ不変性知見と独立に類似の LLM 推論非決定性対策が業界で並行して進んでいる
+  という傍証（検索サマリ由来・一次確認前）。
