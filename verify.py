@@ -720,6 +720,28 @@ def main() -> int:
           and not any("overflow" in f.message
                       for f in check_tensor(_x8, _cg8(64, "float16", 1000.0)).findings))
 
+    # 33c. Microscaling (OCP MX v1.0 MXFP4/MXFP6): NVIDIA Blackwell と AMD CDNA4 の
+    # 両方が HW ネイティブ対応する唯一の共通低精度フォーマット群（NVFP4 は NVIDIA 専用のため対象外）
+    check("MX unit_roundoff ordered by mantissa bits (mxfp4 coarsest > mxfp6_e3m2 > mxfp6_e2m3)",
+          _URO["mxfp4_e2m1"] > _URO["mxfp6_e3m2"] > _URO["mxfp6_e2m3"]
+          and _URO["mxfp4_e2m1"] == 2.0 ** -1
+          and _URO["mxfp6_e3m2"] == 2.0 ** -2
+          and _URO["mxfp6_e2m3"] == 2.0 ** -3)
+    check("MX tolerance ordered by mantissa bits, mxfp4 coarser than fp8_e5m2 (1 mantissa bit)",
+          _TOL["mxfp4_e2m1"]["atol"] > _TOL["mxfp6_e3m2"]["atol"] > _TOL["mxfp6_e2m3"]["atol"]
+          and _TOL["mxfp4_e2m1"]["atol"] > _TOL["float8_e5m2"]["atol"])
+    check("MXFP4 narrowest range (max=6.0) among all dtypes makes overflow the dominant risk",
+          _dlim("mxfp4_e2m1").max_normal == 6.0
+          and _dlim("mxfp6_e2m3").max_normal == 7.5
+          and _dlim("mxfp6_e3m2").max_normal == 28.0
+          and _dlim("mxfp4_e2m1").max_normal < _dlim("mxfp6_e2m3").max_normal)
+    # MXFP4 では 8.0 が overflow するが fp16 ではしない（block スケールがあっても要素間レンジは狭い）
+    _xmx = np.full((4, 4), 8.0, np.float32)
+    check("MXFP4 flags 8.0 as overflow (BLOCK) where fp16 does not (max=6.0 narrowest of all dtypes)",
+          not check_tensor(_xmx, _cg8(64, "mxfp4_e2m1", 1.0)).in_envelope
+          and not any("overflow" in f.message
+                      for f in check_tensor(_xmx, _cg8(64, "float16", 8.0)).findings))
+
     # 34. nondeterminism 静的カタログ: atomicAdd 由来の非決定 op を実行前に検出（PyTorch 公式）
     from tsugi.nondeterminism import (classify_nondeterminism, op_is_nondeterministic)
     check("atomicAdd nondeterministic ops cataloged (scatter_add/index_add/bincount, PyTorch docs)",

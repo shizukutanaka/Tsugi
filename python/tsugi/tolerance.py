@@ -25,6 +25,28 @@ FP8 (OCP OFP8: E4M3 / E5M2) について:
   **per-tensor の amax スケーリング係数**: FP8 は値域が狭いため amax で正規化してから量子化する。
   全 GPU で共通スケールを使うと量子化誤差が増えるため各々が個別スケールを持つが、amax の縮約順序が
   ベンダー間で違うとスケール自体がずれ、テンソル全体が系統的にシフトする（calibration の系統検査が効く）。
+
+Microscaling (OCP MX v1.0: MXFP4/MXFP6/MXFP8) について（2025-26 外部調査ベース）:
+  block=32 要素ごとに 1 個の共有スケール（E8M0・2^-127〜2^127・power-of-two のみ）を持つ
+  低精度形式群。NVIDIA Blackwell と AMD CDNA4（MI350/MI355）の**両方が HW ネイティブ対応する
+  唯一の共通低精度フォーマット**（NVFP4 は NVIDIA 専用・後述）。
+    MXFP4 = 要素 E2M1（仮数 1 bit・max=6.0・min_normal=1.0）→ u=2^-1（全 dtype 中最粗）。
+    MXFP6 = E2M3（仮数 3 bit・max=7.5）または E3M2（仮数 2 bit・max=28）。
+  ここでの UNIT_ROUNDOFF は**要素型**の相対丸め誤差であり、block スケール（E8M0）は
+  block 単位の動的レンジを決めるだけで要素内の相対精度は変えない（scale は乗法的に
+  キャンセルされるため compare() の相対誤差には現れない）。ただし 1 block=32 要素に
+  スケール 1 個しかないため、block 内に outlier が 1 つあると他の 31 要素が丸め潰される
+  リスクは envelope 層（channel_scale_spread 等）で別途捉えるべき——ここの UNIT_ROUNDOFF は
+  その効果を含まない「量子化グリッドの粗さ」のみのモデル。
+  丸めモードは MX spec 上は実装定義（RNE/確率的丸め）——勾配側は確率的丸め、重み/活性側は
+  RNE が慣行（NVFP4/MXFP4 学習論文, 2025）。RNE か SR かの実装差もクロスベンダー発散源になりうる。
+
+  NVFP4（NVIDIA Blackwell 専用・AMD 非対応）: 要素は MXFP4 と同じ E2M1 だが block=16・
+  スケールは E4M3（power-of-two に限らずより細かい block 内配置が可能）。**AMD に対応する
+  HW が存在しないため、NVFP4 で量子化したモデルはそもそもクロスベンダー移植の対象外**——
+  これは数値許容の問題でなく dtype 選定自体の移植性判断であり、Tsugi の
+  「クロスベンダー共通フォーマットのみ」という UNIT_ROUNDOFF/TOLERANCE/DTYPE_LIMITS の
+  対象範囲から意図的に除外する。
 """
 from __future__ import annotations
 
@@ -47,6 +69,12 @@ UNIT_ROUNDOFF = {
     # 各ベンダーが amax を別の縮約順序で計算するとスケールがずれ、テンソル全体が系統シフトする。
     "float8_e4m3": 2.0 ** -4,   # 3 仮数ビット → u = 0.0625（重み/活性・前向き）
     "float8_e5m2": 2.0 ** -3,   # 2 仮数ビット → u = 0.125（勾配・後ろ向き・さらに粗い）
+    # Microscaling (OCP MX v1.0)。NVIDIA Blackwell / AMD CDNA4 の両方が HW ネイティブ対応する
+    # 唯一の共通低精度フォーマット群（NVFP4 は NVIDIA 専用のためここに含めない）。
+    # u は要素型の相対丸め誤差（block スケール E8M0 は動的レンジのみを決める・上記 docstring 参照）。
+    "mxfp4_e2m1": 2.0 ** -1,   # 1 仮数ビット → u = 0.5（全 dtype 中最粗）
+    "mxfp6_e2m3": 2.0 ** -3,   # 3 仮数ビット → u = 0.125
+    "mxfp6_e3m2": 2.0 ** -2,   # 2 仮数ビット → u = 0.25
 }
 
 

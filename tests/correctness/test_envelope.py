@@ -183,6 +183,35 @@ def test_fp8_e5m2_wider_range_than_e4m3():
     assert dtype_limits("float8_e5m2").max_normal == 57344.0
 
 
+def test_mxfp4_extremely_narrow_range_makes_overflow_the_dominant_risk():
+    """MXFP4(E2M1) は max=6.0 と全 dtype 中最狭。8.0 のような小さな値でも overflow する。
+
+    OCP MX v1.0: NVIDIA Blackwell / AMD CDNA4 の両方が HW ネイティブ対応する
+    最粗フォーマット。block スケール(E8M0)があっても block 内要素の相対レンジは
+    この表の通り極端に狭い（tolerance.py 冒頭 docstring 参照）。
+    """
+    lim = dtype_limits("mxfp4_e2m1")
+    assert lim.max_normal == 6.0
+    env = certify_gemm(K=64, dtype="mxfp4_e2m1", scale=1.0)
+    x = np.full((4, 4), 8.0, dtype=np.float32)
+    rep = check_tensor(x, env)
+    assert not rep.in_envelope, "MXFP4 で 8.0 が overflow にならない（max=6.0 のはず）"
+    assert rep.max_risk == Risk.BLOCK
+    # 同じ 8.0 は fp16(max=65504) では overflow しない → dtype 依存の overflow リスク差を実証
+    fp16_findings = check_tensor(x, certify_gemm(K=64, dtype="float16", scale=8.0)).findings
+    assert not any("overflow" in f.message for f in fp16_findings), \
+        "fp16(max=65504) で 8.0 が overflow 判定された（想定外）"
+
+
+def test_mxfp6_variants_range_ordering():
+    """MXFP6 の 2 バリアント: E3M2(max=28) が E2M3(max=7.5) より広い（指数 3 vs 2 bit）。"""
+    assert dtype_limits("mxfp6_e3m2").max_normal > dtype_limits("mxfp6_e2m3").max_normal
+    assert dtype_limits("mxfp6_e3m2").max_normal == 28.0
+    assert dtype_limits("mxfp6_e2m3").max_normal == 7.5
+    # mxfp4 が MX ファミリー中で最も狭い
+    assert dtype_limits("mxfp4_e2m1").max_normal < dtype_limits("mxfp6_e2m3").max_normal
+
+
 def test_outlier_features_break_single_scale():
     # outlier feature(massive activations): 数チャネルだけ巨大→単一 scale 仮定が破綻し WARN
     rng = np.random.default_rng(0)
@@ -261,6 +290,8 @@ def main() -> int:
         test_tf32_dtype_limits_match_float32,
         test_fp8_e4m3_narrow_range_makes_overflow_the_main_risk,
         test_fp8_e5m2_wider_range_than_e4m3,
+        test_mxfp4_extremely_narrow_range_makes_overflow_the_dominant_risk,
+        test_mxfp6_variants_range_ordering,
         test_certify_from_sample_measures_real_scale,
         test_certify_from_sample_zero_tensor,
         test_certify_from_sample_small_scale,
@@ -274,7 +305,8 @@ def main() -> int:
             ok = False
     # 参考: fp16 と bf16 のエンベロープ差（overflow vs precision）
     print("\n--- dtype 別エンベロープ（IEEE 754 実値）---")
-    for d in ("float8_e4m3", "float8_e5m2", "float16", "bfloat16", "float32", "tf32", "float64"):
+    for d in ("float8_e4m3", "float8_e5m2", "mxfp4_e2m1", "mxfp6_e2m3", "mxfp6_e3m2",
+              "float16", "bfloat16", "float32", "tf32", "float64"):
         lim = dtype_limits(d)
         print(f"  {d:9s} max={lim.max_normal:.3g} min_normal={lim.min_normal:.2e} "
               f"exp-overflow at |x|>{lim.exp_overflow:.2f}")

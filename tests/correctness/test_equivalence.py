@@ -229,6 +229,35 @@ def test_fp8_e4m3_catches_real_divergence_but_accepts_quantization_noise():
     assert not rep_div.equivalent, "FP8 で真の発散(0.5)を見逃した（偽OK）"
 
 
+def test_mxfp_tolerance_ordering_matches_mantissa_bits():
+    """MXFP4/MXFP6 の許容が仮数ビット数の順に粗い（mxfp4 が全 dtype 中最粗）。
+
+    OCP MX v1.0: MXFP4=E2M1(仮数1bit)・MXFP6=E3M2(仮数2bit)/E2M3(仮数3bit)。
+    NVIDIA Blackwell と AMD CDNA4 の両方が HW ネイティブ対応する共通フォーマット群。
+    """
+    from tsugi.equivalence import TOLERANCE
+    from tsugi.tolerance import UNIT_ROUNDOFF
+    assert TOLERANCE["mxfp4_e2m1"]["atol"] > TOLERANCE["mxfp6_e3m2"]["atol"] > TOLERANCE["mxfp6_e2m3"]["atol"], (
+        "MXFP tolerance が仮数ビット順(4>e3m2>e2m3)でない")
+    assert TOLERANCE["mxfp4_e2m1"]["atol"] > TOLERANCE["float8_e5m2"]["atol"], (
+        "mxfp4(1仮数bit)が fp8_e5m2(2仮数bit)より厳しい")
+    assert UNIT_ROUNDOFF["mxfp4_e2m1"] > UNIT_ROUNDOFF["mxfp6_e3m2"] > UNIT_ROUNDOFF["mxfp6_e2m3"]
+    assert UNIT_ROUNDOFF["mxfp4_e2m1"] == 2.0 ** -1   # 1 仮数ビット（全 dtype 中最粗）
+    assert UNIT_ROUNDOFF["mxfp6_e3m2"] == 2.0 ** -2   # 2 仮数ビット
+    assert UNIT_ROUNDOFF["mxfp6_e2m3"] == 2.0 ** -3   # 3 仮数ビット
+
+
+def test_mxfp4_catches_real_divergence_but_accepts_quantization_noise():
+    """MXFP4(E2M1) 許容が量子化級ノイズは許し、真の発散は捕まえる（fail-safe の両立）。"""
+    a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    # 1 仮数ビット級の量子化ノイズ（±0.3 程度）は等価扱い
+    rep_noise = compare(a, a + 0.3, dtype="mxfp4_e2m1")
+    assert rep_noise.equivalent, f"MXFP4 量子化級ノイズを過剰検出（偽BLOCK）: {rep_noise.to_text()}"
+    # 10 倍のスケール発散は DIVERGENT（±0.3 では許容内に収まりうるほど粗いため強い発散を使う）
+    rep_div = compare(a, a * 10.0, dtype="mxfp4_e2m1")
+    assert not rep_div.equivalent, "MXFP4 で真の発散(×10)を見逃した（偽OK）"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -246,6 +275,8 @@ def main() -> int:
         test_tf32_unit_roundoff_matches_float16,
         test_fp8_tolerance_is_coarser_than_fp16,
         test_fp8_e4m3_catches_real_divergence_but_accepts_quantization_noise,
+        test_mxfp_tolerance_ordering_matches_mantissa_bits,
+        test_mxfp4_catches_real_divergence_but_accepts_quantization_noise,
     ]
     for t in tests:
         try:

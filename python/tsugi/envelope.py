@@ -59,6 +59,14 @@ DTYPE_LIMITS: dict[str, DtypeLimits] = {
     # E4M3 は max=448 と非常に狭い（amax スケーリングが必須な理由）。E5M2 は range 重視で max=57344。
     "float8_e4m3": DtypeLimits(448.0, 2.0 ** -6, math.log(448.0)),       # exp_of ≈ 6.10
     "float8_e5m2": DtypeLimits(57344.0, 2.0 ** -14, math.log(57344.0)),  # exp_of ≈ 10.96
+    # Microscaling (OCP MX v1.0)。NVIDIA Blackwell / AMD CDNA4 の両方が HW ネイティブ対応する
+    # 共通低精度フォーマット（NVFP4 は NVIDIA 専用のため対象外・tolerance.py 冒頭 docstring 参照）。
+    # ここの max_normal/min_normal は *要素型* の限界であり block スケール（E8M0）の
+    # 動的レンジは含まない——block 単位では ~2^127 まで表現できるが、block 内の要素間
+    # レンジはこの表の通り極端に狭い（1 block=32 要素にスケール 1 個のみ）。
+    "mxfp4_e2m1": DtypeLimits(6.0, 1.0, math.log(6.0)),    # exp_of ≈ 1.79（全 dtype 中最狭）
+    "mxfp6_e2m3": DtypeLimits(7.5, 1.0, math.log(7.5)),    # exp_of ≈ 2.01
+    "mxfp6_e3m2": DtypeLimits(28.0, 0.25, math.log(28.0)),  # exp_of ≈ 3.33
 }
 
 

@@ -35,6 +35,12 @@ TOLERANCE = {
     # クロスベンダーでは per-tensor amax スケールの差も乗る → 大幅に緩い許容が必要。
     "float8_e4m3": dict(atol=1e-1, rtol=1e-1),  # 3 仮数 (u=0.0625)・重み/活性
     "float8_e5m2": dict(atol=2e-1, rtol=2e-1),  # 2 仮数 (u=0.125)・勾配・最も粗い
+    # Microscaling (OCP MX v1.0)。tolerance.py の UNIT_ROUNDOFF と同じ比例定数
+    # （atol/rtol ≈ 1.6·u — fp8_e4m3: 1.6·0.0625=0.1／fp8_e5m2: 1.6·0.125=0.2 と整合）
+    # を延長する。NVIDIA Blackwell / AMD CDNA4 の両方が HW ネイティブ対応する共通フォーマット。
+    "mxfp4_e2m1": dict(atol=8e-1, rtol=8e-1),   # 1 仮数 (u=0.5)・全 dtype 中最粗
+    "mxfp6_e2m3": dict(atol=2e-1, rtol=2e-1),   # 3 仮数 (u=0.125)・fp8_e5m2 と同じ粗さ
+    "mxfp6_e3m2": dict(atol=4e-1, rtol=4e-1),   # 2 仮数 (u=0.25)
 }
 
 
