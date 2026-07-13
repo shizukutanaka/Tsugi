@@ -40,7 +40,7 @@
 | A-7 | 不足 | P2 | `decision.py` 統計判定 | 一部解消 | per-sample δ（Q19）は解消済み。多 seed 分布報告（Q48）が残る |
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
-| A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
+| A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() のテーマ別分割（Q34）は解消済み。カバレッジ計測（Q38）・乱数境界点検（Q43）が残る |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 未着手 | SSA の operand/result 参照から実 DAG を再構築せず線形化。fork/merge（attention・residual）を無視 |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
@@ -184,7 +184,10 @@
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
 9. **[A-9] タスクモデルの拡張**: Q21（代表 logit はキャリブレーション集合から、というガイド）、
    Q22/Q32（beam search・温度サンプリング下の分布一致）、Q31（oracle がある時の accuracy 差併記）。
-10. **[A-10] 検証基盤の構造**: Q33/Q34（`verify.py` 単一巨大 main() の関数分割・test との重複整理）、
+10. **[A-10] 検証基盤の構造**: Q34（`verify.py` 単一巨大 main() の関数分割）は解消済み——
+    61 セクションをテーマ別の 12 個の `_check_*()` 関数に分割し、`main()` は順に呼ぶだけの
+    薄い関数にした（挙動・実行順・check 文言・件数は分割前と一字一句同一であることを
+    出力 diff で確認済み）。残るのは Q33（test との重複整理の明文化）、
     Q38（カバレッジ計測）、Q43（乱数依存テストの境界余裕点検）。
 11. **[A-11] ✅ 解消済み** 開発運用: Q4/Q5（envelope/decision の残り閾値の named constant
     化＋境界感度テスト）・Q42（依存ライセンス自動監査・commit 4605479）・Q46（遅延 import

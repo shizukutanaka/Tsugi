@@ -173,7 +173,8 @@ def _facade_disconnected_functions() -> list[str]:
     return unexpected
 
 
-def main() -> int:
+def _check_prohibited_and_suites() -> None:
+    """不変条件 1-7: 禁止パターン・テストスイート通過・lowering 対応・正直な未実装宣言。"""
     # 1. 課金コード不在（絶対禁止）
     billing = [h for h in _grep("stripe", "*.py") + _grep("Stripe", "*.py")
                if "ADR" not in h and "FAQ" not in h]
@@ -199,7 +200,6 @@ def main() -> int:
         check(f"{t} PASS", rr.returncode == 0)
 
     # 6. dot は行列コア intrinsic へ写像（ADR-004）
-    sys.path.insert(0, str(PY))
     from tsugi.lowering import VENDOR_LOWERING
     check("dot→wmma (NVIDIA, ADR-004)", "wmma" in VENDOR_LOWERING["dot"]["nvidia"])
     check("dot→mfma (AMD CDNA, ADR-004)", "mfma" in VENDOR_LOWERING["dot"]["amd_cdna"])
@@ -217,6 +217,8 @@ def main() -> int:
         check("machine-code honestly unimplemented", True)
 
 
+def _check_core_pillars() -> None:
+    """不変条件 8-13: equivalence/occupancy/tolerance/feasibility/propagation/envelope の柱。"""
     # 8. equivalence 検出器が発散を捕まえる（新視点の柱）
     import numpy as np
     from tsugi.equivalence import compare, simulate_vendor_matmul
@@ -301,6 +303,11 @@ def main() -> int:
           check_outlier_features(_ol).max_risk == portability.Risk.WARN
           and channel_scale_spread(_ol) > 50.0)
 
+
+def _check_verifier_calibration() -> None:
+    """不変条件 14-16: 検証器の自己検証（calibration）・ノイズフロア・タスクレベル判定の柱。"""
+    import numpy as np
+
     # 14. calibration: 検証器そのものを検証（偽OK の非対称コストと検出限界・新視点6）
     from tsugi.calibration import (
         detectability_floor,
@@ -346,6 +353,13 @@ def main() -> int:
           flip_rate(va, vb) <= compare_decisions(va, vb).predicted_bound + 1e-9)
     check("high flip rate blocks at task level",
           not compare_decisions(va, vb, flip_budget=0.001).ok)
+
+
+def _check_audit_facades() -> None:
+    """不変条件 17-19: audit/audit_runtime/audit_cross_vendor の統合ファサード。"""
+    import numpy as np
+
+    from tsugi import portability
 
     # 17. audit: 統合ファサードが静的層を 1 判定に束ねる（運用統合）
     from tsugi.audit import audit
@@ -394,6 +408,16 @@ def main() -> int:
           audit_cross_vendor(_run(1.0, 1), _run(1.0, 2), K=256, n_runs=8).portable)
     check("audit_cross_vendor blocks a real cross-vendor divergence",
           not audit_cross_vendor(_run(1.0, 1), _run(1.05, 2), K=256, n_runs=8).portable)
+
+
+def _check_propagation_floors_and_search() -> None:
+    """不変条件 20-22 と続く無番号ブロック: 増幅 op・batch 不変性・系統発散・
+    shared-mode・oracle 検証・レイアウト判別・provenance・rollout・worstcase 探索。"""
+    import numpy as np
+
+    from tsugi import portability
+    from tsugi.calibration import is_equivalent_combined
+    from tsugi.nondeterminism import measure_noise_floor
 
     # 20. propagation: 相対増幅は reduce/softmax/exp のみ・empirical_cond は data-driven
     from tsugi.propagation import empirical_cond, is_amplifier
@@ -547,6 +571,14 @@ def main() -> int:
           analyze_worst_case(_wc_fp16, _wc_fp16, _wc_samples, tol=1e-6,
                              steps=200, seed=0).worst_divergence == 0.0)
 
+
+def _check_reports_and_diagnostics() -> None:
+    """不変条件 23-30: レポート統一・ROC・torch backend 静的監査・SAFETY 単一情報源・
+    attribution/blame 診断。"""
+    import numpy as np
+
+    from tsugi import portability
+
     # 23. equivalence も共通 Risk インターフェース（report 統一・Q44/Q47）
     from tsugi.equivalence import compare as _cmp
     _o = np.ones((4, 4), np.float32)
@@ -673,6 +705,14 @@ def main() -> int:
     check("layer_blame detects B divergence at layer 1 (da=0, db>0)",
           _lb_dists[1][0] == 0.0 and _lb_dists[1][1] > 0.1)
 
+
+def _check_dtype_precision() -> None:
+    """不変条件 31-33c: TF32/NaN タグ/float64/FP8/MX の dtype 3 テーブル整合。"""
+    import numpy as np
+
+    from tsugi.envelope import check_tensor
+    from tsugi.equivalence import compare
+
     # 31. TF32 dtype: NVIDIA Ampere+ の 10-bit 仮数 GEMM に fp16 と同等の許容を適用
     from tsugi.equivalence import TOLERANCE as _TOL
     from tsugi.tolerance import UNIT_ROUNDOFF as _URO
@@ -742,6 +782,9 @@ def main() -> int:
           and not any("overflow" in f.message
                       for f in check_tensor(_xmx, _cg8(64, "float16", 8.0)).findings))
 
+
+def _check_nondet_catalog_and_dynamic_shapes() -> None:
+    """不変条件 34-35: 非決定 op 静的カタログと dynamic shape 検出（FX 橋経由）。"""
     # 34. nondeterminism 静的カタログ: atomicAdd 由来の非決定 op を実行前に検出（PyTorch 公式）
     from tsugi.nondeterminism import (classify_nondeterminism, op_is_nondeterministic)
     check("atomicAdd nondeterministic ops cataloged (scatter_add/index_add/bincount, PyTorch docs)",
@@ -795,6 +838,31 @@ def main() -> int:
           _afx(_dynm)["has_dynamic_shapes"])
     check("static shape graph is NOT dynamic (no symbolic dims → has_dynamic_shapes=False)",
           not _afx(_statm)["has_dynamic_shapes"])
+
+
+def _check_late_facade_wiring() -> None:
+    """不変条件 37-46: certify_from_sample・backend 冪等性・audit facade の後期接続
+    （empirical_cond/robust noise floor/compare_task/attribution/worstcase/LAYOUT 判別）。"""
+    import numpy as np
+
+    from tsugi import portability
+    from tsugi.audit import audit, audit_runtime
+    from tsugi.envelope import certify_gemm, check_tensor
+    from tsugi.portcheck import _demo_module
+    from tsugi_torch.fxbridge import audit_fx as _afx
+
+    mod, block, dcfg = _demo_module()
+
+    class _N:
+        def __init__(s, op, t, shp=None):
+            s.op, s.target, s.meta = op, t, ({"tensor_meta": type("M", (), {"shape": shp})} if shp else {})
+
+    class _G:
+        def __init__(s, ns):
+            s.graph = type("GR", (), {"nodes": ns})
+    _gm = _G([_N("call_function", "aten.addmm.default", (8, 512)),
+              _N("call_function", "aten._softmax.default"),
+              _N("output", "output")])
 
     # 37. certify_from_sample: 実 RMS scale を測定して認証（scale=1 暗黙仮定を排除・Q14）
     # scale=1 で認証後 scale=50 のデータを check_tensor すると scale 超過 BLOCK が誤発火する。
@@ -979,6 +1047,19 @@ def main() -> int:
     check("audit_runtime does not tag a true scale divergence as LAYOUT (no false classification)",
           _eq_true46.max_risk == portability.Risk.BLOCK and "LAYOUT" not in _eq_true46.to_text())
 
+
+def _check_statistical_rigor() -> None:
+    """不変条件 47-53: 点推定でなく上側限界で判定する fail-safe 群と、
+    それを facade（audit_runtime/compare_task/occupancy phase）へ届ける接続。"""
+    import numpy as np
+
+    from tsugi import portability
+    from tsugi.audit import audit, audit_runtime
+    from tsugi.constants import SAFETY
+    from tsugi.portcheck import _demo_module
+
+    mod, block, dcfg = _demo_module()
+
     # 47. calibration.check_systematic は bias 点推定でなく上側限界(bias+stderr)で判定する（第20回）
     # 小 N テンソルではたまたま小さい bias が出て真の系統誤差を見逃しうる（偽OK）。
     # rollout.flip_rate_upper_bound と同じ fail-safe パターン（点推定でなく上側限界）を適用。
@@ -1102,6 +1183,14 @@ def main() -> int:
     check("audit() occupancy phase follows targets, not a hardcoded vendor pair",
           "amd_cdna" not in _occ53b.to_text() and "amd_rdna" in _occ53b.to_text())
 
+
+def _check_shape_guards() -> None:
+    """不変条件 54-55: 形状不一致を暗黙 broadcast に委ねず即 DIVERGENT にするガード。"""
+    import numpy as np
+
+    from tsugi import portability
+    from tsugi.equivalence import compare
+
     # 54. equivalence.compare は形状不一致を NumPy の暗黙 broadcast に委ねず即 DIVERGENT
     # にする（broadcast による偽OK/偽BLOCK を防ぐ・vendor が誤った形状を返すバグの実証）。
     _rng54 = np.random.default_rng(0)
@@ -1122,6 +1211,12 @@ def main() -> int:
     _ad55b = _art55(_a54, _a54.copy(), K=64, noise_floor=1e-6)
     check("audit_runtime same-shape path is unaffected (no regression)",
           _ad55b.portable)
+
+
+def _check_meta_integrity() -> None:
+    """不変条件 56-61: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）——検証基盤とコードベース自身の構造整合性。"""
+    import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
     # （= 一度は実行される）ことを機械検査する。「facade 未接続」と同型の欠陥が
@@ -1244,6 +1339,28 @@ def main() -> int:
           int(np.count_nonzero(_margin61(_z61) < 2.0 * _rel61 * _global_scale61)) == 0)
     check("flip_bound_from_divergence uses per-sample scale and does not underestimate it (Q19)",
           _fbd61(_z61, _rel61) > _pfb61(_z61, _rel61 * _global_scale61))
+
+
+def main() -> int:
+    """全不変条件をテーマ別グループの順で実行し、集計を印字する（SOCRATIC-50 Q34:
+    単一巨大 main() を分割し失敗箇所をグループ名で局所化できるようにした）。
+    実行順・check 文言・件数はグループ化前と同一（純粋なコード移動）。"""
+    sys.path.insert(0, str(PY))
+    for group in (
+        _check_prohibited_and_suites,
+        _check_core_pillars,
+        _check_verifier_calibration,
+        _check_audit_facades,
+        _check_propagation_floors_and_search,
+        _check_reports_and_diagnostics,
+        _check_dtype_precision,
+        _check_nondet_catalog_and_dynamic_shapes,
+        _check_late_facade_wiring,
+        _check_statistical_rigor,
+        _check_shape_guards,
+        _check_meta_integrity,
+    ):
+        group()
 
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "

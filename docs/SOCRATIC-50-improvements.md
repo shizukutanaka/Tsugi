@@ -174,7 +174,11 @@ propagation GraphOp へ写す（duck-typed・torch 不要でテスト）。実 t
 test から不変条件を生成する。**
 
 **Q34.** 単一巨大 main() の verify は失敗箇所の局所化が弱い。
-→ 1 関数に全 check。**改善: セクション分割（既に番号付きだが関数化）。**
+→ ✅ **修正済**: 61 セクションをテーマ別の 12 個の `_check_*()` 関数
+（禁止パターン／柱／calibration／audit facade／伝播と床／レポート診断／dtype 3 表／
+非決定カタログ／後期 facade 接続／統計的厳密さ／形状ガード／メタ整合性）に分割。
+`main()` は順に呼ぶだけの薄い関数。挙動・実行順・check 文言・件数は分割前と
+一字一句同一（リファクタ前後の出力 diff で機械的に確認）。
 
 **Q35.** テストは固定 seed の単発。数値主張なのに fuzz/property test が無い。
 → ✅ **修正済**: test_properties.py に 10 性質 × 200 試行のゼロ依存 property 検査を追加

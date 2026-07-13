@@ -4,6 +4,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Changed
+- **verify.py の単一巨大 main() をテーマ別 12 関数に分割（SOCRATIC-50 Q34・FEATURE-AUDIT A-10）**:
+  61 の番号付きセクション（1200 行超）が 1 つの `main()` に平坦に並び、失敗箇所の
+  局所化が弱かった構造を、テーマ境界に沿った 12 個の `_check_*()` 関数
+  （禁止パターン／検証層の柱／calibration／audit facade／伝播と床／レポート診断／
+  dtype 3 表／非決定カタログ／後期 facade 接続／統計的厳密さ／形状ガード／メタ整合性）に
+  分割。`main()` は各グループを順に呼ぶだけの薄い関数に。**挙動変更ゼロの純粋な
+  コード移動**——実行順・check 文言・件数（155/155）が分割前と一字一句同一であることを
+  リファクタ前後の出力 diff で機械的に確認した。グループを跨いで共有されていた
+  フィクスチャ（`_demo_module()` の module/config・FX グラフのスタンドイン）は
+  決定論的なので各関数内で再構築する。
+
 ### Fixed
 - **decision.flip_bound_from_divergence の per-sample δ 対応（SOCRATIC-50 Q19・偽OK方向の修正）**:
   δ_abs = δ_rel·scale の scale をバッチ全体のグローバル RMS だけから求めていたため、
