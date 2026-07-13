@@ -1226,6 +1226,25 @@ def main() -> int:
     check("dependency license scan actually detects an undocumented dependency (plant-and-detect)",
           _synthetic_undoc60 == ["some-undocumented-lib"])
 
+    # 61. decision.flip_bound_from_divergence は per-sample scale を使い、低スケール多数派に
+    # 紛れた高スケール near-tie サンプルのフリップ risk を過小評価しない（SOCRATIC-50 Q19）。
+    # δ_abs = δ_rel·RMS のグローバル RMS は「平均的スケール」であり、高スケールの少数
+    # サンプルにとって δ が過小評価され margin<2δ を満たさなくなる（偽OK方向）。
+    from tsugi.decision import flip_bound_from_divergence as _fbd61
+    from tsugi.decision import margin as _margin61
+    from tsugi.decision import predicted_flip_bound as _pfb61
+    _small61 = np.stack([np.full(5000, 0.05), np.full(5000, 0.03)], axis=-1)
+    _big61 = np.array([[50.0, 49.5]])   # 自身のスケール ~49.75 に対し margin=0.5 は near-tie
+    _z61 = np.concatenate([_small61, _big61], axis=0)
+    _rel61 = 0.01
+    _global_scale61 = float(np.sqrt(np.mean(_z61 ** 2)))
+    # Wilson 上側限界は k=0 でも >0 を返す（rule-of-three）ため bound==0 では検査できない。
+    # 「見逃し」の機構（k=0）と、ユーザーに見える効果（bound の厳密な増加）の両方を固定する。
+    check("global-RMS-only delta misses the high-scale near-tie outlier (reproduces the false-OK setup)",
+          int(np.count_nonzero(_margin61(_z61) < 2.0 * _rel61 * _global_scale61)) == 0)
+    check("flip_bound_from_divergence uses per-sample scale and does not underestimate it (Q19)",
+          _fbd61(_z61, _rel61) > _pfb61(_z61, _rel61 * _global_scale61))
+
     failed = [n for n, c in INVARIANTS if not c]
     print(f"\n{'VERIFY PASS' if not failed else 'VERIFY FAIL'}: "
           f"{len(INVARIANTS) - len(failed)}/{len(INVARIANTS)} invariants")

@@ -148,12 +148,15 @@ def decompose_divergence(a: np.ndarray, b: np.ndarray) -> dict[str, float]:
             "systematic_frac": 1.0 - residual / (total + 1e-30)}
 
 
-def predicted_flip_bound(ref_logits: np.ndarray, delta: float,
+def predicted_flip_bound(ref_logits: np.ndarray, delta,
                          confidence: float = 0.95) -> float:
     """発散 δ が与える判断フリップ率の保守的上界 = P(margin < 2δ)。
 
     数値の床（calibration）・ノイズの床（nondeterminism）を *タスク影響* に翻訳する橋。
     フリップには margin<2δ が必要ゆえ上界。実フリップ率はこれ以下に収まる。
+
+    delta: スカラなら全サンプル一律の絶対発散見積り。配列なら margin(ref_logits) と
+    同じ長さの per-sample 絶対発散見積り（flip_bound_from_divergence の Q19 対応版が使う）。
 
     fail-safe: P(margin<2δ) は代表 logit（ref_logits）n 件からの *点推定* に過ぎない。
     n が小さい代表集合では、たまたま 0 件（または少数件）しか margin<2δ に該当せず
@@ -165,7 +168,8 @@ def predicted_flip_bound(ref_logits: np.ndarray, delta: float,
     m = margin(ref_logits)
     if m.size == 0:
         return 0.0
-    k = int(np.count_nonzero(m < 2.0 * delta))
+    delta_arr = np.broadcast_to(np.asarray(delta, dtype=np.float64), m.shape)
+    k = int(np.count_nonzero(m < 2.0 * delta_arr))
     return flip_rate_upper_bound(k, int(m.size), confidence=confidence)
 
 
@@ -177,10 +181,21 @@ def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
     これを predicted_flip_bound に通すことで、第2ベンダーを走らせる前に、静的な
     op グラフ＋代表的な logit 分布だけからタスク影響（判断フリップ率の上界）を予測できる。
     視点4（propagation）→ 視点8（decision）をつなぐ橋。
+
+    fail-safe (SOCRATIC-50 Q19): scale を全サンプルのグローバル RMS だけから求めると
+    「平均的スケール」の見積りになる。低スケールのサンプルが多数を占めるバッチでは、
+    その中に混じる少数の高スケールサンプルにとって scale が過小評価され、
+    δ_abs = δ_rel·scale も過小評価されて margin<2δ を満たさなくなり、本来検出すべき
+    フリップ風険が見逃される（偽OK方向）。ここでは各サンプルについて「グローバル scale」
+    と「そのサンプル自身の scale」の大きい方を使い（tolerance.derive_tolerance の
+    max(derived, noise_floor) と同じ保守側に倒すパターン）、どちらの効果が支配的でも
+    δ を過小評価しない per-sample 版にする。
     """
     x = np.asarray(ref_logits, dtype=np.float64)
-    scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
-    return predicted_flip_bound(ref_logits, rel_divergence * scale, confidence=confidence)
+    global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
+    per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
+    delta = rel_divergence * np.maximum(global_scale, per_sample_scale)
+    return predicted_flip_bound(ref_logits, delta, confidence=confidence)
 
 
 # ── 新視点11: タスク多様性 — argmax ⇏ 全タスク ─────────────────────────────────

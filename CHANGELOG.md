@@ -4,6 +4,22 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Fixed
+- **decision.flip_bound_from_divergence の per-sample δ 対応（SOCRATIC-50 Q19・偽OK方向の修正）**:
+  δ_abs = δ_rel·scale の scale をバッチ全体のグローバル RMS だけから求めていたため、
+  低スケールのサンプルが多数を占めるバッチに紛れた高スケール・near-tie な少数サンプルの
+  δ が過小評価され、margin<2δ を満たさずフリップ risk が bound に反映されない
+  （fail-safe で最も危険な偽OK方向の見逃し）ケースがあった。各サンプルについて
+  グローバル RMS と per-sample RMS の **max** を使うよう修正（`tolerance.derive_tolerance`
+  の max(derived, noise_floor) と同じ「保守側に倒す」既存パターンの踏襲）。
+  `predicted_flip_bound` の delta 引数はスカラ/per-sample 配列の両対応
+  （`np.broadcast_to`・後方互換）。
+  - test: `test_flip_bound_from_divergence_does_not_underestimate_high_scale_outlier`
+    （5000 件の低スケール確信サンプル＋1 件の高スケール near-tie サンプルで、
+    グローバル scale のみでは k=0（捕捉ゼロ）・修正版は bound が厳密に増加することを固定。
+    Wilson 上側限界は k=0 でも rule-of-three で >0 を返すため bound==0 でなく
+    k とbound の増加の両方で検査する）。verify.py 不変条件 61 番（155/155）。
+
 ### Added
 - **MXFP4/MXFP6（OCP Microscaling v1.0）dtype 対応・関連研究の SOURCES 反映**:
   最新論文・仕様の調査で、NVIDIA Blackwell と AMD CDNA4（MI350/355）の両方が

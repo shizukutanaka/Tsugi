@@ -108,8 +108,11 @@ numpy の 2 ブランチ合流で実測発散を上界することを検証（te
 分け、系統分は全 logit を平行移動（argmax 不変）、乱雑分のみ flip に効く、と精密化。**
 
 **Q19.** δ_abs = δ_rel·RMS は最悪/平均どちら？
-→ 平均的スケール。最悪サンプル（小 logit）では相対誤差が増幅。**改善: per-sample の δ を使う
-（一律 RMS でなく |logit| 依存）版を検討。**
+→ ✅ **修正済**: `flip_bound_from_divergence` が per-sample RMS とグローバル RMS の
+**max** を δ_abs に使う（`derive_tolerance` の max(derived, noise_floor) と同じ保守側
+パターン）。グローバル RMS のみだと、低スケール多数派に紛れた高スケール near-tie
+サンプルの δ が過小評価され margin<2δ を満たさず偽OK になる——これをテストと
+verify.py 不変条件 61 番で固定。`predicted_flip_bound` は delta のスカラ/配列両対応に。
 
 **Q20.** 「margin<2δ が必要」は十分でない（向きが要る）。上界は実測の何倍緩い？
 → 実測 5.8% vs 上界 18.7%（約 3.2 倍）。**改善: 期待値版（向きを確率で割引）を併記し、上界と

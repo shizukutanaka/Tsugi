@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 153/153 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 155/155 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -37,7 +37,7 @@
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
 | A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
-| A-7 | 不足 | P2 | `decision.py` 統計判定 | 未着手 | per-sample δ・多 seed 分布報告が単一 seed のまま |
+| A-7 | 不足 | P2 | `decision.py` 統計判定 | 一部解消 | per-sample δ（Q19）は解消済み。多 seed 分布報告（Q48）が残る |
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 未着手 | `verify.py` 単一 main() の関数分割・カバレッジ計測・乱数境界点検 |
@@ -175,8 +175,11 @@
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
-7. **[A-7] 統計判定の残り**: `decision.py` の per-sample δ（Q19: δ_abs=δ_rel·RMS は平均であって
-   最悪ケースでない）、多 seed 分布報告（Q48: 「発散 ~2000倍」等の数字が単一 seed）。
+7. **[A-7] 統計判定の残り**: Q19（per-sample δ）は解消済み——`flip_bound_from_divergence` が
+   グローバル RMS と per-sample RMS の max を δ_abs に使い、低スケール多数派に紛れた
+   高スケール near-tie サンプルのフリップ risk を過小評価しない（偽OK方向の修正・
+   `verify.py` 不変条件 61 番）。残るのは多 seed 分布報告
+   （Q48: 「発散 ~2000倍」等の数字が単一 seed）。
 8. **[A-8] scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
 9. **[A-9] タスクモデルの拡張**: Q21（代表 logit はキャリブレーション集合から、というガイド）、
@@ -257,7 +260,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 153 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 155 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

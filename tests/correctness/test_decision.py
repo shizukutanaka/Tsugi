@@ -454,6 +454,38 @@ def test_flip_bound_from_divergence_bridges_propagation_to_task():
     assert actual <= bound + 1e-9         # 上界として成立
 
 
+def test_flip_bound_from_divergence_does_not_underestimate_high_scale_outlier():
+    """SOCRATIC-50 Q19: 低スケールサンプルが多数を占めるバッチに紛れた高スケール・
+    近接マージンの少数サンプルを、グローバル RMS だけの δ では見逃す（偽OK方向）。
+    per-sample scale との max を取る修正版はこれを正しく検出する。
+    """
+    from tsugi.decision import flip_bound_from_divergence
+    n_small = 5000
+    # 低スケール・確信度高（自身のスケールに対しては margin が十分大きい）サンプル群
+    small = np.stack([np.full(n_small, 0.05), np.full(n_small, 0.03)], axis=-1)
+    # 高スケール・near-tie な少数サンプル（margin=0.5 が自身のスケール~49.75 に対しては小さい）
+    big = np.array([[50.0, 49.5]])
+    z = np.concatenate([small, big], axis=0).astype(np.float32)
+    rel = 0.01
+
+    # 旧実装相当（グローバル RMS のみで一律 δ）: outlier が margin<2δ にカウントされない
+    # （Wilson 上側限界は k=0 でも rule-of-three で >0 を返すため bound==0 では検査できない。
+    #  「見逃し」の機構は k=0、ユーザーに見える効果は bound の過小、の両方を固定する）
+    global_scale = float(np.sqrt(np.mean(z.astype(np.float64) ** 2)))
+    m = margin(z)
+    k_global_only = int(np.count_nonzero(m < 2.0 * rel * global_scale))
+    assert k_global_only == 0, (
+        f"再現前提が崩れている: グローバル scale 版が既に outlier を捕捉 (k={k_global_only})")
+
+    # 修正後の flip_bound_from_divergence は per-sample scale との max を取り、
+    # 高スケール outlier を margin<2δ にカウントする → bound が厳密に大きくなる
+    bound_global_only = predicted_flip_bound(z, rel * global_scale)
+    bound_fixed = flip_bound_from_divergence(z, rel)
+    assert bound_fixed > bound_global_only, (
+        f"高スケール near-tie outlier のフリップ risk を過小評価した（偽OK・Q19 未解消）: "
+        f"fixed={bound_fixed} ≤ global-only={bound_global_only}")
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -473,6 +505,7 @@ def main() -> int:
         test_systematic_affine_divergence_does_not_flip,
         test_residual_bound_tighter_than_total_for_systematic,
         test_flip_bound_from_divergence_bridges_propagation_to_task,
+        test_flip_bound_from_divergence_does_not_underestimate_high_scale_outlier,
         test_regression_flip_rate_matches_value_closeness,
         test_binary_flip_rate_detects_threshold_crossing,
         test_ranking_flip_rate_measures_top_k_set_change,
