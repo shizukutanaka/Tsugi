@@ -4,6 +4,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-17
+最新低精度フォーマットへの追随（OCP Microscaling: MXFP4/MXFP6 を dtype 3 表に追加・
+NVFP4 は AMD 対応 HW が無いため意図的に対象外）、偽OK方向の統計修正
+（flip_bound_from_divergence の per-sample scale・SOCRATIC-50 Q19）、開発運用の
+市販品質強化（依存ライセンス自動監査 Q42・閾値定数の境界感度テスト Q4/Q5・
+遅延 import 方針の明文化 Q46・verify.py のテーマ別 12 関数分割 Q34）。
+不変条件 155→156 件。
+
 ### Changed
 - **verify.py の単一巨大 main() をテーマ別 12 関数に分割（SOCRATIC-50 Q34・FEATURE-AUDIT A-10）**:
   61 の番号付きセクション（1200 行超）が 1 つの `main()` に平坦に並び、失敗箇所の
@@ -17,6 +25,14 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
   決定論的なので各関数内で再構築する。
 
 ### Fixed
+- **`tsugi.__version__` のバージョンドリフト修正とバージョン整合の恒常検査（不変条件 62）**:
+  0.3.0 リリース（eface10）で `python/pyproject.toml` は 0.3.0 にバンプされたが
+  `python/tsugi/__init__.py` の `__version__` が 0.2.0 のまま取り残されていた
+  （インストール済みメタデータと実行時 API が別バージョンを名乗る状態）。
+  両方を 0.4.0 に同期し、`verify.py` の不変条件 62 番として
+  「`pyproject.toml` の `version` と `tsugi.__version__` の一致」を機械検証に追加
+  （このリポジトリの「発見した欠陥は不変条件で固定する」慣例に従う再発防止）。
+
 - **decision.flip_bound_from_divergence の per-sample δ 対応（SOCRATIC-50 Q19・偽OK方向の修正）**:
   δ_abs = δ_rel·scale の scale をバッチ全体のグローバル RMS だけから求めていたため、
   低スケールのサンプルが多数を占めるバッチに紛れた高スケール・near-tie な少数サンプルの

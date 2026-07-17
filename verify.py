@@ -1214,8 +1214,8 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-61: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
-    per-sample δ（Q19）——検証基盤とコードベース自身の構造整合性。"""
+    """不変条件 56-62: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）・バージョン整合——検証基盤とコードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1339,6 +1339,18 @@ def _check_meta_integrity() -> None:
           int(np.count_nonzero(_margin61(_z61) < 2.0 * _rel61 * _global_scale61)) == 0)
     check("flip_bound_from_divergence uses per-sample scale and does not underestimate it (Q19)",
           _fbd61(_z61, _rel61) > _pfb61(_z61, _rel61 * _global_scale61))
+
+    # 62. pyproject.toml の version と tsugi.__version__ が一致する。0.3.0 リリース
+    # （eface10）で pyproject は 0.3.0 にバンプされたが __init__.py の __version__ が
+    # 0.2.0 のまま取り残されていた（配布メタデータと実行時 API が別バージョンを名乗る）。
+    # 「発見した欠陥は不変条件で固定する」慣例に従い、リリース時のバンプ漏れを機械検出する。
+    import re as _re62
+
+    import tsugi as _tsugi62
+    _toml62 = (PY / "pyproject.toml").read_text(encoding="utf-8")
+    _m62 = _re62.search(r'^\s*version\s*=\s*"([^"]+)"', _toml62, _re62.M)
+    check("pyproject.toml version matches tsugi.__version__ (no release bump drift)",
+          _m62 is not None and _m62.group(1) == _tsugi62.__version__)
 
 
 def main() -> int:
