@@ -35,6 +35,12 @@ cmake --build build
 Conventional Commits: `feat:` `fix:` `refactor:` `docs:` `test:` `chore:`
 破壊的変更: `feat!:` / `fix!:`
 
+## リリース手順
+タグ付きリリースの切り方（検証ゲート → バージョン確定 → タグ公開）は
+[`docs/RELEASING.md`](docs/RELEASING.md) を参照。バージョンは `pyproject.toml` と
+`tsugi.__version__` の 2 箇所を必ず一致させる（`verify.py` 不変条件 62 が強制・
+過去のバージョンドリフト再発防止）。
+
 ## PR 前チェックリスト
 - [ ] `ruff check` clean
 - [ ] `python tests/correctness/run.py` 全 PASS
