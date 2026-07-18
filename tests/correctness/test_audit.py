@@ -10,7 +10,13 @@ import numpy as np  # noqa: E402
 
 import tsugi  # noqa: E402
 from tsugi import tile  # noqa: E402
-from tsugi.audit import _graph_ops, audit, audit_cross_vendor, audit_runtime  # noqa: E402
+from tsugi.audit import (  # noqa: E402
+    _graph_ops,
+    _iter_graphops,
+    audit,
+    audit_cross_vendor,
+    audit_runtime,
+)
 from tsugi.autotune import TileConfig  # noqa: E402
 from tsugi.envelope import certify_gemm  # noqa: E402
 from tsugi.portcheck import _demo_module  # noqa: E402
@@ -59,11 +65,47 @@ def test_audit_occupancy_phase_covers_all_targets():
 
 def test_graph_ops_collapses_kloop_dots_into_one_matmul():
     # K ループの dot 群（load で分断）は 1 つの matmul(K=反復×BK) に集約される
+    # （フォークなしのグラフは従来通り GraphOp の平坦列のまま・回帰なし）
     mod, block, cfg = _demo_module()
     gops = _graph_ops(mod, cfg)
+    assert not any(isinstance(o, list) for o in gops), "plain matmul にフォークは無いはず"
     matmuls = [o for o in gops if o.kind == "matmul"]
     assert len(matmuls) == 1
     assert matmuls[0].K == 256   # 4 dots × block_k 64
+
+
+def test_graph_ops_extracts_ssa_fork_from_traced_softmax():
+    """_graph_ops が SSA の use-def から恒等路つきフォークを再構築する（FEATURE-AUDIT A-12）。
+
+    従来は kernel body を線形走査するだけで Op.operands/Op.result を捨てており、
+    propagate_dag（フォーク/マージ対応・テスト済み）は audit() から一度も呼ばれて
+    いなかった。softmax の `row - reduce(row)`（row を skip 路と reduce 路に分岐して
+    sub で合流）は residual y=x+f(x) と同型のフォーク。これを `[[], [reduce]]` の
+    フォークノードとして抽出し、propagate_dag に渡せることを固定する。
+    """
+    x = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    mod = tsugi.trace(_softmax_row, (x, x.copy(), 16, 16), {}, (0,))
+    cfg = TileConfig(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
+    gops = _graph_ops(mod, cfg)
+
+    forks = [o for o in gops if isinstance(o, list)]
+    assert forks, "softmax の row/e 再利用がフォークとして抽出されていない（線形化のまま）"
+    # 各フォークは [恒等 skip 路(空), 計算路] の 2 ブランチ。計算路に reduce を含む。
+    for fork in forks:
+        assert len(fork) == 2 and fork[0] == [], f"恒等路つき 2 分岐でない: {fork}"
+        assert any(op.kind == "reduce" for op in fork[1]), f"計算路に reduce が無い: {fork}"
+    # 葉 GraphOp には両 reduce と exp が残る（フォークに畳んでも op は消えない）。
+    leaf_kinds = [o.kind for o in _iter_graphops(gops)]
+    assert leaf_kinds.count("reduce") == 2 and "exp" in leaf_kinds, leaf_kinds
+
+    # propagate_dag が実際に走り、フォークを *保守側*（線形版以上）に評価することを確認。
+    # propagate_dag は各ブランチが現在の δ を再処理するものとして扱う（f が発散入力を
+    # 見る実態に即し、非対称コスト下で偽OK を避ける）。合流は √(δ_id² + δ_branch²) と
+    # なり、線形の δ+local より大きくなる（過小評価しない fail-safe 方向）。
+    from tsugi.propagation import propagate as _propagate
+    from tsugi.propagation import propagate_dag as _propagate_dag
+    flat = list(_iter_graphops(gops))
+    assert _propagate_dag(gops).model_divergence >= _propagate(flat).model_divergence
 
 
 def test_audit_numerics_uses_sample_scale_when_given():
@@ -99,7 +141,7 @@ def test_audit_propagates_amplification_through_traced_softmax():
     cfg = TileConfig(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
 
     # 実グラフから増幅 op が抽出される（dot のみだった頃は空回りしていた経路）
-    kinds = {o.kind for o in _graph_ops(mod, cfg)}
+    kinds = {o.kind for o in _iter_graphops(_graph_ops(mod, cfg))}
     assert {"reduce", "exp"} <= kinds, kinds
 
     a = audit(mod, cfg, block_dims=(16,))
@@ -604,6 +646,7 @@ def main() -> int:
         test_audit_aggregates_all_static_phases,
         test_audit_occupancy_phase_covers_all_targets,
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
+        test_graph_ops_extracts_ssa_fork_from_traced_softmax,
         test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,
         test_audit_sample_auto_measures_empirical_cond,

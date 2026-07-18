@@ -71,11 +71,17 @@ empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 効果）を検討。**
 
 **Q12.** propagation は線形 op 列のみ。分岐・残差接続（transformer）は？
-→ ✅修正済（2 段）: (1) 残差は `GraphOp(residual=True)` で δ_out=√(δ_in²+(amp·local)²) と
+→ ✅修正済（3 段）: (1) 残差は `GraphOp(residual=True)` で δ_out=√(δ_in²+(amp·local)²) と
 random-walk 希釈。(2) 一般のフォーク→合流は `propagate_dag(nodes, correlated=)` ＋
 `merge_divergence`（√Σδ² / Σδ）で series-parallel DAG（attention 並列ヘッド・concat）を表現。
-numpy の 2 ブランチ合流で実測発散を上界することを検証（test_propagation）。**残: 交差辺を
-もつ一般 DAG（重み共有・cross-attention 往復）は SP 近似に留まる。**
+numpy の 2 ブランチ合流で実測発散を上界することを検証（test_propagation）。
+(3) **FEATURE-AUDIT A-12 Round 1**: `audit()` の `_graph_ops` が SSA の use-def
+（`Op.operands`/`Op.result`）から恒等路つきフォーク（residual・softmax の `row-reduce(row)`
+再利用）を検出し `propagate_dag` の `[[], branch]` に接続。従来は実グラフを線形化し
+`propagate_dag` は audit から一度も呼ばれていなかった（テスト/verify 専用）。
+検出できない形は線形（保守側）に落とす。verify.py 不変条件 63。
+**残: 恒等路の無い一般多分岐マージ（attention ヘッド和）と、交差辺を
+もつ一般 DAG（重み共有・cross-attention 往復）は SP/線形近似に留まる。**
 
 ## C. scale=1.0 という暗黙仮定（Q13–17）
 

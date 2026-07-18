@@ -100,35 +100,117 @@ _AMPLIFY_KINDS = {"reduce", "exp", "rsqrt", "softmax", "div", "reciprocal"}
 _SKIP_KINDS = {"load", "store", "zeros"}
 
 
-def _graph_ops(module: ir.Module, cfg):
-    """traced IR を propagation 用の論理 op 列へ写す（K ループの dot 群は 1 matmul に集約）。
+def _classify_ops(ops, bk: int):
+    """program 順の op 列を propagation の論理 GraphOp 列へ写す。
 
-    torch.compile(model) の op グラフを模す。連続 dot は 1 つの行列積（K=反復×BK）に
-    まとめ、reduce/exp 等は増幅 op、cast/add 等は elementwise(local のみ)として扱う。
-    条件数 cond は静的には不明ゆえ既定 1（実機/モデルで上書きされる前提）。
+    連続 dot は 1 つの行列積（K=反復×BK）に集約し、memory op（_SKIP_KINDS）は数値
+    発散に寄与しないので除く。reduce/exp 等は増幅 op、cast/add 等は elementwise
+    (local のみ)。条件数 cond は静的には不明ゆえ既定 1（sample/実機で上書きされる前提）。
     """
     from .propagation import GraphOp
 
+    out = []
+    run_dots = 0
+    for op in ops:
+        if op.kind in _SKIP_KINDS:         # memory op: K ループを途切れさせない
+            continue
+        if op.kind == "dot":
+            run_dots += 1
+            continue
+        if run_dots:                       # 実 compute op で dot 連を 1 matmul に集約
+            out.append(GraphOp("matmul", K=run_dots * bk))
+            run_dots = 0
+        if op.kind in _AMPLIFY_KINDS:
+            out.append(GraphOp(op.kind))
+        else:                              # cast/to/add/scale 等は elementwise
+            out.append(GraphOp("scale"))
+    if run_dots:
+        out.append(GraphOp("matmul", K=run_dots * bk))
+    return out
+
+
+def _identity_fork_merge(body, i: int, consumers: dict) -> int | None:
+    """body[i] の結果が「恒等路つき単純フォーク」の起点なら合流 op の index を返す。
+
+    SSA の use-def（Op.operands/Op.result）から検出する Case-A 限定の形:
+      - result の消費者がちょうど 2 op（idx_a < idx_b）
+      - 合流点 idx_b は result を *直接* operand に持つ（恒等 skip 路）
+      - i+1..idx_b-1 の全 op がフォーク値だけから計算される一本鎖で、鎖の値が
+        idx_b のもう一方の operand に到達し、中間値は合流点より先で消費されない
+    residual（y = x + f(x)）と softmax の row 再利用（exp(row - reduce(row))）が
+    この形に該当する。これ以外（多分岐・恒等路なし・外部値の混入・交差辺）は None を
+    返し従来の線形扱いに落とす（不確実なら保守側に倒す fail-safe 慣例）。
+    """
+    op = body[i]
+    if op.result is None:
+        return None
+    uses = consumers.get(op.result.name, [])
+    if len(uses) != 2 or uses[0] == uses[1]:
+        return None
+    idx_b = uses[1]
+    if idx_b - i < 2:                      # 計算路に最低 1 op（恒等×2 は対象外）
+        return None
+    chain = {op.result.name}
+    for j in range(i + 1, idx_b):
+        o = body[j]
+        if not o.operands or any(v.name not in chain for v in o.operands):
+            return None                    # load/zeros・外部値の混入 → 一本鎖でない
+        if o.result is not None:
+            if any(c > idx_b for c in consumers.get(o.result.name, [])):
+                return None                # 中間値が合流の先で消費 → series-parallel でない
+            chain.add(o.result.name)
+    merge_operands = {v.name for v in body[idx_b].operands}
+    if not merge_operands & (chain - {op.result.name}):
+        return None                        # 鎖の値が合流点に届いていない
+    return idx_b
+
+
+def _graph_ops(module: ir.Module, cfg):
+    """traced IR を propagation 用の op グラフへ写す（SSA fork/merge 対応・A-12）。
+
+    torch.compile(model) の op グラフを模す。従来は kernel body を線形走査するだけで
+    Op.operands/Op.result の SSA 参照を捨てていたが、恒等路つき単純フォーク
+    （residual y=x+f(x)・softmax の row 再利用）を use-def から検出し、
+    `propagate_dag` のフォークノード `[[], branch]`（恒等 skip 路＋計算路）として出す。
+    検出できない形は従来通り線形（保守側）。返り値は GraphOp と
+    フォーク（list[list[GraphOp]]）の混在列で、そのまま propagate_dag に渡せる。
+    """
     bk = cfg.block_k if cfg is not None else 32
-    ops = []
+    nodes: list = []
     for k in module.kernels:
-        run_dots = 0
-        for op in k.body:
-            if op.kind in _SKIP_KINDS:         # memory op: K ループを途切れさせない
+        body = k.body
+        consumers: dict[str, list[int]] = {}
+        for j, op in enumerate(body):
+            for v in op.operands:
+                consumers.setdefault(v.name, []).append(j)
+        pending: list = []                 # 線形扱いの op を貯めて一括分類
+        i = 0
+        while i < len(body):
+            merge_idx = _identity_fork_merge(body, i, consumers)
+            branch = (_classify_ops(body[i + 1:merge_idx], bk)
+                      if merge_idx is not None else [])
+            if branch:
+                pending.append(body[i])          # フォーク元の op 自体は直列に分類
+                nodes.extend(_classify_ops(pending, bk))
+                pending = []
+                nodes.append([[], branch])       # 恒等 skip 路 ＋ 計算路
+                pending.append(body[merge_idx])  # 合流 op は通常 op として δ に乗る
+                i = merge_idx + 1
                 continue
-            if op.kind == "dot":
-                run_dots += 1
-                continue
-            if run_dots:                       # 実 compute op で dot 連を 1 matmul に集約
-                ops.append(GraphOp("matmul", K=run_dots * bk))
-                run_dots = 0
-            if op.kind in _AMPLIFY_KINDS:
-                ops.append(GraphOp(op.kind))
-            else:                              # cast/to/add/scale 等は elementwise
-                ops.append(GraphOp("scale"))
-        if run_dots:
-            ops.append(GraphOp("matmul", K=run_dots * bk))
-    return ops
+            pending.append(body[i])
+            i += 1
+        nodes.extend(_classify_ops(pending, bk))
+    return nodes
+
+
+def _iter_graphops(nodes):
+    """_graph_ops の出力（GraphOp | フォーク list[list[GraphOp]]）の葉 GraphOp を列挙する。"""
+    for node in nodes:
+        if isinstance(node, list):
+            for branch in node:
+                yield from branch
+        else:
+            yield node
 
 
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
@@ -149,7 +231,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     from .feasibility import cross_vendor_feasibility, first_vendor_only
     from .occupancy import cross_vendor_occupancy
     from .portability import analyze
-    from .propagation import propagate
+    from .propagation import propagate_dag
     from .tolerance import explain
 
     a = Audit()
@@ -227,12 +309,12 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         # （Q7/Q8/Q11: 静的 cond=1 は well-conditioned 仮定の下界・empirical_cond で置換）。
         cond_measured = False
         if sample is not None:
-            for o in gops:
+            for o in _iter_graphops(gops):
                 if is_amplifier(o.kind) and o.cond == 1.0:
                     o.cond = empirical_cond(sample, o.kind)
                     cond_measured = True
 
-        pr = propagate(gops)
+        pr = propagate_dag(gops)
         ratio = pr.model_divergence / (pr.naive_sum + 1e-30)
         # 発散が深さ/増幅でナイーブ和を大きく超えるならモデルレベルで要注意。
         prop = AuditPhase("propagation 合成的等価性", "decided",
@@ -242,16 +324,16 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             f"naive per-kernel 和={pr.naive_sum:.2e}  (×{ratio:.1f})")
         if pr.dominant is not None:
             prop.lines.append(f"支配的増幅 op = {pr.dominant.kind}（amp={pr.dominant.amp:.1f}）")
-        if len(gops) == 1:
+        if sum(1 for _ in _iter_graphops(gops)) == 1:
             prop.lines.append("単一 op グラフ: 伝播増幅なし。多 op モデルでは深さ・"
                               "条件数で累積（cond は実機/モデル依存・既定 1）")
         # 正直さ: データ依存増幅 op（reduce/exp）に静的 cond=1 を当てるのは *下界*。
-        amps = sorted({o.kind for o in gops if is_amplifier(o.kind)})
+        amps = sorted({o.kind for o in _iter_graphops(gops) if is_amplifier(o.kind)})
         if amps and cond_measured:
             prop.lines.append(
                 f"データ依存増幅 op {amps} の cond を sample から実測済み（empirical_cond）: "
                 "静的下界の過小評価を解消")
-        elif amps and all(o.cond == 1.0 for o in gops):
+        elif amps and all(o.cond == 1.0 for o in _iter_graphops(gops)):
             prop.max_risk = Risk.WARN
             prop.lines.append(
                 f"データ依存増幅 op {amps} が存在: 静的 cond=1 は *下界*（過小評価）。"

@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 155/155 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 157/157 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -42,7 +42,7 @@
 | A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() のテーマ別分割（Q34）は解消済み。カバレッジ計測（Q38）・乱数境界点検（Q43）が残る |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
-| A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 未着手 | SSA の operand/result 参照から実 DAG を再構築せず線形化。fork/merge（attention・residual）を無視 |
+| A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 一部解消 | 恒等路つきフォーク（residual/softmax の row 再利用）を SSA から抽出し propagate_dag に接続。残: 恒等路の無い一般多分岐マージ（attention ヘッド和） |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
 | B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
 | B-1c | 過剰(接続済) | — | `nondeterminism` robust noise floor | 解消済み(4d68287) | 外れ値頑健な床が `audit_cross_vendor()` に未接続だった |
@@ -147,27 +147,38 @@
      許容リスト外の新規未接続だけを報告する。plant-and-detect のスモークテストで
      検出器自体が機能することを確認済み。verify.py 不変条件 57 番。
 
-12. **[A-12] `audit()` の propagation phase が SSA の実 DAG 構造を捨てて線形化している**
-   - 何が無いか: `python/tsugi/ir.py` の `Op` は `operands: list[Value]` / `result: Value` を
+12. **[A-12] ✅ 一部解消** `audit()` の propagation phase が SSA の実 DAG 構造を捨てて
+    線形化していた問題（Round 1: 恒等路つきフォークを接続）
+   - 何が無かったか: `python/tsugi/ir.py` の `Op` は `operands: list[Value]` / `result: Value` を
      持ち、SSA 参照から本物のデータフロー DAG（フォーク・マージ）を再構築できる情報を
      既に保持している。だが `audit.py:_graph_ops()` は `module.kernels[i].body` を
-     単純に線形走査するだけで、この operand/result 参照を一切見ない——結果として
+     単純に線形走査するだけで、この operand/result 参照を一切見なかった——結果として
      `propagation.propagate_dag()`（フォーク→マージを表現できる一般化版・
      `merge_divergence` で相関/非相関の合成則も実装済み）は `tests/correctness/test_propagation.py`
-     と `verify.py` からしか呼ばれず、`audit()` は常に線形版 `propagate()` しか使わない。
+     と `verify.py` からしか呼ばれず、`audit()` は常に線形版 `propagate()` しか使わなかった。
    - なぜ危険か: 実際の transformer は multi-head attention（並列ヘッドの fork→merge）や
      residual 接続（恒等路 + 変換路の merge）という非線形 DAG 構造を持つ。線形化は
      これらの構造を無視し、発散予測を歪める（fork/merge の合成則は correlated/非correlated
      で大きく異なる——`propagate_dag` のテストが実測発散を正しく上界することを既に検証済み）。
-     `check_softmax_input`/`binary_margin` の facade 未接続と違い、これは「関数を呼ぶだけ」
-     では直らない——SSA グラフから fork/merge ノードリストを再構築するアルゴリズムの新規実装が要る。
-   - 推奨アクション: `_graph_ops` を SSA use-def グラフ対応に書き換える:
-     (1) 各 `Op.result` を消費する後続 op を数え、2 つ以上あればそこが fork 点、
-     (2) 各 `Op.operands` が異なる祖先系列から来ていればそこが merge 点（residual add 等）、
-     (3) 得られたネストしたノードリストを `propagate_dag(nodes, correlated=...)` に渡す。
-     既存の K ループ dot 集約ロジック（`_graph_ops` の `run_dots` 処理）との整合が要る。
-     スコープが大きいため、他の facade 未接続修正（1 関数呼び出しの追加）と違って
-     設計込みの複数ラウンドの作業になる見込み。
+   - **Round 1 の修正内容（一部解消）**: `_graph_ops` を SSA use-def 対応に書き換えた。
+     (1) `consumers` マップ（`Op.result.name → 消費 op index 列`）を 1 パスで構築、
+     (2) `_identity_fork_merge` が「result の消費者がちょうど 2・合流点が result を直接
+     operand に持つ（恒等 skip 路）・中間は一本鎖で合流の先へ漏れない」形（= residual
+     y=x+f(x) と softmax の `row - reduce(row)` 再利用）を検出し、
+     (3) `propagate_dag` のフォークノード `[[], branch]`（恒等路＋計算路）として出す。
+     `audit()` の呼び出しを `propagate(gops)` → `propagate_dag(gops)` に切替え、
+     `_iter_graphops` でフォーク混在列の葉 GraphOp を走査する（cond 実測・増幅 op 集計）。
+     検出できない形は従来通り線形（保守側・fail-safe）。K ループ dot 集約は
+     `_classify_ops` に括り出して直列区間とフォーク計算路の両方で再利用。
+     tests: `test_graph_ops_extracts_ssa_fork_from_traced_softmax`
+     （softmax の 2 reduce がフォーク計算路に入り propagate_dag が保守側に評価する）・
+     `test_graph_ops_collapses_kloop_dots_into_one_matmul`（フォーク無しグラフは平坦列の
+     まま・回帰なし）。verify.py 不変条件 63。commit は CHANGELOG の該当エントリ参照。
+   - **残（次ラウンド）**: 恒等路の *無い* 一般多分岐マージ（2 つの計算ブランチの和＝
+     literal multi-head attention のヘッド和）は今回のパターンに合致せず線形に落ちる。
+     `propagate_dag` は既に対応済みなので、fork 検出を「共通祖先から分岐し共通子孫で
+     合流する 2 本以上の計算鎖」へ一般化すれば接続できる（交差辺のある一般 DAG は
+     引き続き SP 近似）。
    - 将来の精緻化候補: `equivalence.simulate_vendor_matmul` は累積順序差のみを模擬する
      単純モデル。テンサーコアのビット精度（累積幅・truncation/RNE 差）を明示的にモデル化する
      手法が報告されている（docs/SOURCES.md「確度中」節・一次確認前）——`propagate_dag` の
@@ -263,7 +274,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 155 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 157 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

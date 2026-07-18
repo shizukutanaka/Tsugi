@@ -133,8 +133,6 @@ _FACADE_DISCONNECT_ALLOWLIST: dict[str, str] = {
     "occupancy_gap": "cross_vendor_occupancy(vendors=targets) に一般化されたが、"
                      "2 者間の簡易 API として維持（意図的な下位互換）",
     "oracle_is_trustworthy": "verify_oracle().ok の便宜ラッパ（audit は verify_oracle を直接使う）",
-    "propagate_dag": "FEATURE-AUDIT.md A-12: SSA の operand/result から fork/merge を"
-                     "再構築するアルゴリズムが要る大規模作業のため意図的に据え置き",
     "model_tolerance": "propagate(ops).model_divergence の便宜ラッパ",
     "changed_fields": "certify/is_stale の内部部品（上位関数経由で facade は利用済み）",
     "simulate_rollout": "GPU 実機なしで検証層をテストする CPU シミュレータ（テスト専用が正当）",
@@ -370,8 +368,8 @@ def _check_audit_facades() -> None:
           ad.max_risk == portability.Risk.BLOCK and not ad.portable)
     check("audit excludes runtime phases from static verdict",
           ad.max_risk == max(p.max_risk for p in ad.decided_phases))
-    from tsugi.audit import _graph_ops
-    mm = [o for o in _graph_ops(mod, dcfg) if o.kind == "matmul"]
+    from tsugi.audit import _graph_ops, _iter_graphops
+    mm = [o for o in _iter_graphops(_graph_ops(mod, dcfg)) if o.kind == "matmul"]
     check("audit propagation collapses K-loop dots into one per-model matmul",
           len(mm) == 1 and mm[0].K == 256
           and any(p.name.startswith("propagation") for p in ad.phases))
@@ -1214,8 +1212,9 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-62: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
-    per-sample δ（Q19）・バージョン整合——検証基盤とコードベース自身の構造整合性。"""
+    """不変条件 56-63: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12）——検証基盤と
+    コードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1351,6 +1350,38 @@ def _check_meta_integrity() -> None:
     _m62 = _re62.search(r'^\s*version\s*=\s*"([^"]+)"', _toml62, _re62.M)
     check("pyproject.toml version matches tsugi.__version__ (no release bump drift)",
           _m62 is not None and _m62.group(1) == _tsugi62.__version__)
+
+    # 63. audit() の propagation phase が SSA の use-def からフォーク/マージを再構築し、
+    # propagate_dag（テスト済みだが従来 audit から一度も呼ばれなかった）に流す
+    # （FEATURE-AUDIT.md A-12）。従来は kernel body を線形走査し Op.operands/Op.result を
+    # 捨てていたため、residual/softmax の fork/merge 構造が発散予測に反映されなかった。
+    import tsugi as _t63
+    from tsugi import tile as _tile63
+    from tsugi.audit import _graph_ops as _go63
+    from tsugi.audit import _iter_graphops as _ig63
+    from tsugi.autotune import TileConfig as _TC63
+
+    @_t63.jit
+    def _softmax63(x, out, N, BN):
+        p = _t63.program_id(0)
+        row = _tile63.load(x, (p * BN, 0), (BN, N))
+        m = _tile63.reduce(row, 1, "max")
+        e = _tile63.exp(row - m)
+        s = _tile63.reduce(e, 1, "sum")
+        _tile63.store(out, (p * BN, 0), (e / s).to(_t63.float16))
+
+    _x63 = np.random.default_rng(0).standard_normal((16, 16)).astype(np.float32)
+    _mod63 = _t63.trace(_softmax63, (_x63, _x63.copy(), 16, 16), {}, (0,))
+    _cfg63 = _TC63(block_m=16, block_n=16, block_k=16, num_stages=2, num_warps=4)
+    _g63 = _go63(_mod63, _cfg63)
+    _forks63 = [o for o in _g63 if isinstance(o, list)]
+    # softmax の row/e 再利用が恒等路つきフォーク [[], [..reduce..]] として抽出され、
+    # 増幅 op（reduce×2/exp）は葉として残る（フォークに畳んでも op は消えない）。
+    _leaves63 = [o.kind for o in _ig63(_g63)]
+    check("audit _graph_ops reconstructs SSA fork/merge for propagate_dag (A-12)",
+          bool(_forks63)
+          and all(len(f) == 2 and f[0] == [] for f in _forks63)
+          and _leaves63.count("reduce") == 2 and "exp" in _leaves63)
 
 
 def main() -> int:

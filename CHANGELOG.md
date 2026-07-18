@@ -4,6 +4,28 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Fixed
+- **audit() の propagation phase が SSA の fork/merge 構造を線形化していた欠陥（FEATURE-AUDIT A-12・Round 1）**:
+  `audit.py:_graph_ops()` は traced IR の `Op.operands`/`Op.result`（SSA 参照）を
+  一切見ずに kernel body を線形走査するだけだったため、`propagation.propagate_dag()`
+  （フォーク→マージ対応・`merge_divergence` の相関/非相関合成則つき・テスト済み）は
+  `test_propagation.py`/`verify.py` からしか呼ばれず、製品入口の `audit()` は常に
+  線形版 `propagate()` しか使っていなかった。実 transformer の residual（y=x+f(x)）や
+  softmax の `row - reduce(row)` 再利用という fork/merge 構造が発散予測に反映されない。
+  - 修正: `_graph_ops` を SSA use-def 対応に書き換え。`consumers` マップを 1 パスで
+    構築し、`_identity_fork_merge` が「恒等 skip 路つき単純フォーク」（result の消費者が
+    ちょうど 2・合流点が result を直接 operand に持つ・中間が一本鎖）を検出して
+    `propagate_dag` のフォークノード `[[], branch]` として出す。`audit()` の呼び出しを
+    `propagate` → `propagate_dag` に切替え、`_iter_graphops` でフォーク混在列の葉
+    GraphOp を走査（cond 実測・増幅 op 集計）。K ループ dot 集約は `_classify_ops` に
+    括り出して直列区間とフォーク計算路で再利用。検出できない形は従来通り線形（保守側）。
+  - 実証: softmax カーネルを trace すると 2 つの reduce が恒等路つきフォークの計算路に
+    入り、`propagate_dag` が線形版以上（過小評価しない fail-safe 方向）に評価することを
+    `test_graph_ops_extracts_ssa_fork_from_traced_softmax` で固定。plain matmul は
+    フォーク無しで平坦列のまま（回帰なし）。verify.py 不変条件 63（157/157）。
+  - 残（次ラウンド）: 恒等路の無い一般多分岐マージ（attention ヘッド和）。propagate_dag
+    は対応済みで、fork 検出の一般化のみが残る。
+
 ## [0.4.0] — 2026-07-17
 最新低精度フォーマットへの追随（OCP Microscaling: MXFP4/MXFP6 を dtype 3 表に追加・
 NVFP4 は AMD 対応 HW が無いため意図的に対象外）、偽OK方向の統計修正

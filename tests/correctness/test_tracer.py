@@ -122,11 +122,12 @@ def test_traced_softmax_matches_reference():
 
 def test_audit_propagation_sees_amplifying_ops():
     # 統合経路: audit の propagation グラフに増幅 op が流れる（perspective4 の実効化）
-    from tsugi.audit import _graph_ops
+    # _graph_ops は SSA フォーク（list）を含みうるため葉 GraphOp を _iter_graphops で走査。
+    from tsugi.audit import _graph_ops, _iter_graphops
     rng = np.random.default_rng(2)
     x = rng.standard_normal((8, 16)).astype(np.float32)
     mod = tsugi.trace(softmax_kernel, (x, x.copy(), 8, 16), {}, program_ids=(0, 0))
-    kinds = [o.kind for o in _graph_ops(mod, None)]
+    kinds = [o.kind for o in _iter_graphops(_graph_ops(mod, None))]
     assert "reduce" in kinds and "exp" in kinds and "div" in kinds
 
 
