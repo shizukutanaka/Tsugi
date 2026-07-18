@@ -4,6 +4,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Changed
+- **envelope.check_tensor が denormal を *率* で区別（SOCRATIC-50 Q16・FEATURE-AUDIT A-8 一部解消）**:
+  従来は非ゼロ最小値が dtype の `min_normal` 未満なら（＝偶発的な単一 denormal 値でも）
+  一律に同じ WARN を出しており、「たまたま 1 値が denormal」と「値の大半が denormal
+  （scale が dtype に対し小さすぎ＝FTZ ベンダー差が systematic に効き認証 atol の前提が崩れる）」
+  を区別できなかった。denormal *率*（`_DENORMAL_FRAC_WARN`=1%）で両者を分け、後者には
+  rescale/再認証を促す強い警告を、前者には率つきの情報提供 WARN を出す。denormal 無しは
+  従来通り無 finding（後方互換）。
+  - test: `test_denormal_fraction_distinguishes_incidental_from_systematic`
+    （100% denormal→rescale 警告・0.1% denormal→情報 WARN・denormal 無し→無 finding）。
+    verify.py 不変条件 66（160/160）。
+
 ### Added
 - **audit_runtime(logits_oracle=) — task レベルの正しさ照合（SOCRATIC-50 Q31・FEATURE-AUDIT A-9 一部解消）**:
   decision 層のフリップ率は A↔B の *一致* を測る（正しさではない）。両ベンダーが互いに

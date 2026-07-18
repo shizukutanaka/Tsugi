@@ -58,6 +58,35 @@ def test_denormal_flagged_for_ftz_divergence():
     assert any("denormal" in f.message or "FTZ" in f.message for f in rep.findings)
 
 
+def test_denormal_fraction_distinguishes_incidental_from_systematic():
+    """SOCRATIC-50 Q16: denormal を「偶発的な単一値」と「スケールが dtype に対し
+    小さすぎ（値の大半が denormal）」で区別する。後者は認証 atol の前提が崩れるため
+    より強い警告（要 rescale/再認証）を出す。denormal *率* を報告する。
+    """
+    from tsugi.envelope import _DENORMAL_FRAC_WARN
+    env = certify_gemm(K=64, dtype="float16", scale=1.0)
+    lim = dtype_limits("float16")
+
+    # systematic: 非ゼロ値の大半が denormal → scale が小さすぎ・rescale 警告
+    x_sys = np.full((256,), lim.min_normal * 0.3, dtype=np.float32)
+    rep_sys = check_tensor(x_sys, env)
+    msgs_sys = " ".join(f.message for f in rep_sys.findings)
+    assert "小さすぎ" in msgs_sys and "再認証" in msgs_sys, msgs_sys
+
+    # incidental: ほぼ全て正常・1 値だけ denormal（率が閾値未満）→ 情報提供 WARN のみ
+    x_inc = np.full((1000,), 1.0, dtype=np.float32)
+    x_inc[0] = lim.min_normal * 0.1
+    frac = 1 / 1000
+    assert frac < _DENORMAL_FRAC_WARN     # テスト前提: この率は閾値未満
+    rep_inc = check_tensor(x_inc, env)
+    msgs_inc = " ".join(f.message for f in rep_inc.findings)
+    assert "denormal" in msgs_inc and "小さすぎ" not in msgs_inc, msgs_inc
+
+    # no denormal: 該当 finding は出ない（後方互換）
+    rep_none = check_tensor(np.full((64,), 1.0, dtype=np.float32), env)
+    assert not any("denormal" in f.message for f in rep_none.findings)
+
+
 def test_envelope_thresholds_are_sensitive_to_their_constants():
     """SOCRATIC-50 Q4: envelope の閾値定数（`_OVERFLOW_WARN_FRAC`・`_SCALE_BLOCK_RATIO`・
     `_EXP_WARN_FRAC`）が判定境界を *実際に* 支配することを境界±で固定する
@@ -281,6 +310,7 @@ def main() -> int:
         test_fp16_overflow_is_block,
         test_scale_exceedance_voids_certification,
         test_denormal_flagged_for_ftz_divergence,
+        test_denormal_fraction_distinguishes_incidental_from_systematic,
         test_envelope_thresholds_are_sensitive_to_their_constants,
         test_nan_is_block,
         test_fp16_softmax_logit_overflow,

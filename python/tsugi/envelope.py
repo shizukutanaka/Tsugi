@@ -34,6 +34,9 @@ _EXP_WARN_FRAC: float = 0.7
 # 認証 scale_max の何倍を超えたら BLOCK にするか（1.5 = 50% 超過）。
 # 1.0× は「近接（WARN）」、1.5× 超は「認証無効（BLOCK）」。
 _SCALE_BLOCK_RATIO: float = 1.5
+# 非ゼロ値の何割が denormal なら「偶発でなく scale が dtype に対し小さすぎ」と
+# みなすか（0.01 = 1%）。これ未満は単一 denormal 値の情報提供 WARN に留める（Q16）。
+_DENORMAL_FRAC_WARN: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -152,14 +155,25 @@ def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
         rep.add(Risk.WARN, "tensor",
             f"max|x|={max_abs:.3g} が {env.dtype} 上限の {_OVERFLOW_WARN_FRAC*100:.0f}% 超 → overflow 近接")
 
-    # denormal 域: FTZ（flush-to-zero）の有無がベンダーで異なり発散源になる
+    # denormal 域: FTZ（flush-to-zero）の有無がベンダーで異なり発散源になる。
+    # 単一の denormal 値（偶発）と、値の大半が denormal（スケールが dtype に対して
+    # 小さすぎ＝認証 atol が信頼できない）を区別するため denormal *率* を報告する（Q16）。
     nz = np.abs(xf[xf != 0.0])
     if nz.size:
         min_abs = float(nz.min())
         if min_abs < lim.min_normal:
-            rep.add(Risk.WARN, "tensor",
-                f"min nonzero |x|={min_abs:.3g} < {env.dtype} 最小正規数 {lim.min_normal:.3g} "
-                "→ denormal・FTZ 挙動がベンダー差を生む")
+            denorm_frac = float(np.count_nonzero(nz < lim.min_normal)) / nz.size
+            if denorm_frac >= _DENORMAL_FRAC_WARN:
+                # 値の相当割合が denormal → テンソル scale が dtype に対して小さすぎ。
+                # FTZ ベンダー差が systematic に効き、certified atol の前提が崩れる。
+                rep.add(Risk.WARN, "tensor",
+                    f"非ゼロ値の {denorm_frac*100:.1f}% が {env.dtype} 最小正規数 "
+                    f"{lim.min_normal:.3g} 未満（denormal）→ scale が dtype に対し小さすぎ・"
+                    "FTZ ベンダー差が systematic に効き認証 atol の前提が崩れる（要 rescale/再認証）")
+            else:
+                rep.add(Risk.WARN, "tensor",
+                    f"min nonzero |x|={min_abs:.3g} < {env.dtype} 最小正規数 {lim.min_normal:.3g} "
+                    f"→ denormal（非ゼロの {denorm_frac*100:.2f}%）・FTZ 挙動がベンダー差を生む")
 
     # 出力スケールが認証時の前提を超過 → 認証 atol はもはや無効
     scale = float(np.sqrt(np.mean(xf ** 2))) if xf.size else 0.0

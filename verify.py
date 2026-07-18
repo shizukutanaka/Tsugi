@@ -1212,9 +1212,9 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-65: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-66: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）・task レベル
-    shared-mode（Q31）——検証基盤とコードベース自身の構造整合性。"""
+    shared-mode（Q31）・denormal 率（Q16）——検証基盤とコードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1434,6 +1434,22 @@ def _check_meta_integrity() -> None:
           "判断誤り" in _dp65.to_text() and "SHARED-MODE" in _dp65.to_text()
           and _dp65.max_risk >= _R65.WARN
           and "判断誤り" not in _dp65b.to_text())
+
+    # 66. envelope.check_tensor が denormal を *率* で区別する（SOCRATIC-50 Q16）。
+    # 偶発的な単一 denormal 値と、値の大半が denormal（scale が dtype に対し小さすぎ＝
+    # 認証 atol の前提が崩れる）を区別し、後者に rescale/再認証を促す強い警告を出す。
+    from tsugi.envelope import certify_gemm as _cg66
+    from tsugi.envelope import check_tensor as _ct66
+    from tsugi.envelope import dtype_limits as _dl66
+    _lim66 = _dl66("float16")
+    _sys66 = np.full((256,), _lim66.min_normal * 0.3, dtype=np.float32)   # 大半 denormal
+    _inc66 = np.full((1000,), 1.0, dtype=np.float32)
+    _inc66[0] = _lim66.min_normal * 0.1                                    # 1 値のみ denormal
+    _msg_sys66 = " ".join(f.message for f in _ct66(_sys66, _cg66(K=64, dtype="float16")).findings)
+    _msg_inc66 = " ".join(f.message for f in _ct66(_inc66, _cg66(K=64, dtype="float16")).findings)
+    check("check_tensor distinguishes systematic vs incidental denormal by fraction (Q16)",
+          "小さすぎ" in _msg_sys66 and "再認証" in _msg_sys66
+          and "denormal" in _msg_inc66 and "小さすぎ" not in _msg_inc66)
 
 
 def main() -> int:

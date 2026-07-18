@@ -100,7 +100,11 @@ add で合流）→`[[A], [B]]`。偽OK 対策として `audit()` は `propagate
 **改善: 橋の仮定（相対発散が最終 logit にそのまま乗る）を明文化し限界を書く。**
 
 **Q16.** bf16 と fp16 で scale の効き（denormal 域）が違うのに一律 RMS でよいか？
-→ envelope は dtype 別だが scale 推定は一律。**改善: scale 推定に dtype 別の下限（denormal）考慮。**
+→ ✅**修正済（A-8 一部解消）**: `check_tensor` が denormal を *率* で区別する。従来は非ゼロ
+最小値が dtype の `min_normal` 未満なら（＝単一の denormal 値でも）一律 WARN だったが、
+「偶発的な単一 denormal」と「値の大半が denormal（scale が dtype に対し小さすぎ＝認証 atol の
+前提が崩れる）」を denormal 率（`_DENORMAL_FRAC_WARN`=1%）で区別し、後者に rescale/再認証を
+促す強い警告を出す。verify.py 不変条件 66。残: Q15（橋の仮定明文化）。
 
 **Q17.** 全 scale 既定 1.0 は「とりあえず動く」値。テストも scale~1 のデータばかりでは？
 → ✅ **修正済**: `test_tolerance_tracks_scale_across_extremes` が scale=1e-3/1.0/1e3 で
