@@ -75,13 +75,15 @@ empirical_cond/audit_runtime を案内（過小評価を隠さない）。
 random-walk 希釈。(2) 一般のフォーク→合流は `propagate_dag(nodes, correlated=)` ＋
 `merge_divergence`（√Σδ² / Σδ）で series-parallel DAG（attention 並列ヘッド・concat）を表現。
 numpy の 2 ブランチ合流で実測発散を上界することを検証（test_propagation）。
-(3) **FEATURE-AUDIT A-12 Round 1**: `audit()` の `_graph_ops` が SSA の use-def
-（`Op.operands`/`Op.result`）から恒等路つきフォーク（residual・softmax の `row-reduce(row)`
-再利用）を検出し `propagate_dag` の `[[], branch]` に接続。従来は実グラフを線形化し
-`propagate_dag` は audit から一度も呼ばれていなかった（テスト/verify 専用）。
-検出できない形は線形（保守側）に落とす。verify.py 不変条件 63。
-**残: 恒等路の無い一般多分岐マージ（attention ヘッド和）と、交差辺を
-もつ一般 DAG（重み共有・cross-attention 往復）は SP/線形近似に留まる。**
+(3) **FEATURE-AUDIT A-12 Round 1/2**: `audit()` の `_graph_ops` が SSA の use-def
+（`Op.operands`/`Op.result`）からフォークを検出し `propagate_dag` に接続。従来は
+実グラフを線形化し `propagate_dag` は audit から一度も呼ばれていなかった（テスト/verify 専用）。
+Round 1 は恒等路つきフォーク（residual・softmax の `row-reduce(row)` 再利用）→`[[], branch]`。
+Round 2 は恒等路の無い計算 2 分岐（attention ヘッド和・row を exp/reduce の 2 経路が消費し
+add で合流）→`[[A], [B]]`。偽OK 対策として `audit()` は `propagate_dag(correlated=True)`
+（合流を線形和で合成・並列分岐の過小評価を防ぐ）を使い、DAG 発散が線形版を下回らないことを
+保証。検出できない形は線形（保守側）に落とす。verify.py 不変条件 63/64。
+**残: 3 分岐以上・交差辺をもつ一般 DAG（重み共有・cross-attention 往復）は SP/線形近似に留まる。**
 
 ## C. scale=1.0 という暗黙仮定（Q13–17）
 

@@ -108,6 +108,48 @@ def test_graph_ops_extracts_ssa_fork_from_traced_softmax():
     assert _propagate_dag(gops).model_divergence >= _propagate(flat).model_divergence
 
 
+@tsugi.jit
+def _two_branch_row(x, out, N, BN):
+    """恒等路の無い計算 2 分岐（exp / reduce を並列に走らせ加算で合流）。
+
+    literal multi-head attention のヘッド和・並列経路の代表（A-12 Round 2 Case-B）。
+    row を exp と reduce の 2 つが消費（フォーク）→ add で合流（恒等 skip 路なし）。
+    """
+    p = tsugi.program_id(0)
+    row = tile.load(x, (p * BN, 0), (BN, N))
+    a = tile.exp(row)
+    b = tile.reduce(row, 1, "sum")
+    tile.store(out, (p * BN, 0), (a + b).to(tsugi.float16))
+
+
+def test_graph_ops_extracts_computed_two_branch_merge():
+    """_graph_ops が恒等路の無い計算 2 分岐フォークを検出する（A-12 Round 2・Case-B）。
+
+    Round 1（恒等路つき・residual/softmax）に続き、両ブランチとも計算路のフォーク
+    （attention ヘッド和）を SSA use-def から抽出し `[[branchA], [branchB]]` として
+    propagate_dag に渡せることを固定する。検出できない形は線形（保守側）に落ちる。
+    """
+    x = np.random.default_rng(0).standard_normal((8, 8)).astype(np.float32)
+    mod = tsugi.trace(_two_branch_row, (x, x.copy(), 8, 8), {}, (0,))
+    cfg = TileConfig(block_m=8, block_n=8, block_k=8, num_stages=2, num_warps=4)
+    gops = _graph_ops(mod, cfg)
+
+    forks = [o for o in gops if isinstance(o, list)]
+    assert len(forks) == 1, f"計算 2 分岐フォークが 1 つ抽出されるはず: {gops}"
+    fork = forks[0]
+    # 恒等路なしの 2 計算ブランチ（空ブランチを含まない）。片方 exp・片方 reduce。
+    assert len(fork) == 2 and all(br != [] for br in fork), f"恒等路なし 2 計算分岐でない: {fork}"
+    branch_kinds = {tuple(op.kind for op in br) for br in fork}
+    assert branch_kinds == {("exp",), ("reduce",)}, branch_kinds
+
+    # audit() は correlated=True（保守側）で合流するため線形版を下回らない（過小評価しない）。
+    from tsugi.propagation import propagate as _propagate
+    from tsugi.propagation import propagate_dag as _propagate_dag
+    flat = list(_iter_graphops(gops))
+    assert (_propagate_dag(gops, correlated=True).model_divergence
+            >= _propagate(flat).model_divergence)
+
+
 def test_audit_numerics_uses_sample_scale_when_given():
     """audit(sample=...) は certify_from_sample で実 RMS scale を認証する（Q13/Q14 の facade 接続）。
 
@@ -647,6 +689,7 @@ def main() -> int:
         test_audit_occupancy_phase_covers_all_targets,
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
         test_graph_ops_extracts_ssa_fork_from_traced_softmax,
+        test_graph_ops_extracts_computed_two_branch_merge,
         test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,
         test_audit_sample_auto_measures_empirical_cond,

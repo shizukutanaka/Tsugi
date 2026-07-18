@@ -1212,8 +1212,8 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-63: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
-    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12）——検証基盤と
+    """不変条件 56-64: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）——検証基盤と
     コードベース自身の構造整合性。"""
     import numpy as np
 
@@ -1382,6 +1382,35 @@ def _check_meta_integrity() -> None:
           bool(_forks63)
           and all(len(f) == 2 and f[0] == [] for f in _forks63)
           and _leaves63.count("reduce") == 2 and "exp" in _leaves63)
+
+    # 64. A-12 Round 2: 恒等路の無い計算 2 分岐（attention ヘッド和・row を exp と reduce の
+    # 2 経路が消費し add で合流）も SSA から検出し `[[A],[B]]`（恒等路なし）で出す。
+    # audit() は correlated=True（保守側）で合流するため DAG 発散は線形版を下回らない
+    # （並列分岐を independent 仮定で過小評価 → 偽OK になる罠を回避）。
+    from tsugi.propagation import propagate as _prop64
+    from tsugi.propagation import propagate_dag as _pdag64
+
+    @_t63.jit
+    def _twobranch64(x, out, N, BN):
+        p = _t63.program_id(0)
+        row = _tile63.load(x, (p * BN, 0), (BN, N))
+        a = _tile63.exp(row)
+        b = _tile63.reduce(row, 1, "sum")
+        _tile63.store(out, (p * BN, 0), (a + b).to(_t63.float16))
+
+    _x64 = np.random.default_rng(1).standard_normal((8, 8)).astype(np.float32)
+    _mod64 = _t63.trace(_twobranch64, (_x64, _x64.copy(), 8, 8), {}, (0,))
+    _cfg64 = _TC63(block_m=8, block_n=8, block_k=8, num_stages=2, num_warps=4)
+    _g64 = _go63(_mod64, _cfg64)
+    _forks64 = [o for o in _g64 if isinstance(o, list)]
+    _bk64 = ({tuple(op.kind for op in br) for br in _forks64[0]} if _forks64 else set())
+    _flat64 = list(_ig63(_g64))
+    check("audit _graph_ops detects computed two-branch merge, merged conservatively (A-12 Round 2)",
+          len(_forks64) == 1
+          and all(br != [] for br in _forks64[0])
+          and _bk64 == {("exp",), ("reduce",)}
+          and _pdag64(_g64, correlated=True).model_divergence
+          >= _prop64(_flat64).model_divergence)
 
 
 def main() -> int:

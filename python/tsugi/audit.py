@@ -165,13 +165,99 @@ def _identity_fork_merge(body, i: int, consumers: dict) -> int | None:
     return idx_b
 
 
+def _computed_fork_merge(body, i: int, consumers: dict):
+    """body[i] の結果が「2 本の計算路が合流する」フォークの起点なら
+    (合流 index, branchA の op index 列, branchB の op index 列) を返す（A-12 Round 2）。
+
+    恒等路の *無い* Case-B: フォーク値 r を 2 つの op が消費し（a0/b0）、それぞれが
+    単一消費の一本鎖として伸び、共通の合流 op M で `M.operands == {tailA, tailB}`
+    （両鎖の末端ちょうど 2 つ）として再合流する形。literal multi-head attention の
+    ヘッド和・並列 2 経路の concat/加算がこれに該当し、`propagate_dag` の
+    `[[branchA], [branchB]]` フォーク（恒等路なし）で表せる。
+
+    偽OK を出さないため *完全に検証できた* 構造だけを受理する: 一本鎖でない・分岐が
+    3 本以上・中間値が鎖外/合流の先で消費・領域(i,M)が 2 鎖で丁度覆われない、の
+    いずれかなら None を返し従来の線形扱いに落とす（不確実なら保守側の fail-safe）。
+    """
+    op = body[i]
+    if op.result is None:
+        return None
+    r = op.result.name
+    uses = consumers.get(r, [])
+    if len(uses) != 2 or uses[0] == uses[1]:
+        return None
+
+    def _trace(start):
+        """start から単一消費の一本鎖を辿り (index 列, 合流 index, 到達名集合) を返す。"""
+        names = {r}
+        chain: list[int] = []
+        cur = start
+        while True:
+            o = body[cur]
+            if o.result is None:
+                return None
+            if not o.operands or any(v.name not in names for v in o.operands):
+                return None                # 外部値の混入 → 一本鎖でない
+            chain.append(cur)
+            names.add(o.result.name)
+            nxts = consumers.get(o.result.name, [])
+            if len(nxts) != 1:
+                return None                # 分岐/未使用 → 一本鎖でない
+            m = nxts[0]
+            if all(v.name in names for v in body[m].operands):
+                cur = m                    # まだ枝の内側 → 鎖を延長
+                continue
+            return chain, m, names         # m は枝外 operand を持つ = 合流境界
+
+    ra, rb = _trace(uses[0]), _trace(uses[1])
+    if ra is None or rb is None:
+        return None
+    chain_a, m_a, _ = ra
+    chain_b, m_b, _ = rb
+    if m_a != m_b:
+        return None                        # 別々の合流 → series-parallel でない
+    m = m_a
+    if set(chain_a) & set(chain_b):
+        return None                        # 枝が交差 → 一般 DAG
+    tails = {body[chain_a[-1]].result.name, body[chain_b[-1]].result.name}
+    if len(tails) != 2:
+        return None
+    if {v.name for v in body[m].operands} != tails:
+        return None                        # 合流が両末端ちょうどでない（r 直結や外部混入）
+    if set(range(i + 1, m)) != set(chain_a) | set(chain_b):
+        return None                        # 領域(i,m) が 2 鎖で丁度覆われない
+    return m, chain_a, chain_b
+
+
+def _detect_fork(body, i: int, consumers: dict, bk: int):
+    """body[i] 起点のフォークを検出し (合流 index, propagate_dag フォークノード) を返す。
+
+    恒等路つき（Case-A・residual/softmax）を先に、無ければ計算 2 分岐（Case-B・
+    attention ヘッド和）を試す。どちらも該当しなければ None（線形扱い）。
+    """
+    m = _identity_fork_merge(body, i, consumers)
+    if m is not None:
+        branch = _classify_ops(body[i + 1:m], bk)
+        if branch:
+            return m, [[], branch]         # 恒等 skip 路 ＋ 計算路
+    res = _computed_fork_merge(body, i, consumers)
+    if res is not None:
+        m, chain_a, chain_b = res
+        b_a = _classify_ops([body[j] for j in chain_a], bk)
+        b_b = _classify_ops([body[j] for j in chain_b], bk)
+        if b_a and b_b:
+            return m, [b_a, b_b]           # 計算 2 分岐（恒等路なし）
+    return None
+
+
 def _graph_ops(module: ir.Module, cfg):
     """traced IR を propagation 用の op グラフへ写す（SSA fork/merge 対応・A-12）。
 
     torch.compile(model) の op グラフを模す。従来は kernel body を線形走査するだけで
-    Op.operands/Op.result の SSA 参照を捨てていたが、恒等路つき単純フォーク
-    （residual y=x+f(x)・softmax の row 再利用）を use-def から検出し、
-    `propagate_dag` のフォークノード `[[], branch]`（恒等 skip 路＋計算路）として出す。
+    Op.operands/Op.result の SSA 参照を捨てていたが、フォーク→マージ構造を use-def から
+    検出し `propagate_dag` のフォークノードとして出す:
+      - 恒等路つき（Case-A・residual y=x+f(x)・softmax の row 再利用）→ `[[], branch]`
+      - 計算 2 分岐（Case-B・attention ヘッド和）→ `[[branchA], [branchB]]`
     検出できない形は従来通り線形（保守側）。返り値は GraphOp と
     フォーク（list[list[GraphOp]]）の混在列で、そのまま propagate_dag に渡せる。
     """
@@ -186,14 +272,13 @@ def _graph_ops(module: ir.Module, cfg):
         pending: list = []                 # 線形扱いの op を貯めて一括分類
         i = 0
         while i < len(body):
-            merge_idx = _identity_fork_merge(body, i, consumers)
-            branch = (_classify_ops(body[i + 1:merge_idx], bk)
-                      if merge_idx is not None else [])
-            if branch:
+            detected = _detect_fork(body, i, consumers, bk)
+            if detected is not None:
+                merge_idx, fork_node = detected
                 pending.append(body[i])          # フォーク元の op 自体は直列に分類
                 nodes.extend(_classify_ops(pending, bk))
                 pending = []
-                nodes.append([[], branch])       # 恒等 skip 路 ＋ 計算路
+                nodes.append(fork_node)          # [[], branch] または [[A], [B]]
                 pending.append(body[merge_idx])  # 合流 op は通常 op として δ に乗る
                 i = merge_idx + 1
                 continue
@@ -314,7 +399,12 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
                     o.cond = empirical_cond(sample, o.kind)
                     cond_measured = True
 
-        pr = propagate_dag(gops)
+        # correlated=True: 合流点の分岐発散を線形和 Σδ で合成する（保守側）。
+        # クロスベンダー発散は系統的（相関）でありうる（calibration.check_systematic）ため、
+        # 相関が不明な検証器は非対称コスト下で保守側を選ぶ——independent 仮定
+        # （correlated=False の √Σδ²）は並列分岐を過小評価し偽OK の温床になりうる。
+        # これにより DAG 発散は線形版 propagate を下回らない（fail-safe・過小評価しない）。
+        pr = propagate_dag(gops, correlated=True)
         ratio = pr.model_divergence / (pr.naive_sum + 1e-30)
         # 発散が深さ/増幅でナイーブ和を大きく超えるならモデルレベルで要注意。
         prop = AuditPhase("propagation 合成的等価性", "decided",

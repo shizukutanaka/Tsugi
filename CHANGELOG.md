@@ -5,6 +5,25 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Fixed
+- **A-12 Round 2: 恒等路の無い計算 2 分岐フォーク（attention ヘッド和）の接続 ＋ 偽OK 対策の保守側マージ**:
+  Round 1 は恒等路つきフォーク（residual/softmax）のみ検出していた。恒等路の無い
+  計算 2 分岐（row を exp と reduce の 2 経路が消費し add で合流＝literal multi-head
+  attention のヘッド和）は今回のパターンに合致せず線形に落ちていた。
+  - 修正: `_computed_fork_merge` が各分岐を単一消費の一本鎖として辿り、共通の合流 op で
+    `operands == {tailA, tailB}`（両末端ちょうど）として再合流する形を厳密検証して
+    `propagate_dag` の `[[branchA], [branchB]]`（恒等路なし）に写す。`_detect_fork` が
+    Case-A(恒等路つき)→Case-B(計算 2 分岐)の順に試し、どちらも完全検証できなければ
+    線形（保守側）。3 分岐以上・交差辺のある一般 DAG は 2 分岐限定で線形フォールバック。
+  - **偽OK 対策（重要）**: `audit()` の `propagate_dag` 呼び出しを `correlated=True`
+    （合流を線形和 Σδ で合成）に変更。クロスベンダー発散は系統的（相関）でありうる
+    （`calibration.check_systematic` が実証）ため、independent 仮定（`correlated=False`
+    の √Σδ²）は並列分岐を過小評価し偽OK の温床になりうる。correlated=True で DAG 発散が
+    線形版 `propagate` を下回らないことを保証（fail-safe・過小評価しない）。
+  - 実証: 2 分岐カーネル（exp/reduce を並列に走らせ add で合流）を trace すると
+    `[[exp], [reduce]]` フォークが 1 つ抽出され、correlated=True の DAG 発散が線形版以上に
+    なることを `test_graph_ops_extracts_computed_two_branch_merge` で固定。
+    verify.py 不変条件 64（158/158）。Round 1 の softmax/plain matmul テストは無回帰。
+
 - **audit() の propagation phase が SSA の fork/merge 構造を線形化していた欠陥（FEATURE-AUDIT A-12・Round 1）**:
   `audit.py:_graph_ops()` は traced IR の `Op.operands`/`Op.result`（SSA 参照）を
   一切見ずに kernel body を線形走査するだけだったため、`propagation.propagate_dag()`
