@@ -1212,9 +1212,10 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-66: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-67: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）・task レベル
-    shared-mode（Q31）・denormal 率（Q16）——検証基盤とコードベース自身の構造整合性。"""
+    shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）——検証基盤と
+    コードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1450,6 +1451,21 @@ def _check_meta_integrity() -> None:
     check("check_tensor distinguishes systematic vs incidental denormal by fraction (Q16)",
           "小さすぎ" in _msg_sys66 and "再認証" in _msg_sys66
           and "denormal" in _msg_inc66 and "小さすぎ" not in _msg_inc66)
+
+    # 67. audit(ref_logits=) の propagation→decision 橋が仮定を *レポートに明示* する
+    # （SOCRATIC-50 Q15）。相対発散 δ_rel を最終 logit にそのまま乗せる近似の妥当域
+    # （正規化の scale リセット・最終射影の条件数・分布シフト）を暗黙化しない。
+    from tsugi.audit import audit as _au67
+    from tsugi.portcheck import _demo_module as _dm67
+    _mod67, _blk67, _cfg67 = _dm67()
+    _lg67 = np.random.default_rng(0).standard_normal((100, 10)).astype(np.float32)
+    _p67 = next(p for p in _au67(_mod67, _cfg67, block_dims=_blk67, ref_logits=_lg67).phases
+                if p.name.startswith("propagation"))
+    _p67n = next(p for p in _au67(_mod67, _cfg67, block_dims=_blk67).phases
+                 if p.name.startswith("propagation"))
+    check("audit bridge (propagation->decision) surfaces its validity-domain assumption (Q15)",
+          any("仮定: op グラフ相対発散" in ln for ln in _p67.lines)
+          and not any("仮定: op グラフ相対発散" in ln for ln in _p67n.lines))
 
 
 def main() -> int:

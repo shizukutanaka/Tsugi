@@ -5,6 +5,15 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Changed
+- **propagation→decision 橋の妥当域仮定をレポートに明示（SOCRATIC-50 Q15・FEATURE-AUDIT A-8 完全解消）**:
+  `audit(ref_logits=)` は propagation のモデル発散 δ_rel を最終 logit の RMS に掛けて
+  タスクフリップ率へ翻訳するが、δ_rel は op グラフ（GEMM 連）の相対発散であり、最終
+  logit 層の相対発散は正規化の scale リセット・最終射影の条件数（logit scale ≠ GEMM 出力
+  scale）・分布シフトで変わりうる——この仮定が docstring にしか無く、レポートには出て
+  いなかった。「scale=1 仮定」「静的 cond=1 は下界」と同じ *暗黙化しない* 慣例に従い、
+  橋を使う時（ref_logits 指定時）に妥当域の注記を propagation phase の出力に追加した。
+  ref_logits 無指定時は従来通り注記を出さない（後方互換）。verify.py 不変条件 67（161/161）。
+
 - **envelope.check_tensor が denormal を *率* で区別（SOCRATIC-50 Q16・FEATURE-AUDIT A-8 一部解消）**:
   従来は非ゼロ最小値が dtype の `min_normal` 未満なら（＝偶発的な単一 denormal 値でも）
   一律に同じ WARN を出しており、「たまたま 1 値が denormal」と「値の大半が denormal

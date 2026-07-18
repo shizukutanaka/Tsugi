@@ -436,6 +436,14 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             prop.lines.append(
                 f"タスク影響(予測): 判断フリップ率 ≤ {bound * 100:.2f}%"
                 "（第2ベンダー実行前・代表 logit 分布から）")
+            # Q15: 橋の仮定を明示する（暗黙化しない）。propagation は *op グラフの相対発散*
+            # δ_rel を返し、橋は δ_abs = δ_rel·RMS(logits) として最終 logit に *そのまま*
+            # 乗せる。だが δ_rel は GEMM 連の相対発散であり、最終 logit 層の相対発散は
+            # 正規化（scale リセット）や最終射影の条件数で変わりうる（logit scale ≠ GEMM
+            # 出力 scale）。分布シフト時（本番 logit が代表集合と違う）も予測は外れる。
+            prop.lines.append(
+                "  ↑ 仮定: op グラフ相対発散が最終 logit にそのまま乗る（正規化の scale "
+                "リセット・最終射影の条件数・分布シフトで妥当域を外れうる・要再評価）")
         a.phases.append(prop)
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---

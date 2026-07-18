@@ -96,8 +96,11 @@ add で合流）→`[[A], [B]]`。偽OK 対策として `audit()` は `propagate
 測る補助を用意。**
 
 **Q15.** propagation→decision 橋は `scale=RMS(logits)`。logit scale と GEMM 出力 scale は同一か？
-→ 別物（logit は最終層出力）。相対発散を logit に適用する近似の妥当域を要明記。
-**改善: 橋の仮定（相対発散が最終 logit にそのまま乗る）を明文化し限界を書く。**
+→ ✅**修正済（A-8 解消）**: `audit(ref_logits=)` の propagation phase が橋の仮定を *レポートに
+明示* する（docstring だけでなく出力に出す＝このプロジェクトの「暗黙化しない」慣例）。
+δ_rel（op グラフ相対発散）を最終 logit にそのまま乗せる近似の妥当域——正規化の scale
+リセット・最終射影の条件数（logit scale ≠ GEMM 出力 scale）・分布シフト——を明記し要再評価を促す。
+verify.py 不変条件 67。
 
 **Q16.** bf16 と fp16 で scale の効き（denormal 域）が違うのに一律 RMS でよいか？
 → ✅**修正済（A-8 一部解消）**: `check_tensor` が denormal を *率* で区別する。従来は非ゼロ
