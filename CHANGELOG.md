@@ -4,6 +4,20 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **audit_runtime(logits_oracle=) — task レベルの正しさ照合（SOCRATIC-50 Q31・FEATURE-AUDIT A-9 一部解消）**:
+  decision 層のフリップ率は A↔B の *一致* を測る（正しさではない）。両ベンダーが互いに
+  一致（低フリップ率）していても、両方が真値の判断と食い違えば同一誤り——tensor レベルの
+  `detect_shared_mode` は捕えるが、task（argmax 判断）レベルには相当する検査が無かった。
+  - `audit_runtime` に `logits_oracle`（真値の判断・classification のみ）を追加。各ベンダーの
+    判断誤り率（`decision.flip_rate` を oracle 相手に再利用）を decision phase に併記し、
+    両ベンダーとも oracle 判断からの誤りが `flip_budget` を超えれば「task-level SHARED-MODE」
+    として WARN する（一致は正しさを意味しない）。
+  - 後方互換: `logits_oracle` 未指定なら従来通り正しさ行を出さない。
+  - test: `test_audit_runtime_decision_accuracy_flags_task_level_shared_mode`
+    （A==B でフリップ率 0 でも oracle と半数食い違えば WARN・oracle 無しは無変化）。
+    verify.py 不変条件 65（159/159）。
+
 ### Fixed
 - **A-12 Round 2: 恒等路の無い計算 2 分岐フォーク（attention ヘッド和）の接続 ＋ 偽OK 対策の保守側マージ**:
   Round 1 は恒等路つきフォーク（residual/softmax）のみ検出していた。恒等路の無い

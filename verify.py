@@ -1212,9 +1212,9 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-64: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
-    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）——検証基盤と
-    コードベース自身の構造整合性。"""
+    """不変条件 56-65: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）・task レベル
+    shared-mode（Q31）——検証基盤とコードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1411,6 +1411,29 @@ def _check_meta_integrity() -> None:
           and _bk64 == {("exp",), ("reduce",)}
           and _pdag64(_g64, correlated=True).model_divergence
           >= _prop64(_flat64).model_divergence)
+
+    # 65. audit_runtime(logits_oracle=...) が task レベルの shared-mode を検出する（Q31・A-9）。
+    # フリップ率は A↔B の一致を測る（正しさではない）。両ベンダーが互いに一致（低フリップ率）
+    # でも両方 oracle 判断と食い違えば同一誤り——tensor レベルの detect_shared_mode の task 版。
+    from tsugi.audit import audit_runtime as _ar65
+    from tsugi.envelope import certify_gemm as _cg65
+    from tsugi.report import Risk as _R65
+    _a65 = np.random.default_rng(0).standard_normal((64, 64)).astype(np.float32)
+    _env65 = _cg65(K=64, dtype="float32", scale=1.0)
+    _lg65 = np.random.default_rng(0).standard_normal((200, 10)).astype(np.float32)
+    _or65 = _lg65.copy()
+    _or65[:100] = _or65[:100][:, ::-1]      # 半数のサンプルで oracle の argmax を変える
+    _ad65 = _ar65(_a65, _a65.copy(), K=64, env=_env65, noise_floor=1e-6,
+                  logits_a=_lg65, logits_b=_lg65, logits_oracle=_or65, flip_budget=0.01)
+    _dp65 = next(p for p in _ad65.phases if p.name.startswith("decision"))
+    # logits_oracle 無しでは正しさ行を出さない（後方互換）
+    _ad65b = _ar65(_a65, _a65.copy(), K=64, env=_env65, noise_floor=1e-6,
+                   logits_a=_lg65, logits_b=_lg65, flip_budget=0.5)
+    _dp65b = next(p for p in _ad65b.phases if p.name.startswith("decision"))
+    check("audit_runtime(logits_oracle) flags task-level shared-mode (agreement != correctness, Q31)",
+          "判断誤り" in _dp65.to_text() and "SHARED-MODE" in _dp65.to_text()
+          and _dp65.max_risk >= _R65.WARN
+          and "判断誤り" not in _dp65b.to_text())
 
 
 def main() -> int:

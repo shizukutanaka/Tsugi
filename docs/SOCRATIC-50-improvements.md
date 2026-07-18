@@ -170,7 +170,10 @@ propagation GraphOp へ写す（duck-typed・torch 不要でテスト）。実 t
   near-tie（threshold 付近）での flakiness が見えるようになった。
 
 **Q31.** flip は「正しさ」でなく「一致」を測る。両ベンダーとも同じく誤るケースは？
-→ flip=0 でも両方間違いはある。**改善: oracle がある検証集合では accuracy 差も併記。**
+→ ✅修正済（A-9 一部解消）: `audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率
+（`decision.flip_rate` を oracle 相手に再利用）を併記し、A↔B が一致（低フリップ率）でも
+両方 oracle 判断と食い違えば task レベル shared-mode として WARN する（tensor レベルの
+`detect_shared_mode` の task 版）。flip=0 でも両方誤りを見逃さない。verify.py 不変条件 65。
 
 **Q32.** 温度・top-p サンプリング下では同 logit でも出力トークンが確率的に違う。
 → 非対応。**改善: サンプリング下の「分布一致」（決定論的 argmax でなく）を将来課題に。**

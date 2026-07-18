@@ -528,6 +528,37 @@ def test_audit_runtime_includes_decision_when_logits_given():
     assert dp.max_risk == Risk.BLOCK       # フリップ率が予算超
 
 
+def test_audit_runtime_decision_accuracy_flags_task_level_shared_mode():
+    """audit_runtime(logits_oracle=...) が task レベルの shared-mode を検出する（Q31・A-9）。
+
+    フリップ率は A↔B の *一致* を測る（正しさではない）。両ベンダーが互いに一致
+    （低フリップ率）していても、両方が oracle の判断（argmax）と食い違えば同一誤り
+    ——tensor レベルの detect_shared_mode の task レベル版。oracle 判断を渡すと各
+    ベンダーの判断誤り率を併記し、両方が予算超なら WARN する。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 64)).astype(np.float32)
+    env = certify_gemm(K=64, dtype="float32", scale=1.0)
+    logits = rng.standard_normal((200, 10)).astype(np.float32)
+
+    # A == B（フリップ率 0）だが oracle は半数のサンプルで argmax が異なる（両方 50% 誤り）
+    oracle = logits.copy()
+    oracle[:100] = oracle[:100][:, ::-1]
+    ad = audit_runtime(a, a.copy(), K=64, env=env, noise_floor=1e-6,
+                       logits_a=logits, logits_b=logits, logits_oracle=oracle,
+                       flip_budget=0.01)
+    dp = next(p for p in ad.phases if p.name.startswith("decision"))
+    text = dp.to_text()
+    assert "判断誤り" in text and "SHARED-MODE" in text, text
+    assert dp.max_risk >= Risk.WARN     # 一致していても両方誤りなら WARN
+
+    # 後方互換: logits_oracle 無しでは正しさ行を出さない（従来挙動）
+    ad2 = audit_runtime(a, a.copy(), K=64, env=env, noise_floor=1e-6,
+                        logits_a=logits, logits_b=logits, flip_budget=0.5)
+    dp2 = next(p for p in ad2.phases if p.name.startswith("decision"))
+    assert "判断誤り" not in dp2.to_text()
+
+
 def test_audit_runtime_supports_non_classification_tasks():
     """audit_runtime(task=...) が decision.compare_task に委譲する（第15回）。
 
@@ -710,6 +741,7 @@ def main() -> int:
         test_audit_runtime_blocks_real_divergence,
         test_audit_runtime_equivalence_distinguishes_layout_from_true_divergence,
         test_audit_runtime_includes_decision_when_logits_given,
+        test_audit_runtime_decision_accuracy_flags_task_level_shared_mode,
         test_audit_runtime_supports_non_classification_tasks,
         test_audit_runtime_adds_rollout_phase_when_gen_length_given,
         test_audit_rollout_is_fail_safe_with_zero_observed_flips,

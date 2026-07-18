@@ -455,6 +455,7 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
+                  logits_oracle=None,
                   flip_budget: float = 0.001, oracle=None, provenance=None,
                   gen_length: int = 0, task: str = "classification",
                   task_kwargs: dict | None = None,
@@ -473,6 +474,9 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         task="classification"（既定）は compare_decisions（argmax・多クラス専用）。
         task="regression"/"binary"/"ranking" は compare_task へ委譲（非分類タスクの
         出荷判断・decision.compare_task はテスト済みだが従来 audit_runtime に未接続だった）。
+        logits_oracle（真値の判断・classification のみ）を渡すと各ベンダーの判断誤り率も
+        併記し、A↔B が一致（低フリップ率）でも両方 oracle 判断と食い違う task レベルの
+        shared-mode を WARN する（Q31: フリップ率＝一致 ≠ 正しさ）。
       - oracle があれば correctness 層: oracle_check（oracle 自体の信頼性）＋
         detect_shared_mode（a≈b でも両方 oracle と不一致＝共有モード障害）
       - layers_a/layers_b（＋任意 x0）があれば attribution.diagnose で層別診断:
@@ -574,6 +578,25 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             dp = AuditPhase("decision タスクレベル等価", "decided", dr.max_risk)
             dp.lines.append(f"判断フリップ率 {dr.flip_rate * 100:.2f}% "
                             f"(予算 {flip_budget * 100:.2f}%・上界 ≤{dr.predicted_bound * 100:.2f}%)")
+            # Q31: フリップ率は A↔B の *一致* を測る（正しさではない）。oracle の判断
+            # （argmax）が与えられれば各ベンダーの *正しさ* も併記する。両ベンダーが
+            # 互いに一致（低フリップ率）していても、両方が oracle と食い違えば同一誤り
+            # （task レベルの shared-mode）——一致だけを見ると見逃す偽OK。
+            if logits_oracle is not None:
+                from .decision import flip_rate as _flip_rate
+                _lo = np.asarray(logits_oracle)
+                err_a = _flip_rate(np.asarray(logits_a), _lo)
+                err_b = _flip_rate(np.asarray(logits_b), _lo)
+                dp.lines.append(
+                    f"oracle 照合(正しさ): A 判断誤り {err_a * 100:.2f}% / "
+                    f"B {err_b * 100:.2f}%（フリップ率＝一致 ≠ 正しさ）")
+                # 両ベンダーとも oracle 判断からの誤りが予算超 → 一致しても両方誤り。
+                if min(err_a, err_b) > flip_budget:
+                    dp.max_risk = max(dp.max_risk, Risk.WARN)
+                    dp.lines.append(
+                        "task-level SHARED-MODE: A↔B は一致するが両方 oracle 判断と"
+                        f"食い違う（min 誤り {min(err_a, err_b) * 100:.2f}% > 予算 "
+                        f"{flip_budget * 100:.2f}%）——一致は正しさを意味しない")
         else:
             tr = compare_task(np.asarray(logits_a), np.asarray(logits_b), task=task,
                               flip_budget=flip_budget, **(task_kwargs or {}))

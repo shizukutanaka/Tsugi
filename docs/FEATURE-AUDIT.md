@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 158/158 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 159/159 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 
 ---
@@ -39,7 +39,7 @@
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | P2 | `decision.py` 統計判定 | 一部解消 | per-sample δ（Q19）は解消済み。多 seed 分布報告（Q48）が残る |
 | A-8 | 不足 | P2 | scale 推定 | 一部解消 | dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る |
-| A-9 | 不足 | P2 | タスクモデル拡張 | 未着手 | beam search・温度サンプリング下の分布一致・oracle 有り時の accuracy 差併記 |
+| A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() のテーマ別分割（Q34）は解消済み。カバレッジ計測（Q38）・乱数境界点検（Q43）が残る |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 大部分解消 | 恒等路つき（residual/softmax）＋計算 2 分岐（attention ヘッド和）フォークを SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 3 分岐以上・交差辺のある一般 DAG |
@@ -203,8 +203,12 @@
    （Q48: 「発散 ~2000倍」等の数字が単一 seed）。
 8. **[A-8] scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
-9. **[A-9] タスクモデルの拡張**: Q21（代表 logit はキャリブレーション集合から、というガイド）、
-   Q22/Q32（beam search・温度サンプリング下の分布一致）、Q31（oracle がある時の accuracy 差併記）。
+9. **[A-9] タスクモデルの拡張（一部解消）**: Q31（oracle がある時の accuracy 差併記）は
+   解消——`audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率を併記し、A↔B が一致
+   （低フリップ率）でも両方 oracle 判断と食い違う task レベル shared-mode を WARN する
+   （`decision.flip_rate` を oracle 相手に再利用・`verify.py` 不変条件 65）。残: Q21（代表
+   logit はキャリブレーション集合から、というガイド）、Q22/Q32（beam search・温度
+   サンプリング下の分布一致）。
 10. **[A-10] 検証基盤の構造**: Q34（`verify.py` 単一巨大 main() の関数分割）は解消済み——
     61 セクションをテーマ別の 12 個の `_check_*()` 関数に分割し、`main()` は順に呼ぶだけの
     薄い関数にした（挙動・実行順・check 文言・件数は分割前と一字一句同一であることを
@@ -284,7 +288,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 158 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 159 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---
