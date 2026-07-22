@@ -21,6 +21,10 @@
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
 - **検証基盤の規模**: `verify.py` に 161/161 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
+- **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
+  プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
+  （設計判断つき中規模ラウンド）・`docs/INSTRUCTIONS-SONNET.md`（スコープ確定済み反復）
+  に実行指示として分解されている（会話履歴なしで作業開始できる）。
 
 ---
 

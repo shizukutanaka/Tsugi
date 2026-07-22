@@ -4,6 +4,17 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Added
+- **プロダクト評価とモデル別指示書（ASSESSMENT.md / INSTRUCTIONS-OPUS.md / INSTRUCTIONS-SONNET.md）**:
+  問題: 残作業を Fable が毎回全文脈を持って回すしかなく、Opus/Sonnet に安全に委譲する
+  実行可能な指示が無かった（`docs/MODEL-USAGE-GUIDE.md` は「どう使い分けるか」の方針止まり）。
+  修正: (1) `docs/ASSESSMENT.md` に長所（5）・短所（6）・改善案（8 件×優先度×推奨実行者）を
+  観測事実ベースで棚卸しし、(2) その優先度表をバックログとして `docs/INSTRUCTIONS-OPUS.md`
+  （P1: A-3 torch 接続・A-12 残の SP fork 一般化・A-2 実機計画）と
+  `docs/INSTRUCTIONS-SONNET.md`（P2: Q43/Q48・カバレッジ・ドキュメント同期＋エスカレーション
+  基準）に分解した。両指示書は「起動時に読む 3 ファイル」から始まり会話履歴なしで作業開始できる。
+  MODEL-USAGE-GUIDE.md / FEATURE-AUDIT.md から相互参照。実証: docs のみ・verify 161/161 無回帰。
+
 ### Changed
 - **propagation→decision 橋の妥当域仮定をレポートに明示（SOCRATIC-50 Q15・FEATURE-AUDIT A-8 完全解消）**:
   `audit(ref_logits=)` は propagation のモデル発散 δ_rel を最終 logit の RMS に掛けて
