@@ -36,6 +36,11 @@ class AuditPhase:
         body = "\n".join("    " + ln for ln in self.lines)
         return head + ("\n" + body if body else "")
 
+    def to_dict(self) -> dict:
+        """JSON 直列化可能な dict（Risk は IntEnum ゆえ .name で文字列化）。"""
+        return {"name": self.name, "when": self.when,
+                "max_risk": self.max_risk.name, "lines": list(self.lines)}
+
 
 @dataclass
 class Audit:
@@ -76,6 +81,39 @@ class Audit:
         from .provenance import certify
         self.certificate = certify("portable" if self.portable else "blocked", **env)
         return self
+
+    @property
+    def exit_code(self) -> int:
+        """CI ゲート用のプロセス終了コード（OK/INFO=0・WARN=1・BLOCK=2）。
+
+        判定は decided 層のみから（`max_risk` と同じ規約）。契約の詳細は
+        `report.exit_code` の docstring を参照。
+        """
+        from .report import exit_code as _exit_code
+        return _exit_code(self.max_risk)
+
+    def to_dict(self) -> dict:
+        """判定を機械可読な dict にする（CI ゲート・ダッシュボード連携用）。
+
+        この製品の存在意義は「出荷してよいか」を *ゲートする* ことであり、そのゲートは
+        本来 CI が自動で行う。`to_text()` は人間向けの散文であり、機械が判定を
+        消費するには構造化データが要る（散文の正規表現パースは脆い）。
+        `json.dumps(audit(...).to_dict())` がそのまま通ることを保証する
+        （Risk は IntEnum ゆえ `.name` で文字列化・certificate は dataclass を展開）。
+        """
+        cert = None
+        if self.certificate is not None:
+            c = self.certificate
+            cert = {k: getattr(c, k) for k in ("verdict", "fingerprint", "env")
+                    if hasattr(c, k)}
+        return {
+            "verdict": "portable" if self.portable else "blocked",
+            "portable": self.portable,
+            "max_risk": self.max_risk.name,
+            "exit_code": self.exit_code,
+            "phases": [p.to_dict() for p in self.phases],
+            "certificate": cert,
+        }
 
     def to_text(self) -> str:
         lines = ["=== Tsugi audit（検証層の統合判定）==="]
@@ -166,29 +204,33 @@ def _identity_fork_merge(body, i: int, consumers: dict) -> int | None:
 
 
 def _computed_fork_merge(body, i: int, consumers: dict):
-    """body[i] の結果が「2 本の計算路が合流する」フォークの起点なら
-    (合流 index, branchA の op index 列, branchB の op index 列) を返す（A-12 Round 2）。
+    """body[i] の結果が「N 本（≥2）の計算路が単一 op で合流する」フォークの起点なら
+    (合流 index, [branch0 の index 列, branch1 の …, …]) を返す（A-12 Round 2/3）。
 
-    恒等路の *無い* Case-B: フォーク値 r を 2 つの op が消費し（a0/b0）、それぞれが
-    単一消費の一本鎖として伸び、共通の合流 op M で `M.operands == {tailA, tailB}`
-    （両鎖の末端ちょうど 2 つ）として再合流する形。literal multi-head attention の
-    ヘッド和・並列 2 経路の concat/加算がこれに該当し、`propagate_dag` の
-    `[[branchA], [branchB]]` フォーク（恒等路なし）で表せる。
+    恒等路の *無い* Case-B/C: フォーク値 r を N 個の distinct な op が消費し、それぞれが
+    単一消費の一本鎖として伸び、共通の合流 op M で `M.operands == {tail0..tail_{N-1}}`
+    （全鎖の末端ちょうど N 個）として再合流する形。literal multi-head attention の
+    ヘッド和（N=2..）・N 経路の concat/加算・`dot(a,b,acc)` の 3 operand 合流が該当し、
+    `propagate_dag` の `[[branch0], …, [branch_{N-1}]]` フォーク（恒等路なし）で表せる。
 
-    偽OK を出さないため *完全に検証できた* 構造だけを受理する: 一本鎖でない・分岐が
-    3 本以上・中間値が鎖外/合流の先で消費・領域(i,M)が 2 鎖で丁度覆われない、の
-    いずれかなら None を返し従来の線形扱いに落とす（不確実なら保守側の fail-safe）。
+    偽OK を出さないため *完全に検証できた* 構造だけを受理する: 一本鎖でない・N 分岐が
+    単一 op で合流しない（例: 二分木状の add 連鎖）・中間値が鎖外/合流の先で消費・
+    領域(i,M)が N 鎖で丁度覆われない、のいずれかなら None を返し従来の線形扱いに落とす
+    （不確実なら保守側の fail-safe）。M が二項 op の木になる N 分岐（単一 N-ary op で
+    合流しない）は最内の 2 分岐だけが別途 Case-B として拾われるか、線形に落ちる。
     """
     op = body[i]
     if op.result is None:
         return None
     r = op.result.name
     uses = consumers.get(r, [])
-    if len(uses) != 2 or uses[0] == uses[1]:
+    starts = sorted(set(uses))
+    # 消費者が distinct でちょうど len(uses) 個（同一 op が r を複数 operand で使う形は除外）。
+    if len(starts) < 2 or len(starts) != len(uses):
         return None
 
     def _trace(start):
-        """start から単一消費の一本鎖を辿り (index 列, 合流 index, 到達名集合) を返す。"""
+        """start から単一消費の一本鎖を辿り (index 列, 合流 index) を返す。"""
         names = {r}
         chain: list[int] = []
         cur = start
@@ -207,33 +249,36 @@ def _computed_fork_merge(body, i: int, consumers: dict):
             if all(v.name in names for v in body[m].operands):
                 cur = m                    # まだ枝の内側 → 鎖を延長
                 continue
-            return chain, m, names         # m は枝外 operand を持つ = 合流境界
+            return chain, m                # m は枝外 operand を持つ = 合流境界
 
-    ra, rb = _trace(uses[0]), _trace(uses[1])
-    if ra is None or rb is None:
+    traced = [_trace(s) for s in starts]
+    if any(t is None for t in traced):
         return None
-    chain_a, m_a, _ = ra
-    chain_b, m_b, _ = rb
-    if m_a != m_b:
-        return None                        # 別々の合流 → series-parallel でない
-    m = m_a
-    if set(chain_a) & set(chain_b):
-        return None                        # 枝が交差 → 一般 DAG
-    tails = {body[chain_a[-1]].result.name, body[chain_b[-1]].result.name}
-    if len(tails) != 2:
-        return None
+    chains = [t[0] for t in traced]
+    merges = {t[1] for t in traced}
+    if len(merges) != 1:
+        return None                        # 全枝が単一の合流 op に収束しない
+    m = merges.pop()
+    covered: set[int] = set()
+    for c in chains:
+        if covered & set(c):
+            return None                    # 枝が交差 → 一般 DAG
+        covered |= set(c)
+    tails = {body[c[-1]].result.name for c in chains}
+    if len(tails) != len(chains):
+        return None                        # 末端が distinct でない
     if {v.name for v in body[m].operands} != tails:
-        return None                        # 合流が両末端ちょうどでない（r 直結や外部混入）
-    if set(range(i + 1, m)) != set(chain_a) | set(chain_b):
-        return None                        # 領域(i,m) が 2 鎖で丁度覆われない
-    return m, chain_a, chain_b
+        return None                        # 合流が全末端ちょうどでない（r 直結や外部混入）
+    if set(range(i + 1, m)) != covered:
+        return None                        # 領域(i,m) が N 鎖で丁度覆われない
+    return m, chains
 
 
 def _detect_fork(body, i: int, consumers: dict, bk: int):
     """body[i] 起点のフォークを検出し (合流 index, propagate_dag フォークノード) を返す。
 
-    恒等路つき（Case-A・residual/softmax）を先に、無ければ計算 2 分岐（Case-B・
-    attention ヘッド和）を試す。どちらも該当しなければ None（線形扱い）。
+    恒等路つき（Case-A・residual/softmax）を先に、無ければ計算 N 分岐（Case-B/C・
+    attention ヘッド和・N-ary 合流）を試す。どちらも該当しなければ None（線形扱い）。
     """
     m = _identity_fork_merge(body, i, consumers)
     if m is not None:
@@ -242,11 +287,10 @@ def _detect_fork(body, i: int, consumers: dict, bk: int):
             return m, [[], branch]         # 恒等 skip 路 ＋ 計算路
     res = _computed_fork_merge(body, i, consumers)
     if res is not None:
-        m, chain_a, chain_b = res
-        b_a = _classify_ops([body[j] for j in chain_a], bk)
-        b_b = _classify_ops([body[j] for j in chain_b], bk)
-        if b_a and b_b:
-            return m, [b_a, b_b]           # 計算 2 分岐（恒等路なし）
+        m, chains = res
+        branches = [_classify_ops([body[j] for j in c], bk) for c in chains]
+        if all(branches):                  # 各枝が空でない（≥1 論理 op）
+            return m, branches             # 計算 N 分岐（恒等路なし）
     return None
 
 

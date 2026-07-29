@@ -1230,10 +1230,10 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-67: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
-    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2）・task レベル
-    shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）——検証基盤と
-    コードベース自身の構造整合性。"""
+    """不変条件 56-69: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
+    shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
+    （First Principles）——検証基盤とコードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1484,6 +1484,48 @@ def _check_meta_integrity() -> None:
     check("audit bridge (propagation->decision) surfaces its validity-domain assumption (Q15)",
           any("仮定: op グラフ相対発散" in ln for ln in _p67.lines)
           and not any("仮定: op グラフ相対発散" in ln for ln in _p67n.lines))
+
+    # 68. A-12 Round 3: 3 分岐以上（N≥3）の計算フォークも SSA から検出する。
+    # Round 2 は消費者ちょうど 2 に限定され、3 分岐は線形（保守側）に落ちていた。
+    # 全枝が単一消費の一本鎖として同一合流 op に収束する場合のみ [[A],[B],[C]] で受理。
+    @_t63.jit
+    def _three68(x, out, N, BN):
+        p = _t63.program_id(0)
+        row = _tile63.load(x, (p * BN, 0), (BN, N))
+        a = _tile63.exp(row)
+        b = _tile63.exp(row)
+        c = row.to(_t63.float16)
+        _tile63.store(out, (p * BN, 0), _tile63.dot(a, b, c).to(_t63.float16))
+
+    _x68 = np.abs(np.random.default_rng(0).standard_normal((8, 8)).astype(np.float32)) * 0.1
+    _mod68 = _t63.trace(_three68, (_x68, _x68.copy().astype(np.float16), 8, 8), {}, (0,))
+    _g68 = _go63(_mod68, _TC63(block_m=8, block_n=8, block_k=8, num_stages=2, num_warps=4))
+    _f68 = [o for o in _g68 if isinstance(o, list)]
+    _flat68 = list(_ig63(_g68))
+    check("audit _graph_ops detects N-way (3+) computed fork, merged conservatively (A-12 Round 3)",
+          len(_f68) == 1 and len(_f68[0]) == 3
+          and all(br != [] for br in _f68[0])
+          and _pdag64(_g68, correlated=True).model_divergence
+          >= _prop64(_flat68).model_divergence)
+
+    # 69. 判定が機械可読（JSON）＋終了コード契約を持つ（First Principles の不足発見）。
+    # この製品の存在意義は「出荷してよいか」を CI が自動でゲートすること。だが従来
+    # Audit は to_text()（人間向け日本語散文）しか持たず、機械が判定を消費するには
+    # 散文の正規表現パースしかなかった（脆い）。構造化データと終了コードを契約にする。
+    import json as _json69
+
+    from tsugi.report import Risk as _Risk69
+    from tsugi.report import exit_code as _ec69
+    _ad69 = _au67(_mod67, _cfg67, block_dims=_blk67)
+    _d69 = _ad69.to_dict()
+    _s69 = _json69.dumps(_d69, ensure_ascii=False)      # Risk が漏れていれば TypeError
+    check("Audit verdict is machine-readable (JSON) with a CI exit-code contract",
+          _json69.loads(_s69)["max_risk"] == _ad69.max_risk.name
+          and _d69["verdict"] == ("portable" if _ad69.portable else "blocked")
+          and len(_d69["phases"]) == len(_ad69.phases)
+          and {"name", "when", "max_risk", "lines"} <= set(_d69["phases"][0])
+          and [_ec69(r) for r in _Risk69] == [0, 0, 1, 2]
+          and _ad69.exit_code == _ec69(_ad69.max_risk))
 
 
 def main() -> int:

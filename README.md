@@ -97,7 +97,30 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
                                                                 └ ROCDL → AMDGCN
 ```
 
-詳細: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) / 仕様: [docs/SPEC.md](docs/SPEC.md)（DSL/コンパイラ）・[docs/SPEC-verification.md](docs/SPEC-verification.md)（検証 API）/ 検証層の全体マップ: [docs/VERIFICATION.md](docs/VERIFICATION.md) / 機能過不足の台帳（引き継ぎの起点）: [docs/FEATURE-AUDIT.md](docs/FEATURE-AUDIT.md) / Claude モデル使い分け表（個人用メモ）: [docs/MODEL-USAGE-GUIDE.md](docs/MODEL-USAGE-GUIDE.md)
+## ドキュメント案内（目的別の読む順）
+
+docs/ は 29 本あるため、**目的から入口を選ぶ**。
+
+**使う人**（API を叩きたい）
+[SPEC-verification.md](docs/SPEC-verification.md)（検証 API の仕様）→
+[FAQ.md](docs/FAQ.md) → [BENCHMARK.md](docs/BENCHMARK.md)
+
+**仕組みを知る人**（なぜこの設計か）
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) → [SPEC.md](docs/SPEC.md)（DSL/コンパイラ）→
+[VERIFICATION.md](docs/VERIFICATION.md)（検証層の全体マップ）→
+`docs/PERSPECTIVE-*.md`（15 本・各検証層が「なぜ必要か」をソクラテス式問答で導いた記録）→
+`docs/adr/`（設計判断の記録）
+
+**開発を引き継ぐ人（人間・AI とも）** ← 会話履歴なしでここから始められる
+1. [FEATURE-AUDIT.md](docs/FEATURE-AUDIT.md) — 機能過不足の台帳（**引き継ぎの起点**・現在地）
+2. [ASSESSMENT.md](docs/ASSESSMENT.md) — 長所短所改善案（優先度と担当の割当）
+3. [INSTRUCTIONS-OPUS.md](docs/INSTRUCTIONS-OPUS.md)（設計判断つき中規模ラウンド）/
+   [INSTRUCTIONS-SONNET.md](docs/INSTRUCTIONS-SONNET.md)（スコープ確定済み反復＋エスカレーション基準）
+4. [CONTRIBUTING.md](CONTRIBUTING.md)（検証ゲート・規約）/ [RELEASING.md](docs/RELEASING.md)（リリース手順）
+
+**その他**: [SOCRATIC-50-improvements.md](docs/SOCRATIC-50-improvements.md)（問答による改善の全履歴）/
+[SOURCES.md](docs/SOURCES.md)（外部出典）/
+[MODEL-USAGE-GUIDE.md](docs/MODEL-USAGE-GUIDE.md)（Claude モデル使い分け・個人用メモ）
 
 
 ## 実装状況（正直な現在地・主張と実装の一致）

@@ -122,6 +122,50 @@ def _two_branch_row(x, out, N, BN):
     tile.store(out, (p * BN, 0), (a + b).to(tsugi.float16))
 
 
+@tsugi.jit
+def _three_branch_row(x, out, N, BN):
+    """恒等路の無い計算 3 分岐（exp / exp / cast を dot(a,b,acc) の 3 operand で合流）。
+
+    N 分岐の代表（A-12 Round 3）。row を 3 つの op が消費（フォーク）し、単一の
+    合流 op（3 operand を持つ dot）で再合流する series-parallel 構造。
+    """
+    p = tsugi.program_id(0)
+    row = tile.load(x, (p * BN, 0), (BN, N))
+    a = tile.exp(row)
+    b = tile.exp(row)
+    c = row.to(tsugi.float16)
+    tile.store(out, (p * BN, 0), tile.dot(a, b, c).to(tsugi.float16))
+
+
+def test_graph_ops_extracts_three_way_computed_fork():
+    """_graph_ops が 3 分岐（N≥3）の計算フォークを検出する（A-12 Round 3）。
+
+    Round 2 は消費者ちょうど 2 に限定されており、3 分岐以上は線形（保守側）に
+    落ちていた。`_computed_fork_merge` を N 分岐へ一般化し、全枝が単一消費の一本鎖と
+    して同一の合流 op に収束し、合流 op の operands が全末端ちょうどの場合のみ
+    `[[A],[B],[C]]` として受理する（それ以外は従来通り線形）。
+    """
+    x = np.abs(np.random.default_rng(0).standard_normal((8, 8)).astype(np.float32)) * 0.1
+    mod = tsugi.trace(_three_branch_row, (x, x.copy().astype(np.float16), 8, 8), {}, (0,))
+    cfg = TileConfig(block_m=8, block_n=8, block_k=8, num_stages=2, num_warps=4)
+    gops = _graph_ops(mod, cfg)
+
+    forks = [o for o in gops if isinstance(o, list)]
+    assert len(forks) == 1, f"3 分岐フォークが 1 つ抽出されるはず: {gops}"
+    fork = forks[0]
+    assert len(fork) == 3, f"枝が 3 本でない（2 分岐限定の旧実装の疑い）: {fork}"
+    assert all(br != [] for br in fork), f"空の枝がある（恒等路なしのはず）: {fork}"
+    branch_kinds = sorted(tuple(op.kind for op in br) for br in fork)
+    assert branch_kinds == [("exp",), ("exp",), ("scale",)], branch_kinds
+
+    # fail-safe: 保守側マージ（correlated=True）は線形版を下回らない（過小評価しない）
+    from tsugi.propagation import propagate as _propagate
+    from tsugi.propagation import propagate_dag as _propagate_dag
+    flat = list(_iter_graphops(gops))
+    assert (_propagate_dag(gops, correlated=True).model_divergence
+            >= _propagate(flat).model_divergence)
+
+
 def test_graph_ops_extracts_computed_two_branch_merge():
     """_graph_ops が恒等路の無い計算 2 分岐フォークを検出する（A-12 Round 2・Case-B）。
 
@@ -259,6 +303,39 @@ def test_audit_text_has_lifecycle_and_verdict():
     assert "導出許容" in txt          # numerics
     assert "要実機データ" in txt      # runtime チェックリスト
     assert "判定（静的層）" in txt
+
+
+def test_audit_verdict_is_machine_readable_for_ci_gating():
+    """判定が機械可読（JSON）＋終了コード契約を持つ（First Principles の不足発見）。
+
+    この製品の存在意義は「出荷してよいか」を *ゲートする* ことであり、そのゲートは
+    本来 CI が自動で行う。だが従来 `Audit` は `to_text()`（人間向け日本語散文）しか
+    持たず、機械が判定を消費するには散文の正規表現パースしかなかった（脆い）。
+    構造化データ（to_dict）と終了コード（OK/INFO=0・WARN=1・BLOCK=2）を固定する。
+    """
+    import json
+
+    from tsugi.report import Risk as _Risk
+    from tsugi.report import exit_code as _exit_code
+
+    mod, block, cfg = _demo_module()
+    ad = audit(mod, cfg, block_dims=block)
+    d = ad.to_dict()
+
+    # JSON 直列化がそのまま通る（Risk が IntEnum のまま漏れていれば失敗する）
+    s = json.dumps(d, ensure_ascii=False)
+    assert json.loads(s)["max_risk"] == ad.max_risk.name
+
+    # 判定の要約が to_text と整合（デモ構成は AMD 起動不能ゆえ BLOCK）
+    assert d["verdict"] == "blocked" and d["portable"] is False
+    assert d["max_risk"] == "BLOCK" and d["exit_code"] == 2
+    # phase は全件（pending も含む）が構造化されて出る
+    assert len(d["phases"]) == len(ad.phases)
+    assert {"name", "when", "max_risk", "lines"} <= set(d["phases"][0])
+
+    # 終了コード契約: OK/INFO は通過・WARN は 1・BLOCK は 2
+    assert [_exit_code(r) for r in _Risk] == [0, 0, 1, 2]
+    assert ad.exit_code == _exit_code(ad.max_risk)
 
 
 def test_audit_without_cfg_still_runs_portability():
@@ -721,6 +798,7 @@ def main() -> int:
         test_graph_ops_collapses_kloop_dots_into_one_matmul,
         test_graph_ops_extracts_ssa_fork_from_traced_softmax,
         test_graph_ops_extracts_computed_two_branch_merge,
+        test_graph_ops_extracts_three_way_computed_fork,
         test_audit_numerics_uses_sample_scale_when_given,
         test_audit_propagates_amplification_through_traced_softmax,
         test_audit_sample_auto_measures_empirical_cond,
@@ -728,6 +806,7 @@ def main() -> int:
         test_audit_verdict_from_static_only,
         test_runtime_phase_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
+        test_audit_verdict_is_machine_readable_for_ci_gating,
         test_audit_without_cfg_still_runs_portability,
         test_audit_verdict_is_provenance_stamped,
         test_audit_runtime_oracle_catches_shared_mode,

@@ -21,6 +21,27 @@ class Risk(IntEnum):
     BLOCK = 3  # これ以上は「移植/実行を止めるべき」境界
 
 
+def exit_code(risk: Risk) -> int:
+    """深刻度を CI ゲート用のプロセス終了コードへ写す。
+
+    この製品の存在意義は「出荷してよいか」を *ゲートする* ことであり、そのゲートは
+    本来 CI が自動で行う。判定が人間向け散文（to_text）だけでは最後の 1 マイルで
+    価値が途切れるため、機械が消費できる契約を明示する:
+
+      OK/INFO → 0（通過。INFO は情報提供であってゲートしない）
+      WARN    → 1（要確認。CI では警告扱い or 任意で失敗にできる）
+      BLOCK   → 2（出荷を止める。CI は必ず失敗させる）
+
+    0/1 でなく BLOCK に 2 を与えるのは、「ツール自体の異常終了（従来の 1）」と
+    「検証は正常に完了し結果が BLOCK」を CI が区別できるようにするため。
+    """
+    if risk >= Risk.BLOCK:
+        return 2
+    if risk >= Risk.WARN:
+        return 1
+    return 0
+
+
 @dataclass
 class Finding:
     """単一の所見。op は対象（op 名・"tensor"・"softmax" 等）。"""

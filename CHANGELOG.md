@@ -5,6 +5,38 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **判定を機械可読にする `Audit.to_dict()` ＋ CI 終了コード契約（First Principles 分析の新発見）**:
+  問題: これまでの過不足分析は *ボトムアップ*（「実装済みだが facade 未接続の関数はどれか」）
+  だった。**First Principles**（「この製品の目的を果たすために原理的に必要な能力は何か」を
+  公理から導く）で問い直すと、公理「出荷してよいかを *ゲートする*」→「ゲートは本来 CI が
+  自動で行う」→「ならば判定は機械が消費できる形で出せねばならない」という必要能力が導かれる。
+  だが `Audit` は `to_text()`（人間向け日本語散文）しか持たず、JSON 化はコードベース全体に
+  存在しなかった（`json` の使用は provenance のハッシュ計算のみ）。CLI/終了コードを持つのは
+  旧来の `portcheck.main` だけで、製品の主 facade `audit()` には無いという逆転もあった。
+  関数が存在しない不足はスキャン型では原理的に発見できず、First Principles でのみ見える。
+  - `Audit.to_dict()` / `AuditPhase.to_dict()`: `{verdict, portable, max_risk, exit_code,
+    phases[], certificate}` を JSON 直列化可能な形で返す（`Risk` は IntEnum ゆえ `.name` で
+    文字列化）。`json.dumps(audit(...).to_dict())` がそのまま通ることをテストで固定。
+  - `report.exit_code(risk)` ＋ `Audit.exit_code`: CI ゲート契約（OK/INFO=0・WARN=1・**BLOCK=2**）。
+    BLOCK に 2 を与えるのは「ツール自体の異常終了（従来の 1）」と「検証は完了し結果が BLOCK」を
+    CI が区別できるようにするため。
+  - test: `test_audit_verdict_is_machine_readable_for_ci_gating`・verify.py 不変条件 69。
+
+### Fixed
+- **A-12 Round 3: N（≥3）分岐フォークへの一般化（A-12 完全解消）**:
+  Round 2 の `_computed_fork_merge` は消費者ちょうど 2 に限定されており、3 分岐以上の
+  series-parallel 構造（`dot(a,b,acc)` の 3 operand 合流・N 経路の concat 等）は線形
+  （保守側）に落ちていた。2 分岐限定を撤廃し N（≥2）分岐へ一般化——全枝が単一消費の
+  一本鎖として同一の合流 op に収束し、合流 op の operands が全末端ちょうど・領域が N 鎖で
+  丁度覆われる場合のみ `[[A],[B],[C],…]` として受理する（検証できない形は従来通り線形）。
+  - 実証: 3 分岐カーネル（row を exp/exp/cast が消費し `tile.dot(a,b,acc)` で合流）で
+    `[[exp],[exp],[scale]]` が抽出され、`propagate_dag(correlated=True)` が線形版を
+    下回らない（fail-safe）ことを `test_graph_ops_extracts_three_way_computed_fork` で固定。
+    2 分岐・softmax（恒等路つき）・plain matmul は無回帰。verify.py 不変条件 68。
+  - 残（設計上の限界）: 交差辺のある一般 DAG（重み共有・cross-attention の往復）は
+    series-parallel で表現できないため線形/SP 近似に留まる。
+
+### Added
 - **プロダクト評価とモデル別指示書（ASSESSMENT.md / INSTRUCTIONS-OPUS.md / INSTRUCTIONS-SONNET.md）**:
   問題: 残作業を Fable が毎回全文脈を持って回すしかなく、Opus/Sonnet に安全に委譲する
   実行可能な指示が無かった（`docs/MODEL-USAGE-GUIDE.md` は「どう使い分けるか」の方針止まり）。

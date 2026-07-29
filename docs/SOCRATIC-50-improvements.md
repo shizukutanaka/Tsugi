@@ -82,8 +82,9 @@ Round 1 は恒等路つきフォーク（residual・softmax の `row-reduce(row)
 Round 2 は恒等路の無い計算 2 分岐（attention ヘッド和・row を exp/reduce の 2 経路が消費し
 add で合流）→`[[A], [B]]`。偽OK 対策として `audit()` は `propagate_dag(correlated=True)`
 （合流を線形和で合成・並列分岐の過小評価を防ぐ）を使い、DAG 発散が線形版を下回らないことを
-保証。検出できない形は線形（保守側）に落とす。verify.py 不変条件 63/64。
-**残: 3 分岐以上・交差辺をもつ一般 DAG（重み共有・cross-attention 往復）は SP/線形近似に留まる。**
+保証。Round 3 で 2 分岐限定を撤廃し N（≥2）分岐へ一般化（`dot(a,b,acc)` の 3 operand 合流を実証・
+不変条件 68）。検出できない形は線形（保守側）に落とす。verify.py 不変条件 63/64/68。
+**残: 交差辺をもつ一般 DAG（重み共有・cross-attention 往復）のみ（SP 表現の設計上の限界）。**
 
 ## C. scale=1.0 という暗黙仮定（Q13–17）
 

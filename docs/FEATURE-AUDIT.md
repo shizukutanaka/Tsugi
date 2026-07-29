@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 161/161 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 163/163 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -46,7 +46,7 @@
 | A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() のテーマ別分割（Q34）は解消済み。カバレッジ計測（Q38）・乱数境界点検（Q43）が残る |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
-| A-12 | 不足 | P1 | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 大部分解消 | 恒等路つき（residual/softmax）＋計算 2 分岐（attention ヘッド和）フォークを SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 3 分岐以上・交差辺のある一般 DAG |
+| A-12 | 不足 | — | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 解消済み | 恒等路つき（residual/softmax）＋計算 N 分岐（N≥2・attention ヘッド和/N-ary 合流）を SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 交差辺のある一般 DAG のみ（SP 近似の設計上の限界） |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |
 | B-1b | 過剰(接続済) | — | `propagation.empirical_cond` | 解消済み(2ed0a96) | データ依存 cond 実測が `audit()` から呼ばれていなかった |
 | B-1c | 過剰(接続済) | — | `nondeterminism` robust noise floor | 解消済み(4d68287) | 外れ値頑健な床が `audit_cross_vendor()` に未接続だった |
@@ -190,9 +190,14 @@
      なりうる。correlated=True で DAG 発散が線形版 `propagate` を下回らないことを保証する
      （fail-safe・過小評価しない）。test: `test_graph_ops_extracts_computed_two_branch_merge`。
      verify.py 不変条件 64。
-   - **残（次ラウンド）**: 3 分岐以上のフォーク・交差辺のある一般 DAG（重み共有・
-     cross-attention の往復）は引き続き SP/線形近似に留まる（`_computed_fork_merge` は
-     `len(uses) != 2` で 2 分岐限定・それ以外は線形フォールバック）。
+   - **Round 3 の修正内容（A-12 解消）**: `_computed_fork_merge` の 2 分岐限定を撤廃し
+     N（≥2）分岐へ一般化。全枝が単一消費の一本鎖として同一の合流 op に収束し、
+     合流 op の operands が全末端ちょうど・領域が N 鎖で丁度覆われる場合のみ
+     `[[A],[B],[C],…]` として受理する（それ以外は線形＝保守側）。3 operand を持つ
+     `dot(a,b,acc)` での 3 分岐合流を実カーネルで検証。
+     test: `test_graph_ops_extracts_three_way_computed_fork`。verify.py 不変条件 68。
+   - **残（設計上の限界）**: 交差辺のある一般 DAG（重み共有・cross-attention の往復）は
+     series-parallel で表現できないため線形/SP 近似に留まる（`propagate_dag` の設計前提）。
    - 将来の精緻化候補: `equivalence.simulate_vendor_matmul` は累積順序差のみを模擬する
      単純モデル。テンサーコアのビット精度（累積幅・truncation/RNE 差）を明示的にモデル化する
      手法が報告されている（docs/SOURCES.md「確度中」節・一次確認前）——`propagate_dag` の
@@ -292,7 +297,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 161 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 163 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---
