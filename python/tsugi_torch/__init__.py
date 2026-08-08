@@ -37,7 +37,17 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             ref_logits = t.detach().cpu().numpy()
         except Exception:  # noqa: BLE001 — 取れなければ発散のみ報告
             ref_logits = None
-        rep = audit_fx(gm, ref_logits=ref_logits)
+        # 代表 *入力* も best-effort で取り出し、scale=1 / cond=1 の暗黙仮定を実測で
+        # 置き換える（FEATURE-AUDIT.md A-3）。実 LLM の活性は massive activations で
+        # 中央値の ~1000 倍に達しうるため、scale=1 のままでは認証 atol を桁で誤る。
+        sample = None
+        try:
+            first = example_inputs[0] if example_inputs else None
+            if first is not None:
+                sample = first.detach().cpu().numpy()
+        except Exception:  # noqa: BLE001 — 取れなければ従来通り静的仮定で報告
+            sample = None
+        rep = audit_fx(gm, ref_logits=ref_logits, sample=sample)
         # nondeterministic_ops/requires_noise_floor は audit_fx が既に計算済みだが、
         # 従来この警告メッセージに一切反映されていなかった（audit_fx の戻り値が facade
         # ＝ユーザー向け警告に届いていない・他ラウンドで見つけた facade 未接続と同型）。
@@ -57,10 +67,22 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             norm = (" [has_normalization: model_divergence は正規化層のscaleリセット効果を"
                    "未考慮の保守的な上界（実際の発散はこれより小さい可能性）]"
                    if rep.get("has_normalization") else "")
+            # A-3: 代表入力から scale/cond を実測できたなら、その旨と外れチャネルを報告。
+            # 実測できていなければ「cond=1 は下界」の但し書きを従来通り残す（暗黙化しない）。
+            if rep.get("cond_measured"):
+                basis = (f" [sample 実測: scale={rep['sample_scale']:.3g}・"
+                         "増幅 op の cond をデータから測定済み（静的下界を解消）]")
+            else:
+                basis = " (cond=1 lower bound)"
+            # massive activations（一部チャネルが中央値の ~1000 倍）は単一 scale 仮定を壊す。
+            spread = rep.get("channel_spread")
+            outlier = (f" [outlier channels: scale 広がり ×{spread:.0f} → 単一 scale 仮定が"
+                       "崩れる・per-channel 検証を検討]"
+                       if spread is not None and spread >= 10.0 else "")
             warnings.warn(
                 f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
-                f"{task}{dyn}{nondet}{norm} (cond=1 lower bound). "
+                f"{task}{dyn}{nondet}{norm}{basis}{outlier}. "
                 "cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない

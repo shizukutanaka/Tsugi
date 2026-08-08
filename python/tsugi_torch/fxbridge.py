@@ -115,7 +115,7 @@ def fx_call_target_names(gm: Any) -> list[str]:
     return names
 
 
-def audit_fx(gm: Any, ref_logits=None) -> dict:
+def audit_fx(gm: Any, ref_logits=None, sample=None) -> dict:
     """FX グラフに静的検証（propagation）を走らせ、要点を dict で返す。
 
     codegen 前でも「このモデルはクロスベンダーでどれだけ発散しうるか・どの増幅 op が
@@ -123,6 +123,13 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
 
     ref_logits（代表的な出力 logit 分布）を渡すと、モデル発散を *タスク影響* に翻訳し
     判断フリップ率の上界 `task_flip_bound` を返す（静的グラフ → ユーザーに見える差）。
+
+    sample（代表的な *入力* テンソル）を渡すと「scale=1 / cond=1」の暗黙仮定を実測で
+    置き換える（FEATURE-AUDIT.md A-3）。`audit()` は B-1a/B-1b で既にこれを持っていたが
+    torch 経路には無く、実 LLM では致命的だった——massive activations は中央値の
+    ~1000 倍に達し（docs/SOURCES.md）、scale=1 仮定は認証 atol を桁で誤らせる。
+    返り値に `sample_scale`（実 RMS）・`channel_spread`（外れチャネル検出）・
+    `cond_measured` を追加し、増幅 op の cond を実測値で置き換えて発散を再計算する。
     """
     ops = fx_to_graph_ops(gm)
     rep = propagate(ops)
@@ -159,6 +166,32 @@ def audit_fx(gm: Any, ref_logits=None) -> dict:
         "has_normalization": has_normalization,
         "task_flip_bound": None,
     }
+    if sample is not None:
+        # 代表入力があれば「scale=1 / cond=1」の暗黙仮定を実測で置き換える
+        # （`audit()` が B-1a/B-1b で既に持っていた機能。torch 経路には無かった＝A-3）。
+        import numpy as _np
+
+        from tsugi.envelope import channel_scale_spread
+        from tsugi.propagation import empirical_cond
+        x = _np.asarray(sample, dtype=_np.float64)
+        if x.size:
+            out["sample_scale"] = float(_np.sqrt(_np.mean(x ** 2)))
+            # massive activations（一部チャネルが中央値の ~1000 倍）の検出。
+            # 実 LLM 活性はこの型の外れ値を持ち、単一 scale 仮定が破れる
+            # （docs/SOURCES.md「outlier feature / massive activations」節）。
+            out["channel_spread"] = channel_scale_spread(x)
+            # データ依存 cond を実測して伝播をやり直す（静的 cond=1 は *下界*）。
+            measured = False
+            for o in ops:
+                if is_amplifier(o.kind) and o.cond == 1.0:
+                    o.cond = empirical_cond(x, o.kind)
+                    measured = True
+            if measured:
+                rep = propagate(ops)
+                out["model_divergence"] = rep.model_divergence
+                out["naive_sum"] = rep.naive_sum
+                out["dominant"] = rep.dominant.kind if rep.dominant is not None else None
+            out["cond_measured"] = measured
     if ref_logits is not None:
         import numpy as _np
         from tsugi.decision import flip_bound_from_divergence

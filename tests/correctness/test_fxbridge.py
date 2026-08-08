@@ -8,6 +8,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
 from tsugi_torch.fxbridge import audit_fx, fx_to_graph_ops  # noqa: E402
@@ -214,6 +216,36 @@ def test_audit_fx_flags_nondeterministic_atomic_ops():
     assert det["nondeterministic_ops"] == []
 
 
+def test_audit_fx_sample_replaces_scale1_cond1_assumptions():
+    """audit_fx(sample=) が torch 経路の「scale=1 / cond=1」暗黙仮定を実測で置き換える。
+
+    FEATURE-AUDIT.md A-3: `audit()` は B-1a/B-1b で代表サンプルからの scale 実測・
+    empirical_cond を持っていたが、**製品の想定入口である torch 経路には無かった**。
+    実 LLM の活性は massive activations（一部チャネルが中央値の ~1000 倍・
+    docs/SOURCES.md）を持つため、scale=1 仮定は認証 atol を桁で誤らせる。
+    """
+    gm = _transformer_block()
+
+    base = audit_fx(gm)                       # 従来経路（sample 無し）
+    assert "sample_scale" not in base, "sample 未指定で実測フィールドが出ている（後方互換の破壊）"
+
+    # massive activation を模した外れチャネル（中央値の ~1000 倍）を含む代表入力
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((32, 512)).astype(np.float32) * 0.1
+    x[:, 7] *= 1000.0
+    rep = audit_fx(gm, sample=x)
+
+    # 実 RMS が測られる（scale=1 仮定を脱する）
+    assert rep["sample_scale"] > 1.0, rep["sample_scale"]
+    # 外れチャネルが検出される（単一 scale 仮定の破綻を可視化）
+    assert rep["channel_spread"] > 100.0, rep["channel_spread"]
+    # 増幅 op の cond が実測され、発散が静的下界から更新される
+    assert rep["cond_measured"] is True
+    assert rep["model_divergence"] != base["model_divergence"]
+    # 静的 cond=1 は *下界* ゆえ実測後は増える（過小評価の是正・fail-safe 方向）
+    assert rep["model_divergence"] > base["model_divergence"]
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -226,6 +258,7 @@ def main() -> int:
         test_audit_fx_warns_dynamic_shapes,
         test_audit_fx_detects_normalization_layers,
         test_audit_fx_flags_nondeterministic_atomic_ops,
+        test_audit_fx_sample_replaces_scale1_cond1_assumptions,
     ]
     for t in tests:
         try:

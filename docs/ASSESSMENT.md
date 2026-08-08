@@ -1,7 +1,7 @@
 # Tsugi プロダクト評価 — 長所・短所・改善案（ASSESSMENT）
 
 `docs/FEATURE-AUDIT.md` が「機能の過不足」台帳であるのに対し、本書はプロダクト・
-プロセス・運用まで含めた評価。2026-07 時点の実状（verify 166/166・CPU 23 スイート
+プロセス・運用まで含めた評価。2026-07 時点の実状（verify 167/167・CPU 23 スイート
 PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 改善案の表がそのまま `INSTRUCTIONS-OPUS.md` / `INSTRUCTIONS-SONNET.md` の
 バックログになる（単一情報源）。
@@ -11,7 +11,7 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 1. **fail-safe 設計の一貫性**: 偽OK ≫ 偽BLOCK の非対称コストを全 13 検証層が共有。
    点推定→Wilson 上側限界 5 箇所・DAG マージの保守側選択（`correlated=True`）・
    検出不能な形は線形フォールバック。方針が文書だけでなくコードの隅々まで貫通している。
-2. **検証基盤の厚さと「欠陥→不変条件」文化**: 機械検証可能な不変条件 166 件＋
+2. **検証基盤の厚さと「欠陥→不変条件」文化**: 機械検証可能な不変条件 167 件＋
    27 テストファイル＋property test（10 性質×200 試行）。実際に起きたバージョン
    ドリフトが即座に不変条件 62 として固定された実例あり。回帰が構造的に起きにくい。
 3. **誠実な主張**: GPU 未検証を run.py の SUMMARY で毎回明示。「静的 cond=1 は下界」
@@ -30,8 +30,9 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
    「単一ソースで両ベンダー」はまだ約束であって実績ではない。
 2. **検証器自身の実機校正が未了**: SAFETY=4.0 等の定数は CPU シミュレーション内で
    閉じている。「検証器が正しい」の最終根拠が仮説段階。
-3. **想定入口（torch.compile）が薄い**: `_tsugi_compile` は静的監査＋警告のみ。
-   worstcase/attribution/タスク別 decision が届かない（A-3 残）。
+3. **想定入口（torch.compile）が薄い**: sample 由来の scale/cond 実測は接続済みだが、
+   `_tsugi_compile` は依然として静的監査＋警告のみ。worstcase/attribution/タスク別
+   decision は実行時出力が要るため codegen 後（A-3 残）。
 4. **リポジトリ運用の未成熟**: main ブランチ無し・タグ/Release ゼロ・Actions 実質無効。
    CI がローカル実行（run.py/verify.py）頼み。
 5. **verify.py の成長限界**: 1,400 行超・実行数十秒。テーマ別 12 関数に分割済みだが
@@ -44,7 +45,6 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 | 優先度 | 改善案 | 実行者 |
 |---|---|---|
 | P0 | v0.4.0 タグ/Release 作成（`docs/RELEASING.md` §3）・main 新設と protected 化・Actions 有効化（`docs/ci-reference.yml` 反映） | 人間（セッション権限外） |
-| P1 | A-3: torch 経路へ example_inputs 由来の sample/ref_logits を段階接続 | Opus |
 | P1 | A-2: 実機入手後の GPU ハーネス実行計画（SAFETY 校正手順の事前設計） | Opus |
 
 ---

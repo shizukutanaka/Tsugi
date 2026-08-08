@@ -241,3 +241,29 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
 > 一次確認前（arxiv.org は本環境の egress proxy で遮断）。**本ライブラリが採用したのは
 > 「独立試行の平均でノイズが √N で縮む」という初等統計の帰結のみ**で、論文固有の
 > 数値・閾値は一切ハードコードしていない。
+
+## outlier feature / massive activations（2022-2026）
+
+`envelope.check_outlier_features` と torch 経路の `audit_fx(sample=)` が「単一 scale 仮定の
+破綻」を検出する根拠。
+
+- **LLM.int8()（Dettmers et al., NeurIPS 2022）**: transformer がスケールすると
+  大きな magnitude を持つ **outlier feature** が出現し、全層とその量子化に強く影響する。
+- **massive activations**: 大きさが 100 を超え、隠れ状態の **中央値の約 1000 倍** に達する
+  活性が存在する。normal outlier が全トークンに渡って現れるのに対し、massive outlier は
+  **少数のトークンに限局** するのが主な違い。FFN の down-projection 入力（特に 2 番目と
+  最後から 2 番目のデコーダ層）で 1000 超の値が観測される。
+- 対策研究: SmoothQuant / SmoothRot（channel-wise scaling ＋ rotation）・
+  DuQuant（dual transformation で outlier を分散）・QLLM（channel reassembly）。
+  いずれも「単一の scale では表現しきれない」ことを前提にした手法。
+
+**本ライブラリでの帰結**: 代表テンソルを与えずに `scale=1.0` を仮定すると、実 LLM 活性では
+認証 atol が **桁で** 誤る。`audit()` は `certify_from_sample`（B-1a）で既に実測していたが、
+製品の想定入口である **torch 経路（`audit_fx`）には無かった**（FEATURE-AUDIT.md A-3）。
+`audit_fx(sample=)` を追加し、実 RMS scale・`channel_scale_spread`（外れチャネル検出）・
+`empirical_cond`（増幅 op の実測条件数）を測るようにした（verify.py 不変条件 73）。
+
+> 出典の確度: LLM.int8() は一次資料（NeurIPS 2022）。massive activations の
+> 「中央値の ~1000 倍」「down-projection 入力に局在」は検索サマリ由来で一次確認前。
+> **本ライブラリは倍率等の具体値をハードコードせず**、外れ広がりを実測して閾値
+> （`spread_warn=10.0`）で警告するに留める。

@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-72: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-73: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1582,6 +1582,37 @@ def _check_meta_integrity() -> None:
     from tsugi.nondeterminism import _erfinv as _ei72
     from tsugi.nondeterminism import runs_to_resolve as _rtr72
     _n1_72, _n2_72 = _rtr72(1e-3, 1e-2), _rtr72(5e-4, 1e-2)
+    # 73. audit_fx(sample=) が torch 経路の「scale=1 / cond=1」暗黙仮定を実測で置き換える
+    # （FEATURE-AUDIT.md A-3）。audit() は B-1a/B-1b で既に持っていた機能が、製品の想定入口で
+    # ある torch 経路に無かった。実 LLM の活性は massive activations（中央値の ~1000 倍）を
+    # 持つため scale=1 仮定は認証 atol を桁で誤らせる（docs/SOURCES.md）。
+    from tsugi_torch.fxbridge import audit_fx as _afx73
+
+    class _TM73:
+        def __init__(s, shape): s.shape = shape
+
+    class _N73:
+        def __init__(s, op, t, shp=None):
+            s.op, s.target = op, t
+            s.meta = {"tensor_meta": _TM73(shp)} if shp else {}
+
+    class _G73:
+        def __init__(s, ns): s.graph = type("GR", (), {"nodes": ns})
+
+    _gm73 = _G73([_N73("call_function", "aten.addmm.default", (8, 512)),
+                  _N73("call_function", "aten._softmax.default"),
+                  _N73("output", "output")])
+    _x73 = np.random.default_rng(0).standard_normal((32, 512)).astype(np.float32) * 0.1
+    _x73[:, 7] *= 1000.0                       # massive activation 相当の外れチャネル
+    _base73 = _afx73(_gm73)                    # sample 無し（従来経路）
+    _meas73 = _afx73(_gm73, sample=_x73)
+    check("audit_fx(sample=) measures real scale/cond for the torch path (A-3, no scale=1 assumption)",
+          "sample_scale" not in _base73                     # 後方互換（未指定なら出さない）
+          and _meas73["sample_scale"] > 1.0
+          and _meas73["channel_spread"] > 100.0             # 外れチャネルを検出
+          and _meas73["cond_measured"] is True
+          and _meas73["model_divergence"] > _base73["model_divergence"])  # 静的下界の是正
+
     check("INDISTINGUISHABLE yields an actionable run count N ~ (z*sigma/d)^2 (evidence accumulation)",
           abs(_math72.sqrt(2) * _ei72(2 * 0.95 - 1) - 1.6449) < 0.01
           and _rtr72(0.0, 1e-2) == 0 and _rtr72(2e-2, 1e-2) == 0

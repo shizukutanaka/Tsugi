@@ -5,6 +5,26 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **torch 経路に代表入力からの scale/cond 実測を接続（FEATURE-AUDIT A-3 大部分解消・文献根拠）**:
+  問題: `audit()` は B-1a/B-1b で「代表サンプルから実 RMS scale を測る（`certify_from_sample`）」
+  「増幅 op の条件数をデータから測る（`empirical_cond`）」を持っていたが、**製品の想定入口である
+  torch 経路（`audit_fx`/`_tsugi_compile`）には無く、scale=1 / cond=1 の暗黙仮定のままだった**。
+  文献では実 LLM の活性に **massive activations**（大きさ 100 超・隠れ状態の中央値の約 1000 倍・
+  FFN down-projection 入力に局在）が存在するとされ、scale=1 仮定は認証 atol を **桁で** 誤らせる。
+  - `audit_fx(gm, ref_logits=None, sample=None)`: sample を渡すと `sample_scale`（実 RMS）・
+    `channel_spread`（`channel_scale_spread` による外れチャネル検出）・`cond_measured` を返し、
+    増幅 op の cond を `empirical_cond` で置き換えて model_divergence を再計算する。
+  - `_tsugi_compile` が `example_inputs[0]` を best-effort で sample として渡し、警告に
+    「実測済み（静的下界を解消）」または従来の「cond=1 lower bound」を明示。外れチャネルの
+    広がりが 10 倍以上なら per-channel 検証を促す。
+  - 後方互換: sample 未指定なら従来と完全に同一（実測フィールドを出さない）。
+  - 実証: 外れチャネル（中央値の ~1000 倍）を含む代表入力で scale=4.05・spread=923×・
+    model_divergence が 4.6e-2 → 7.6e-2 に是正（静的 cond=1 が **39% の過小評価** だった）。
+    test: `test_audit_fx_sample_replaces_scale1_cond1_assumptions`・verify.py 不変条件 73。
+  - `docs/SOURCES.md` に「outlier feature / massive activations」節を追記（LLM.int8()・
+    SmoothQuant/DuQuant 系）。**倍率等の具体値はハードコードせず**実測＋閾値警告に留める旨も明記。
+
+### Added
 - **関数カバレッジ計測 `coverage_report.py`（標準ライブラリのみ・SOCRATIC-50 Q38 / A-10 完全解消）**:
   問題: カバレッジ計測が無く「どの関数が一度も実行されていないか」が不明だった。
   - **依存を増やさない**: coverage.py は入れず `sys.settrace` の call イベントのみを使う
