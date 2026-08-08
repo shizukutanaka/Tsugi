@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 167/167 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 169/169 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -36,7 +36,7 @@
 | ID | 分類 | 優先度 | 対象 | 状態 | 一行要約 |
 |---|---|---|---|---|---|
 | A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
-| A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
+| A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU)・手続きは完了 | 実機 GPU での end-to-end 検証がゼロ。**実機入手日に実行できる手順（`docs/GPU-BRINGUP.md`）と SAFETY 校正の機械的手続き（`calibration.calibrate_safety`・実機入口に接続済み）は完成**——残るのは実機そのもの |
 | A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出を接続済み。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
 | A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
@@ -84,14 +84,31 @@
      `test_compare_task_ranking_single_query_no_wilson_widening`。
      verify.py 不変条件 50 番。詳細は CHANGELOG.md の commit 6e044f3 に対応するエントリを参照。
 
-2. **[A-2] 実機 GPU での end-to-end 検証が一度もない**
+2. **[A-2] 実機 GPU での end-to-end 検証が一度もない（手続きは完成・実機のみ待ち）**
    - 何が無いか: 全検証層は CPU シミュレーション（NumPy oracle・擬似ベンダー）でのみ検証済み。
      NVIDIA/AMD 実機での動作確認はゼロ（`docs/SOCRATIC-50-improvements.md` の Q50）。
    - なぜ危険か: 「検証器が実機で正しい」という主張自体が未検証。SAFETY 係数（4.0）等の
      定数も実機ノイズでの校正待ち。
-   - 推奨アクション: `tests/gpu/` ハーネス（GPU 無しでは正直に SKIP する設計）を実機で実行し、
-     `audit_cross_vendor()` に実カーネルを渡す。要 GPU 環境のため優先度は高いが着手可能性は
-     環境依存。
+   - **手続き側は解消済み**: 実機が無くても「実機の run が手に入った瞬間に機械的に校正する
+     手続き」は今フリーズできる、という切り分けで着手した。
+     - `docs/GPU-BRINGUP.md`: 実機入手日に上から順に実行できる 4 フェーズの手順書。
+       **Phase 1（ノイズ床実測）と Phase 2（SAFETY 校正）は GPU 1 台で完結する**——
+       「2 ベンダー揃うまで何もできない」は誤りで、検証器の定数校正は片側だけで着手できる。
+     - `calibration.calibrate_safety`: 実測した良性発散から SAFETY の要求値を導く。
+       「4σ」が成立するのは σ 既知の極限だけで、有限標本では片側許容限界の係数
+       k(n,coverage,confidence) > z_coverage が要る（Natrella 1963）。分布仮定なしの側は
+       Wilks 1941（0.99/0.95 に 299 対必要・16 対の達成信頼度は 14.9%）。両者の max を
+       採るのは、GPU の浮動小数ノイズが i.i.d. ガウスでなく構造的・高相関だと実測で
+       示されているため（arXiv:2511.00025・`docs/SOURCES.md`）。
+     - 実機入口 `audit_cross_vendor()` に接続済み（B-1 の轍を踏まない）。集めた run を
+       使い回し、実機 run 消費は 1 ベンダーあたり `n_runs` 回ちょうど（従来より 1 回減）。
+     - **fail-safe の要**: run-to-run 標本はクロスベンダー発散の *下界* にすぎないので、
+       SAFETY を上げる根拠にはなるが下げる根拠にはならない（下げれば未測定成分を許容から
+       外し偽OK に倒れる）。`source="cross_vendor"` を明示したときだけ下げ代を提示する。
+       verify.py 不変条件 74/75。
+   - 残る推奨アクション: `tests/gpu/` ハーネス（GPU 無しでは正直に SKIP する設計）を実機で
+     実行し、`audit_cross_vendor()` に実カーネルを渡す。結果は `docs/GPU-BRINGUP.md` の
+     記録テンプレートに追記する。着手可能性は環境依存。
 
 ### P1（P0 の次）
 
@@ -297,7 +314,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 163 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 169 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

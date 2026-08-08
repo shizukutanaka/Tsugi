@@ -117,6 +117,8 @@ docs/ は 29 本あるため、**目的から入口を選ぶ**。
 3. [INSTRUCTIONS-OPUS.md](docs/INSTRUCTIONS-OPUS.md)（設計判断つき中規模ラウンド）/
    [INSTRUCTIONS-SONNET.md](docs/INSTRUCTIONS-SONNET.md)（スコープ確定済み反復＋エスカレーション基準）
 4. [CONTRIBUTING.md](CONTRIBUTING.md)（検証ゲート・規約）/ [RELEASING.md](docs/RELEASING.md)（リリース手順）
+5. [GPU-BRINGUP.md](docs/GPU-BRINGUP.md) — **実機 GPU を入手した日に上から実行する手順書**
+   （ノイズ床実測 → `SAFETY` 定数の校正 → クロスベンダー検証。Phase 1/2 は GPU 1 台で完結）
 
 **その他**: [SOCRATIC-50-improvements.md](docs/SOCRATIC-50-improvements.md)（問答による改善の全履歴）/
 [SOURCES.md](docs/SOURCES.md)（外部出典）/
