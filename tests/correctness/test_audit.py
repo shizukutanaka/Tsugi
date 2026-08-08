@@ -790,6 +790,50 @@ def test_audit_demo_runs_end_to_end():
     assert "移植ブロッカー" in out        # 静的に AMD 起動不能を BLOCK
 
 
+def test_audit_cross_vendor_calibrates_safety_from_the_same_runs():
+    """実機入口が SAFETY 定数を実測校正し、その分の run を追加消費しない（A-2）。
+
+    問題: SAFETY=4.0 は「4σ 相当」という経験値のまま一度も実機ノイズで校正されて
+    おらず（constants.py）、許容 atol と検出限界の両方を一律にスケールするため
+    誤っていれば全層が同じ向きに狂う。校正層は実測 run が要るので、置き場は実機
+    入口 audit_cross_vendor しかない。ここではその接続と、実機コスト（1 run = GPU
+    実行）を増やしていないこと（従来 run_*(0) を追加で 1 回走らせていた分がむしろ
+    減ること）の両方を固定する。
+    """
+    base = np.random.default_rng(0).standard_normal((8, 16)).astype(np.float32)
+    calls = {"a": 0, "b": 0}
+
+    def make(tag, noise):
+        def run(s):
+            calls[tag] += 1
+            g = np.random.default_rng(hash(tag) % 1000 + s).standard_normal(
+                base.shape).astype(np.float32)
+            return base + noise * g
+        return run
+
+    n_runs = 8
+    ad = audit_cross_vendor(make("a", 1e-6), make("b", 1e-6), K=256, n_runs=n_runs)
+    sp = next(p for p in ad.phases if "safety" in p.name)
+    assert "safety calibration" in sp.to_text()
+    assert "run_to_run" in sp.to_text()
+    # 集めた run を使い回す: 1 ベンダーあたり n_runs 回ちょうど（比較対象も stack[0]）
+    assert calls == {"a": n_runs, "b": n_runs}, f"run を余計に消費している: {calls}"
+
+    # 良性ノイズが SAFETY のヘッドルームを超えるベンダーでは WARN が立つ。
+    # 1σ = sqrt(K)*u*scale。fp16/K=256 で ~1.6e-2*scale なので、その ~10 倍を振らせる。
+    from tsugi.tolerance import expected_gemm_abs_error
+    scale = float(np.sqrt(np.mean(base.astype(np.float64) ** 2)))
+    sigma = expected_gemm_abs_error(256, "float16", scale, safety=1.0)
+
+    def loud(s):
+        sign = 1.0 if s % 2 == 0 else -1.0
+        return (base + sign * 5.0 * sigma).astype(np.float32)
+
+    ad2 = audit_cross_vendor(loud, loud, K=256, n_runs=8)
+    sp2 = next(p for p in ad2.phases if "safety" in p.name)
+    assert sp2.max_risk >= Risk.WARN and "覆えていない" in sp2.to_text(), sp2.to_text()
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -827,6 +871,7 @@ def main() -> int:
         test_audit_cross_vendor_folds_batch_variance_floor,
         test_audit_cross_vendor_robust_resists_single_glitchy_run,
         test_audit_cross_vendor_forwards_provenance,
+        test_audit_cross_vendor_calibrates_safety_from_the_same_runs,
         test_audit_demo_runs_end_to_end,
     ]
     for t in tests:

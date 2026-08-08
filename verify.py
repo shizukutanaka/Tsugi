@@ -1619,6 +1619,48 @@ def _check_meta_integrity() -> None:
           and _n1_72 > 1 and abs(_n2_72 / _n1_72 - 4.0) < 0.1
           and _rtr72(1e-3, 1e-2, 0.99) > _rtr72(1e-3, 1e-2, 0.95))
 
+    # 74. SAFETY=4.0 の実機校正が「4σ は σ 既知の極限値」であることを数値で示す
+    #     （FEATURE-AUDIT.md A-2）。片側正規許容係数 k(n,coverage,confidence) は
+    #     公表表（Natrella 1963・0.99/0.95）を再現し、有限標本では常に k > z_p。
+    #     つまり n=8 対しか測っていない実機で「4σ で十分」と言う根拠は無い。
+    #     近似は表より小さい側（＝要求 SAFETY を過小＝許容を締める＝偽BLOCK 側）に
+    #     外れることも固定する（偽OK 方向に外れていないことの保証）。
+    from tsugi.calibration import tolerance_factor_normal as _tf74
+    from tsugi.calibration import wilks_confidence as _wc74
+    from tsugi.calibration import wilks_min_runs as _wm74
+    from tsugi.nondeterminism import normal_quantile as _nq74
+
+    _tbl74 = {10: 3.981, 20: 3.295, 30: 3.064, 100: 2.684}
+    _z74 = _nq74(0.99)
+    check("one-sided tolerance factor reproduces the published table and exceeds z_p (A-2)",
+          all(abs(_tf74(n, 0.99, 0.95) - v) / v < 0.015 and _tf74(n, 0.99, 0.95) <= v
+              for n, v in _tbl74.items())
+          and all(_tf74(n, 0.99, 0.95) > _z74 for n in (8, 16, 100, 1000))
+          and _tf74(2, 0.99, 0.95) == float("inf")          # 標本不足は inf で正直に
+          and _wm74(0.99, 0.95) == 299 and _wc74(299, 0.99) >= 0.95)
+
+    # 75. 実機入口が SAFETY を実測校正し、run-to-run 標本では「下げてよい」と
+    #     言わない（未測定のクロス成分を許容から外す＝偽OK 方向を封じる）。
+    #     校正標本は run 対の差（比較される量と同単位）であって中心偏差ではない。
+    from tsugi.calibration import SRC_CROSS_VENDOR as _SCV75
+    from tsugi.calibration import calibrate_safety as _cs75
+    from tsugi.nondeterminism import pair_deviations as _pd75
+    from tsugi.tolerance import expected_gemm_abs_error as _eg75
+
+    _sig75 = _eg75(256, "float16", 1.0, safety=1.0)
+    _r2r75 = _cs75(np.full(32, 0.01 * _sig75), 256, scale=1.0)
+    _xv75 = _cs75(np.full(32, 0.01 * _sig75), 256, scale=1.0, source=_SCV75)
+    _big75 = _cs75(np.full(32, 6.0 * _sig75), 256, scale=1.0)
+    _st75 = np.stack([np.full((4,), -3.0 if i % 2 == 0 else 3.0) for i in range(8)])
+    check("audit_cross_vendor calibrates SAFETY from measured runs, never downward (A-2)",
+          any("下げる根拠にはならない" in f.message for f in _r2r75.findings)
+          and not any("余裕" in f.message for f in _r2r75.findings)
+          and any("余裕" in f.message for f in _xv75.findings)   # cross 標本なら下げ代を提示
+          and _big75.required > 4.0 and not _big75.covers_measured_noise
+          and _cs75(np.zeros(0), 256).required == float("inf")   # 標本ゼロは校正済み扱いしない
+          and np.allclose(_pd75(_st75), 6.0)                     # 対の差 2d（中心偏差 d の 2 倍）
+          and _pd75(_st75[:1]).size == 0)
+
 
 def main() -> int:
     """全不変条件をテーマ別グループの順で実行し、集計を印字する（SOCRATIC-50 Q34:

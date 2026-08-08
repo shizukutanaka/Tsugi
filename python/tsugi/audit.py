@@ -752,15 +752,41 @@ def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None
       robust オプションと同じ理由でここにも露出する（実機入口が Q49 修正から漏れていた）。
     決定論を仮定せず、各ベンダーを n_runs 回走らせてノイズフロアを測り（視点7）、
     その noise を等価判定の床に織り込む。実機では run_* を実カーネルにするだけ。
+
+    集めた run は **使い回す**（実機では 1 run が高価）。同じスタックから
+      (1) ノイズ床（nondeterminism）
+      (2) 比較対象の単発出力（従来は run_*(0) を追加で 1 回走らせていた）
+      (3) SAFETY 定数の実機校正（calibration.calibrate_safety・FEATURE-AUDIT A-2）
+    の 3 つを導く。(3) は「検証器の定数が実機で正しいか」を実測で問う層であり、
+    実機入口である本関数にしか置き場がない（手順書は docs/GPU-BRINGUP.md）。
     """
-    from .nondeterminism import measure_batch_variance, measure_noise_floor
+    import numpy as np
+
+    from .calibration import SRC_RUN_TO_RUN, calibrate_safety
+    from .nondeterminism import (collect_runs, measure_batch_variance,
+                                 noise_floor_from_runs, pair_deviations)
 
     key = "spread_robust" if robust else "spread"
-    nf_a = measure_noise_floor(run_a, n_runs)
-    nf_b = measure_noise_floor(run_b, n_runs)
+    stack_a = collect_runs(run_a, n_runs)
+    stack_b = collect_runs(run_b, n_runs)
+    nf_a = noise_floor_from_runs(stack_a)
+    nf_b = noise_floor_from_runs(stack_b)
     noise = max(nf_a[key], nf_b[key])
     if run_batch is not None:                       # batch-invariance 床を実効床に合流
         noise = max(noise, measure_batch_variance(run_batch, batch_tiles)[key])
-    return audit_runtime(run_a(0), run_b(0), K, dtype=dtype, env=env,
-                         noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
-                         flip_budget=flip_budget, provenance=provenance)
+
+    ad = audit_runtime(stack_a[0], stack_b[0], K, dtype=dtype, env=env,
+                       noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
+                       flip_budget=flip_budget, provenance=provenance)
+
+    # SAFETY 校正: 良性（同一ベンダーの別 run）発散の分布から、SAFETY が満たすべき
+    # 要求値を実測する。run-to-run はクロスベンダー発散の下界ゆえ「上げる根拠」
+    # 専用（calibrate_safety が INFO で明示）。
+    scale = float(np.sqrt(np.mean(np.asarray(stack_a[0], dtype=np.float64) ** 2)) + 1e-30)
+    devs = np.concatenate([pair_deviations(stack_a), pair_deviations(stack_b)])
+    cal = calibrate_safety(devs, K, dtype=dtype, scale=scale, source=SRC_RUN_TO_RUN)
+    cp = AuditPhase("safety 定数の実機校正", "decided", cal.max_risk)
+    cp.lines.append(cal.to_text())
+    ad.phases.append(cp)
+    ad.stamp(**(provenance or {}))   # phase 追加後の verdict で証明書を貼り直す
+    return ad

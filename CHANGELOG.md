@@ -5,6 +5,48 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **SAFETY 定数の実機校正手続きを実装し実機入口に接続（FEATURE-AUDIT A-2・文献根拠）**:
+  問題: `SAFETY=4.0`（`constants.py`）は「4σ 相当」という経験的ヘッドルームで、**一度も
+  実機ノイズで校正されていない**。この定数は許容 `atol=SAFETY·√K·u·scale` と検出限界
+  `rel=SAFETY·√K·u` の *両方* を一律にスケールするため、誤っていれば 13 検証層すべての
+  判定が同じ向きに狂う（大きすぎ→偽OK の盲点が広がる／小さすぎ→良性ノイズを偽BLOCK）。
+  「検証器が実機で正しい」という主張の最終根拠がここで止まっていた。
+  - **「4σ」は σ が既知のときだけ成立する**。有限標本から σ を推定する現実で必要なのは
+    片側許容限界の係数 k(n, coverage, confidence) であり常に k > z_coverage
+    （n=8 対で 4.30・n=16 で 3.43・n→∞ で 2.33）。`calibration.tolerance_factor_normal`
+    が Natrella (1963) 近似で計算し、公表表を 1.5% 以内で再現する（かつ系統的に表より
+    *小さい* 側＝偽BLOCK 側に外れる）。標本が足りず係数が定義できない場合は黙って
+    小さい値で埋めず `inf` を返す。
+  - `wilks_min_runs`/`wilks_confidence`: 分布仮定なしの側（Wilks 1941 の順序統計量）。
+    coverage=0.99/confidence=0.95 には **299 対**必要で、実機で現実的な 16 対の達成信頼度は
+    僅か 14.9% ——「16 run 回して終わり」では校正にならないことを数値で示す。
+  - `calibrate_safety(divergences, K, ...)`: 実測した良性発散を 1σ 見積り `√K·u·scale` で
+    割った比から SAFETY の要求値を導く。要求値は **正規理論と標本最大の max**（保守側）。
+    GPU の浮動小数ノイズは i.i.d. ガウスでなく構造的・高相関（fp16 で全誤差分散の約半分が
+    非対角項・arXiv:2511.00025）であり、正規理論単独を信じる根拠が無いため。
+  - **run-to-run 標本では SAFETY を下げてよいと決して言わない**: 同一ベンダー内の揺れは
+    縮約順序差のみを含み、クロスベンダー発散（タイル形状・行列コア・ライブラリ実装差）の
+    下界にすぎない。下げれば未測定成分を許容から外すことになり偽OK に倒れる。
+    `source=cross_vendor`（実 2 ベンダーの良性発散）のときだけ下げ代を提示する。
+  - **実機入口 `audit_cross_vendor()` に接続**（B-1 の轍を踏まない）。集めた run を使い回し、
+    同一スタックから (1) ノイズ床 (2) 比較対象の単発出力 (3) SAFETY 校正 の 3 つを導く。
+    従来 `run_*(0)` を追加で 1 回走らせていた分がむしろ減り、**実機 run 消費は 1 ベンダー
+    あたり n_runs 回ちょうど**になった（1 run = GPU 実行なのでコストが直接効く）。
+  - 標本統計は `nondeterminism.pair_deviations`（重ならない run 対の `max|a−b|`）。等価判定が
+    実際に比較する量と同じ統計量であることが要点 —— 中心からの偏差を使うと測る量が比較量の
+    約半分になり、要求 SAFETY を **2 倍過小評価**する（偽OK 方向の誤り）。
+  - 標本不足（Wilks の必要数未満）は WARN でなく INFO。標本の少なさは既に許容係数 k に
+    反映されており（n が小さいほど k が急増して要求値を押し上げる）、重ねて WARN を出すと
+    二重計上になるうえ、実機校正は本質的に長期作業なので WARN が点きっぱなしになり
+    本当に効く WARN（要求値 > SAFETY）が埋もれるため。
+  - 実証: 良性発散が 1σ の 6 倍のとき要求値 6.0σ > SAFETY=4.0 を検出し「覆えていない」と
+    WARN。0.5σ では警告なし（過剰警告しない）。裾の重い外れ値 1 発（20σ）では正規理論を
+    超えて標本最大を採用。tests: `test_calibrate_safety_*`（5 件）・
+    `test_pair_deviations_samples_pair_differences_not_center_deviations`・
+    `test_audit_cross_vendor_calibrates_safety_from_the_same_runs`。verify.py 不変条件 74/75。
+  - 手順書 `docs/GPU-BRINGUP.md`（実機入手後の実行計画）と `docs/SOURCES.md`
+    「定数の実機校正 — 許容限界の統計」節を追加。**文献の具体値はハードコードせず**、
+    設計判断（正規理論単独を信じない）の根拠としてのみ用いる。
 - **torch 経路に代表入力からの scale/cond 実測を接続（FEATURE-AUDIT A-3 大部分解消・文献根拠）**:
   問題: `audit()` は B-1a/B-1b で「代表サンプルから実 RMS scale を測る（`certify_from_sample`）」
   「増幅 op の条件数をデータから測る（`empirical_cond`）」を持っていたが、**製品の想定入口である
