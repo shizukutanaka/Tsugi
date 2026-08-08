@@ -1230,10 +1230,11 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-70: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-71: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
-    （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）——検証基盤と
+    （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）
+    ——検証基盤と
     コードベース自身の構造整合性。"""
     import numpy as np
 
@@ -1550,6 +1551,27 @@ def _check_meta_integrity() -> None:
           and _bad70
           and "確率的" in _ex70(2048, "float16")
           and "check_systematic" in _ex70(2048, "float16"))
+
+    # 71. 検出境界が seed に依らず SAFETY·u に一致する（SOCRATIC-50 Q43・乱数境界の点検）。
+    # Q43 の懸念は「乱数依存テストは seed 固定でも境界付近で脆く、別 seed で反転しうる」。
+    # 系統バグ強度を理論境界 SAFETY·u の ±1% に置き、多数 seed で判定が全会一致になる
+    # ことを固定する（＝判定が seed 非依存でバグ強度のみに支配される証拠）。他の固定
+    # seed テストが「たまたま通っている」のでないことの根拠にもなる。
+    from tsugi.calibration import is_equivalent_combined as _iec71
+    from tsugi.constants import SAFETY as _SAFETY71
+    from tsugi.tolerance import unit_roundoff as _u71
+    _K71, _dt71, _n71 = 256, "float16", 24
+    _th71 = _SAFETY71 * _u71(_dt71)
+
+    def _eqcount71(strength: float) -> int:
+        c = 0
+        for _s in range(_n71):
+            _a = np.random.default_rng(_s).standard_normal((64, 64)).astype(np.float32)
+            c += bool(_iec71(_a, _a * (1 + strength), _K71, _dt71))
+        return c
+
+    check("detection verdict is seed-independent and sits exactly at SAFETY*u (Q43)",
+          _eqcount71(0.99 * _th71) == _n71 and _eqcount71(1.01 * _th71) == 0)
 
 
 def main() -> int:

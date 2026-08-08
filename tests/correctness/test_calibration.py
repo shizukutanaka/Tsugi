@@ -192,6 +192,39 @@ def test_roc_sweep_honest_subthreshold_blindspot():
     assert rows[0]["false_ok_combined"] > 0.0
 
 
+def test_detection_verdict_is_seed_independent_at_safety_times_u():
+    """検出境界が seed に依らず SAFETY·u に一致する（SOCRATIC-50 Q43・乱数境界の点検）。
+
+    Q43 の懸念は「乱数依存テストは seed 固定でも境界付近では脆い（別 seed で反転しうる）」。
+    本テストはそれを *仮定でなく実測* で潰す: 系統バグ強度を理論境界 SAFETY·u の
+    ±1% に置き、多数の seed で判定が **全会一致** になることを固定する。
+    全会一致であれば、他の固定 seed テストがたまたま通っているのではなく、判定が
+    seed 非依存（バグ強度のみに支配される）であることの根拠になる。
+
+    併せて Q6（定数 SAFETY が境界を支配する）を seed 横断に一般化した形でもある。
+    """
+    from tsugi.constants import SAFETY
+    from tsugi.tolerance import unit_roundoff
+
+    K, dtype, n_seeds = 256, "float16", 40
+    thresh = SAFETY * unit_roundoff(dtype)     # 理論上の検出境界（fp16 で ~0.195%）
+
+    def equivalent_count(strength):
+        c = 0
+        for s in range(n_seeds):
+            a = np.random.default_rng(s).standard_normal((64, 64)).astype(np.float32)
+            c += bool(is_equivalent_combined(a, a * (1 + strength), K, dtype))
+        return c
+
+    # 境界のわずか下: 全 seed で「等価」（過剰検出＝偽BLOCK が無い）
+    below = equivalent_count(0.99 * thresh)
+    assert below == n_seeds, f"境界直下で判定が seed 依存（{below}/{n_seeds} のみ等価）"
+
+    # 境界のわずか上: 全 seed で「非等価」（見逃し＝偽OK が無い）
+    above = equivalent_count(1.01 * thresh)
+    assert above == 0, f"境界直上で判定が seed 依存（{above}/{n_seeds} が等価と誤判定）"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -207,6 +240,7 @@ def main() -> int:
         test_combined_verifier_is_trustworthy_corpus,
         test_max_abs_alone_is_untrustworthy_corpus,
         test_shared_mode_failure_is_cross_vendor_blind_spot,
+        test_detection_verdict_is_seed_independent_at_safety_times_u,
     ]
     for t in tests:
         try:

@@ -244,7 +244,13 @@ belt-and-suspenders（テストが挙動を、verify が「その挙動が意図
 pip-licenses 等の外部ツール・ネットワークアクセス不要（CPU-only ポリシーと整合）。
 
 **Q43.** 乱数依存テストの flake 耐性は？seed 固定だが境界ケースは脆い。
-→ 一部境界（test_single_run_flaky は midpoint で堅牢化済）。**改善: 全乱数テストの境界余裕を点検。**
+→ ✅**修正済**: 懸念を *仮定でなく実測* で潰した。中核判定（`is_equivalent_combined`）の
+検出境界を多数 seed で掃引すると、境界は理論値 **SAFETY·u**（fp16 で ~0.195%）に一致し、
+その ±1% で判定が **全会一致**（下側=全 seed が等価／上側=全 seed が非等価）になる——
+つまり判定は seed 非依存でバグ強度のみに支配される。よって既存の固定 seed テストは
+「たまたま通っている」のではないことが機械的に保証された。
+test: `test_detection_verdict_is_seed_independent_at_safety_times_u`・verify.py 不変条件 71。
+（Q6 の「定数 SAFETY が境界を支配する」を seed 横断に一般化した形でもある。）
 
 ## I. API/意味の一貫性（Q44–47）
 

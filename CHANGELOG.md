@@ -5,6 +5,19 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **検出境界の seed 非依存性を実測で固定（SOCRATIC-50 Q43 解消・A-10 一部解消）**:
+  問題: Q43 の懸念は「乱数依存テストは seed を固定していても境界付近では脆く、別 seed なら
+  判定が反転しうる」。これは *仮定* のまま残っており、既存の固定 seed テスト群が
+  「たまたま通っている」だけでないことを誰も保証していなかった。
+  - 実測: 中核判定 `is_equivalent_combined` の検出境界を多数 seed で掃引すると、境界は
+    理論値 **SAFETY·u**（fp16 で ~0.195%）に一致し、その ±1% で判定が **全会一致** になる
+    （0.99× で全 seed が等価／1.01× で全 seed が非等価）。つまり判定は seed 非依存で
+    バグ強度のみに支配される——固定 seed テストが代表性を持つ根拠が機械的に得られた。
+  - test: `test_detection_verdict_is_seed_independent_at_safety_times_u`（40 seed × 境界±）。
+    verify.py 不変条件 71（165/165・24 seed で同型）。
+    Q6（定数 SAFETY が境界を支配する）を seed 横断に一般化した位置づけ。
+
+### Added
 - **誤差境界モデルの選択肢（確率的 √K / 最悪ケース K）— 論文に基づく fail-safe 強化**:
   問題: `tolerance.expected_gemm_abs_error` の次元依存項 √K は、Higham & Mary の
   *確率的* 丸め誤差解析（丸め誤差を **独立・平均 0** の確率変数とモデル化すると

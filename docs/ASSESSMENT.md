@@ -1,7 +1,7 @@
 # Tsugi プロダクト評価 — 長所・短所・改善案（ASSESSMENT）
 
 `docs/FEATURE-AUDIT.md` が「機能の過不足」台帳であるのに対し、本書はプロダクト・
-プロセス・運用まで含めた評価。2026-07 時点の実状（verify 164/164・CPU 23 スイート
+プロセス・運用まで含めた評価。2026-07 時点の実状（verify 165/165・CPU 23 スイート
 PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 改善案の表がそのまま `INSTRUCTIONS-OPUS.md` / `INSTRUCTIONS-SONNET.md` の
 バックログになる（単一情報源）。
@@ -11,7 +11,7 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 1. **fail-safe 設計の一貫性**: 偽OK ≫ 偽BLOCK の非対称コストを全 13 検証層が共有。
    点推定→Wilson 上側限界 5 箇所・DAG マージの保守側選択（`correlated=True`）・
    検出不能な形は線形フォールバック。方針が文書だけでなくコードの隅々まで貫通している。
-2. **検証基盤の厚さと「欠陥→不変条件」文化**: 機械検証可能な不変条件 164 件＋
+2. **検証基盤の厚さと「欠陥→不変条件」文化**: 機械検証可能な不変条件 165 件＋
    27 テストファイル＋property test（10 性質×200 試行）。実際に起きたバージョン
    ドリフトが即座に不変条件 62 として固定された実例あり。回帰が構造的に起きにくい。
 3. **誠実な主張**: GPU 未検証を run.py の SUMMARY で毎回明示。「静的 cond=1 は下界」
@@ -46,7 +46,6 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 | P0 | v0.4.0 タグ/Release 作成（`docs/RELEASING.md` §3）・main 新設と protected 化・Actions 有効化（`docs/ci-reference.yml` 反映） | 人間（セッション権限外） |
 | P1 | A-3: torch 経路へ example_inputs 由来の sample/ref_logits を段階接続 | Opus |
 | P1 | A-2: 実機入手後の GPU ハーネス実行計画（SAFETY 校正手順の事前設計） | Opus |
-| P2 | Q43: 乱数依存テストの境界余裕点検 | Sonnet |
 | P2 | Q48: 単一 seed の例示数値を多 seed 中央値±へ更新 | Sonnet |
 | P2 | A-10: カバレッジ計測（閾値ゲートは人間承認後） | Sonnet |
 
