@@ -181,3 +181,35 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
   LLM Inference」（arXiv 2506.09501 とされる）・SGLang の deterministic mode ブログ:
   vLLM のバッチ不変性知見と独立に類似の LLM 推論非決定性対策が業界で並行して進んでいる
   という傍証（検索サマリ由来・一次確認前）。
+
+## 丸め誤差境界: 確率的（√K）と決定論的最悪ケース（K）（2019-2023）
+
+`tolerance.expected_gemm_abs_error` の次元依存項 √K の学術的根拠と、その **仮定** の記録。
+
+- **古典的な決定論的境界（Wilkinson）**: 長さ K の内積/累積の前進誤差は
+  γ_K = K·u/(1−K·u) ≈ **K·u** で抑えられる（worst-case・仮定なし）。
+- **確率的境界（Higham & Mary, 2019, "A New Approach to Probabilistic Rounding Error
+  Analysis", SIAM J. Sci. Comput.）**: 丸め誤差を **独立・平均 0** の確率変数と
+  モデル化すると、worst-case 境界の次元定数を **その平方根で置き換えた** 境界が
+  高確率で成り立つ（K·u → **√K·u**）。実務上、決定論的境界は悲観的すぎるため
+  この √n 型の境界の方が実測に近い。
+  - 関連: Connolly, Higham & Mary の確率的解析（内積の前進誤差 ~√(K ln K)·u）、
+    確率的丸め（stochastic rounding）の分散ベース解析（Bienaymé–Chebyshev 由来の O(√n u)）。
+- **GPU テンサーコアへの適用**: Fasi, Higham, Lopez, Mary, Mikaitis,
+  "Matrix Multiplication in Multiword Arithmetic: Error Analysis and Application to
+  GPU Tensor Cores" — 確率的誤差解析で NVIDIA テンサーコアの精度問題を説明し、
+  パラメータ化ブロック和で性能/精度のトレードオフを改善している。
+  本ライブラリが対象とする「テンサーコアの累積順序・精度差」と直接に関係する一次資料。
+
+**本ライブラリでの扱い（重要な帰結）**: 既定の √K は *確率的* 境界であり **保証ではない**。
+独立・平均 0 の仮定が破れる典型が **系統誤差**（相関した丸め・一方向のバイアス）であり、
+本ライブラリはそれを `calibration.check_systematic` で検出する層を別に持つ——つまり
+「仮定が破れうる」ことを設計として認めている。そのため
+`derive_tolerance(..., model="worstcase")` で古典的 K·u 境界を選べるようにし、
+`explain()` は既定使用時に「√K は確率的境界」「最悪ケースとの開き」「系統誤差検査への
+誘導」を明示する（verify.py 不変条件 70）。K=2048・fp16 では両者の開きは約 45 倍。
+
+> 出典の確度: Higham & Mary の √n 置換則と Wilkinson の γ_n は数値解析の標準的結果
+> （複数の二次資料で一致）。テンサーコア論文は検索サマリ由来のため、実装値として
+> ハードコードする前に一次資料の確認が要る（本節は *モデル選択肢の根拠* としてのみ使用し、
+> 具体的な係数は導入していない）。

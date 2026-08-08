@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 163/163 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 164/164 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`

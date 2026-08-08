@@ -5,6 +5,28 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **誤差境界モデルの選択肢（確率的 √K / 最悪ケース K）— 論文に基づく fail-safe 強化**:
+  問題: `tolerance.expected_gemm_abs_error` の次元依存項 √K は、Higham & Mary の
+  *確率的* 丸め誤差解析（丸め誤差を **独立・平均 0** の確率変数とモデル化すると
+  worst-case 境界の次元定数を平方根で置換できる）に対応する。だが「これは高確率で
+  成り立つ境界であって *保証ではない*」ことがコードにもレポートにも書かれておらず、
+  利用者は最悪ケース境界を選ぶ手段も持たなかった。仮定（独立・平均 0）が破れる典型は
+  **系統誤差** であり、本ライブラリは `calibration.check_systematic` でそれを検出する層を
+  *別に持っている*——つまりプロジェクト自身が「仮定は破れうる」と認めているのに、
+  破れた場合に妥当な境界（古典的 Wilkinson γ_K ≈ K·u）を選べなかった。
+  - `expected_gemm_abs_error` / `derive_tolerance` に `model=` を追加
+    （`"probabilistic"` 既定＝従来と完全に同一挙動 / `"worstcase"`＝K·u）。
+    `derive_tolerance` の返り値に使用モデルを明記。未知のモデル名は `ValueError`
+    （silent fallback は偽OK の温床のため黙って既定に落とさない）。
+  - `explain()` は確率的境界の使用時に「√K は確率的境界（Higham & Mary・独立/平均 0 の
+    仮定）」「最悪ケース境界との開き」「系統誤差が疑われるなら check_systematic → worstcase」を
+    出力に明示（「仮定を暗黙化しない」慣例に従う）。K=2048・fp16 で開きは約 45 倍。
+  - 出典を `docs/SOURCES.md`「丸め誤差境界」節に追記（Wilkinson γ_n・Higham & Mary の
+    √n 置換則・GPU テンサーコアへの適用論文）。確度と一次確認の要否も明記。
+  - tests: `test_worstcase_model_is_strictly_looser_than_probabilistic`・
+    `test_explain_surfaces_probabilistic_bound_caveat`。verify.py 不変条件 70（164/164）。
+
+### Added
 - **判定を機械可読にする `Audit.to_dict()` ＋ CI 終了コード契約（First Principles 分析の新発見）**:
   問題: これまでの過不足分析は *ボトムアップ*（「実装済みだが facade 未接続の関数はどれか」）
   だった。**First Principles**（「この製品の目的を果たすために原理的に必要な能力は何か」を

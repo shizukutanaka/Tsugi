@@ -1230,10 +1230,11 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-69: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-70: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
-    （First Principles）——検証基盤とコードベース自身の構造整合性。"""
+    （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）——検証基盤と
+    コードベース自身の構造整合性。"""
     import numpy as np
 
     # 56. tests/correctness/ の test_* 関数が全て main() のテストリストに登録されている
@@ -1526,6 +1527,29 @@ def _check_meta_integrity() -> None:
           and {"name", "when", "max_risk", "lines"} <= set(_d69["phases"][0])
           and [_ec69(r) for r in _Risk69] == [0, 0, 1, 2]
           and _ad69.exit_code == _ec69(_ad69.max_risk))
+
+    # 70. 誤差境界モデルの選択（確率的 √K / 最悪ケース K）が判定を実際に支配する。
+    # 既定の √K は Higham & Mary の *確率的* 丸め誤差解析（丸め誤差が独立・平均 0 の
+    # 仮定下で高確率に成り立つ境界）であって保証ではない。仮定が破れる典型が系統誤差
+    # （calibration.check_systematic の検出対象）で、その場合は古典的 Wilkinson の
+    # γ_K ≈ K·u が妥当。保証が要る利用者が model="worstcase" を選べることを固定する。
+    from tsugi.tolerance import derive_tolerance as _dt70
+    from tsugi.tolerance import expected_gemm_abs_error as _ege70
+    from tsugi.tolerance import explain as _ex70
+    _p70 = _ege70(2048, "float16", model="probabilistic")
+    _w70 = _ege70(2048, "float16", model="worstcase")
+    _bad70 = False
+    try:
+        _dt70(64, "float16", model="typo")     # silent fallback は偽OK の温床
+    except ValueError:
+        _bad70 = True
+    check("tolerance offers a worst-case (Wilkinson K.u) bound alongside the probabilistic (sqrt(K)) default",
+          _w70 > _p70 and abs(_w70 / _p70 - 45.254) / 45.254 < 0.01
+          and _dt70(2048, "float16")["model"] == "probabilistic"
+          and _dt70(2048, "float16", model="worstcase")["atol"] > _dt70(2048, "float16")["atol"]
+          and _bad70
+          and "確率的" in _ex70(2048, "float16")
+          and "check_systematic" in _ex70(2048, "float16"))
 
 
 def main() -> int:

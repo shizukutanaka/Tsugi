@@ -111,6 +111,57 @@ def test_safety_is_single_source():
             == detectability_floor(256, "float16", safety=SAFETY)["rel"])
 
 
+def test_worstcase_model_is_strictly_looser_than_probabilistic():
+    """誤差境界モデルの選択（確率的 √K / 最悪ケース K）が判定を実際に支配する。
+
+    既定の √K は Higham & Mary の *確率的* 丸め誤差解析に対応し、丸め誤差が
+    **独立・平均 0** と仮定できるときに高確率で成り立つ境界であって保証ではない。
+    仮定が破れる典型が系統誤差（`calibration.check_systematic` が検出する対象）で、
+    その場合の妥当な境界は古典的 Wilkinson の γ_K ≈ K·u（決定論的・最悪ケース）。
+    保証が要る利用者が `model="worstcase"` を選べること・両者の開きが K とともに
+    広がること（√K vs K）を固定する。
+    """
+    from tsugi.tolerance import derive_tolerance, expected_gemm_abs_error
+
+    # 次元項は √K vs K ゆえ、比は √K に比例して広がる
+    for K, expected_ratio in ((64, 8.0), (2048, 45.25)):
+        p_ = expected_gemm_abs_error(K, "float16", model="probabilistic")
+        w_ = expected_gemm_abs_error(K, "float16", model="worstcase")
+        assert w_ > p_, f"K={K}: 最悪ケースが確率的境界以下（モデル未適用の疑い）"
+        assert abs(w_ / p_ - expected_ratio) / expected_ratio < 0.01, (K, w_ / p_)
+
+    # derive_tolerance も同じモデルに従い、使ったモデルを返り値に明記する
+    tp = derive_tolerance(2048, "float16")
+    tw = derive_tolerance(2048, "float16", model="worstcase")
+    assert tp["model"] == "probabilistic" and tw["model"] == "worstcase"
+    assert tw["atol"] > tp["atol"] and tw["rtol"] > tp["rtol"]
+
+    # 既定は従来通り確率的（後方互換・既存の全テストが壊れない根拠）
+    assert derive_tolerance(2048, "float16")["atol"] == tp["atol"]
+
+    # 未知のモデル名は黙って既定に落とさず失敗させる（silent fallback は偽OK の温床）
+    try:
+        derive_tolerance(64, "float16", model="typo")
+        raise AssertionError("未知モデルが例外にならない（silent fallback の疑い）")
+    except ValueError:
+        pass
+
+
+def test_explain_surfaces_probabilistic_bound_caveat():
+    """explain() が「√K は確率的境界であって保証でない」ことを出力に明示する。
+
+    このプロジェクトの「仮定を暗黙化しない」慣例（scale=1 仮定・静的 cond=1 は下界、
+    と同型）。最悪ケース境界との開きと、系統誤差検査への誘導を含む。
+    """
+    from tsugi.tolerance import explain
+
+    txt = explain(2048, "float16")
+    assert "確率的" in txt and "最悪ケース" in txt
+    assert "check_systematic" in txt and "worstcase" in txt
+    # worstcase を明示指定した場合は確率的境界の注記を出さない（該当しないため）
+    assert "確率的" not in explain(2048, "float16", model="worstcase")
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -122,6 +173,8 @@ def main() -> int:
         test_derived_still_catches_real_divergence,
         test_noise_floor_widens_tolerance,
         test_tolerance_tracks_scale_across_extremes,
+        test_worstcase_model_is_strictly_looser_than_probabilistic,
+        test_explain_surfaces_probabilistic_bound_caveat,
     ]
     for t in tests:
         try:

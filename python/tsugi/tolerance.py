@@ -90,36 +90,80 @@ def unit_roundoff(dtype: str) -> float:
     return UNIT_ROUNDOFF.get(dtype, UNIT_ROUNDOFF["float32"])
 
 
+def _dim_factor(K: int, model: str) -> float:
+    """誤差境界の *次元依存項*。model で確率的（√K）／最悪ケース（K）を選ぶ。
+
+    - `"probabilistic"`（既定）: √K。Higham & Mary の確率的丸め誤差解析——丸め誤差を
+      **独立・平均 0** の確率変数と見なすと、worst-case 境界の次元定数をその平方根で
+      置き換えた境界が高確率で成り立つ（`docs/SOURCES.md`「丸め誤差境界」節）。
+    - `"worstcase"`: K。古典的な Wilkinson の決定論的境界 γ_K = K·u/(1−K·u) ≈ K·u。
+      丸め誤差が独立でない・平均 0 でない（= 系統的）場合はこちらが妥当。
+
+    **なぜ選択肢が要るか（fail-safe）**: 既定の √K は *確率的* 境界であって保証ではない。
+    独立・平均 0 の仮定が破れる典型例が「系統誤差」であり、本ライブラリは
+    `calibration.check_systematic` でそれを検出する層を別途持っている——つまり
+    「仮定が破れうる」ことをプロジェクト自身が認めている。系統誤差が疑われる場合や、
+    確率的境界でなく上界の保証が要る場合は `model="worstcase"` を選ぶ。
+    K=2048 では √K≈45 に対し K=2048（約 45 倍の開き）で、選択は判定を大きく変える。
+    """
+    k = max(1, K)
+    if model == "worstcase":
+        return float(k)
+    if model != "probabilistic":
+        raise ValueError(f"unknown error-bound model: {model!r} "
+                         "(expected 'probabilistic' or 'worstcase')")
+    return math.sqrt(k)
+
+
 def expected_gemm_abs_error(K: int, dtype: str = "float16",
-                            scale: float = 1.0, safety: float = SAFETY) -> float:
+                            scale: float = 1.0, safety: float = SAFETY,
+                            model: str = "probabilistic") -> float:
     """K 次元の累積を持つ GEMM の、ベンダー間で正当に生じうる絶対誤差の目安。
 
     safety: 安全係数（モデルの粗さを吸収）。
     scale: 出力要素の典型的な大きさ（標準正規入力なら ~sqrt(K)）。
+    model: `"probabilistic"`（既定・√K・Higham & Mary）／`"worstcase"`（K・Wilkinson）。
+      詳細と選択基準は `_dim_factor` の docstring を参照。
     """
     u = unit_roundoff(dtype)
-    return safety * math.sqrt(max(1, K)) * u * scale
+    return safety * _dim_factor(K, model) * u * scale
 
 
 def derive_tolerance(K: int, dtype: str = "float16", scale: float = 1.0,
-                     noise_floor: float = 0.0, safety: float = SAFETY) -> dict[str, float]:
+                     noise_floor: float = 0.0, safety: float = SAFETY,
+                     model: str = "probabilistic") -> dict[str, float]:
     """導出された許容誤差。数値条件とノイズフロアの大きい方を採用。
 
     noise_floor: ハードウェアの run-to-run 非決定性の実測幅（あれば）。
-    返り値: equivalence.compare に渡せる {atol, rtol} 形式。
+    model: 誤差境界のモデル（`"probabilistic"` 既定 / `"worstcase"`・`_dim_factor` 参照）。
+    返り値: equivalence.compare に渡せる {atol, rtol} 形式（model も併記）。
     """
-    derived = expected_gemm_abs_error(K, dtype, scale, safety)
+    derived = expected_gemm_abs_error(K, dtype, scale, safety, model)
     atol = max(derived, noise_floor)
-    # 相対許容は dtype 由来の最小桁＋累積項
-    rtol = max(unit_roundoff(dtype) * math.sqrt(max(1, K)) * safety, 1e-3)
-    return {"atol": atol, "rtol": rtol, "derived": derived, "noise_floor": noise_floor}
+    # 相対許容は dtype 由来の最小桁＋累積項（次元項は atol と同じモデルに従う）
+    rtol = max(unit_roundoff(dtype) * _dim_factor(K, model) * safety, 1e-3)
+    return {"atol": atol, "rtol": rtol, "derived": derived,
+            "noise_floor": noise_floor, "model": model}
 
 
-def explain(K: int, dtype: str = "float16", scale: float = 1.0) -> str:
-    """導出の内訳を人間可読に（なぜこの閾値かを説明）。"""
+def explain(K: int, dtype: str = "float16", scale: float = 1.0,
+            model: str = "probabilistic") -> str:
+    """導出の内訳を人間可読に（なぜこの閾値かを説明）。
+
+    確率的境界（既定）を使う場合は、それが *保証でなく高確率の境界* であること・
+    最悪ケース境界との開きを併記する（このプロジェクトの「仮定を暗黙化しない」慣例）。
+    """
     u = unit_roundoff(dtype)
-    tol = derive_tolerance(K, dtype, scale)
-    return (f"K={K} dtype={dtype} scale={scale}: "
-            f"u={u:.2e} sqrt(K)={math.sqrt(K):.1f} "
+    tol = derive_tolerance(K, dtype, scale, model=model)
+    head = (f"K={K} dtype={dtype} scale={scale}: "
+            f"u={u:.2e} {'sqrt(K)' if model == 'probabilistic' else 'K'}"
+            f"={_dim_factor(K, model):.1f} "
             f"→ atol={tol['atol']:.2e} rtol={tol['rtol']:.2e} "
             f"（固定 1e-2 と異なり K に応じて変化）")
+    if model == "probabilistic":
+        wc = expected_gemm_abs_error(K, dtype, scale, model="worstcase")
+        head += (f" / 注: √K は *確率的* 境界（Higham & Mary・丸め誤差が独立で平均 0 と"
+                 f"仮定）。最悪ケース境界（Wilkinson γ_K≈K·u）は {wc:.2e}（×"
+                 f"{wc / max(tol['derived'], 1e-30):.0f}）。系統誤差が疑われる場合は"
+                 " calibration.check_systematic で検査し model='worstcase' を検討")
+    return head
