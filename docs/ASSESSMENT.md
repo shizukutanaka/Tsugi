@@ -46,7 +46,6 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
 | P0 | v0.4.0 タグ/Release 作成（`docs/RELEASING.md` §3）・main 新設と protected 化・Actions 有効化（`docs/ci-reference.yml` 反映） | 人間（セッション権限外） |
 | P1 | A-3: torch 経路へ example_inputs 由来の sample/ref_logits を段階接続 | Opus |
 | P1 | A-2: 実機入手後の GPU ハーネス実行計画（SAFETY 校正手順の事前設計） | Opus |
-| P2 | A-10: カバレッジ計測（閾値ゲートは人間承認後） | Sonnet |
 
 ---
 

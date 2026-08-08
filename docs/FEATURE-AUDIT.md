@@ -44,7 +44,7 @@
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
-| A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() 分割（Q34）・乱数境界点検（Q43・検出境界の seed 非依存性を実測で固定）は解消済み。カバレッジ計測（Q38）が残る |
+| A-10 | 不足 | — | 検証基盤の構造 | 解消済み | main() 分割（Q34）・乱数境界点検（Q43）・カバレッジ計測（Q38・`coverage_report.py` で関数 93.0%・未実行 op を発見し解消）、すべて解消 |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | — | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 解消済み | 恒等路つき（residual/softmax）＋計算 N 分岐（N≥2・attention ヘッド和/N-ary 合流）を SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 交差辺のある一般 DAG のみ（SP 近似の設計上の限界） |
 | B-1a | 過剰(接続済) | — | `envelope.certify_from_sample` | 解消済み(e288b7f) | scale=1 仮定の解消関数が `audit()` に未接続だった |

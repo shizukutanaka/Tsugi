@@ -143,12 +143,52 @@ def test_audit_warns_amplifiers_underestimated_statically():
     assert "下界" in prop.to_text()
 
 
+def test_sqrt_rsqrt_maximum_are_traced_and_lowerable():
+    """sqrt/rsqrt/maximum が実カーネル経由で IR に出て lowering 表にも載る。
+
+    `coverage_report.py`（関数カバレッジ計測）が発見したギャップ: これらは
+    `tracer.EMITTABLE_OPS` に含まれ「対応済み」と主張されていたが、**どのテストからも
+    一度も実行されていなかった**（`tile.sqrt`/`rsqrt`/`maximum` と `_TraceTile` の
+    対応メソッドが未実行）。静的な `unlowered_ops` 検査は「表に載っているか」しか見ないため
+    この穴を検出できない。実カーネルで trace し、IR 出力と参照実行の両方を固定する。
+    """
+    from tsugi.lowering import unlowered_ops
+
+    @tsugi.jit
+    def _norm_kernel(x, out, N, BN):
+        p = tsugi.program_id(0)
+        row = tile.load(x, (p * BN, 0), (BN, N))
+        clamped = tile.maximum(row, 0.0)          # ReLU 相当（maximum）
+        s = tile.reduce(clamped * clamped, 1, "sum")
+        # rsqrt(s)*sqrt(s) == 1 なので出力は relu(x) に一致するはず（値の正しさを検証可能）
+        tile.store(out, (p * BN, 0), (clamped * tile.rsqrt(s) * tile.sqrt(s)).to(tsugi.float16))
+
+    # 負値を含むデータで maximum を意味のある演算にする（全正だと ReLU が恒等になる）
+    x = np.random.default_rng(0).standard_normal((8, 8)).astype(np.float32)
+    out = np.zeros((8, 8), dtype=np.float16)
+    mod = tsugi.trace(_norm_kernel, (x, out, 8, 8), {}, program_ids=(0, 0))
+
+    kinds = mod.op_kinds()
+    for op in ("max", "rsqrt", "sqrt", "reduce"):
+        assert op in kinds, f"{op} が IR に出ていない: {kinds}"
+
+    # 値の正しさ: rsqrt(s)*sqrt(s)==1 ゆえ出力は relu(x)（IR が正しく実行された証明）
+    ref = np.maximum(x, 0.0)
+    err = float(np.max(np.abs(out.astype(np.float32) - ref)))
+    assert err < 1e-2, f"traced 値が relu(x) と不一致: err={err:.2e}"
+
+    # DSL が emit しうる op は全 target で lowering 表に載っている（未対応 op を残さない）
+    for target in ("nvidia", "amd_cdna", "amd_rdna"):
+        assert not unlowered_ops(target), f"{target}: lowering 表に無い op: {unlowered_ops(target)}"
+
+
 def main() -> int:
     ok = True
     for t in (test_trace_produces_ir, test_mlir_text_renders, test_trace_values_match_eager,
               test_trace_records_amplifying_ops, test_traced_softmax_matches_reference,
               test_audit_propagation_sees_amplifying_ops,
-              test_audit_warns_amplifiers_underestimated_statically):
+              test_audit_warns_amplifiers_underestimated_statically,
+              test_sqrt_rsqrt_maximum_are_traced_and_lowerable):
         try:
             r = t()
             info = f"ops={r}" if isinstance(r, int) else (f"err={r:.2e}" if isinstance(r, float) else "ok")
