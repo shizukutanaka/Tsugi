@@ -1230,11 +1230,11 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-71: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-72: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
-    （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）
-    ——検証基盤と
+    （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
+    INDISTINGUISHABLE の解消手（証拠の累積）——検証基盤と
     コードベース自身の構造整合性。"""
     import numpy as np
 
@@ -1572,6 +1572,21 @@ def _check_meta_integrity() -> None:
 
     check("detection verdict is seed-independent and sits exactly at SAFETY*u (Q43)",
           _eqcount71(0.99 * _th71) == _n71 and _eqcount71(1.01 * _th71) == 0)
+
+    # 72. INDISTINGUISHABLE が終端でなく「あと N run で決着する」実行可能な次手を出す。
+    # 単発ではノイズに埋もれる差も、独立 run を平均すれば平均のノイズは σ/√N に縮み
+    # 系統差は縮まない → SNR = d·√N/σ が伸びて分離できる（N > (z·σ/d)²）。
+    # DiFR が多数トークンに証拠を累積して設定誤りを検出するのと同型（docs/SOURCES.md）。
+    import math as _math72
+
+    from tsugi.nondeterminism import _erfinv as _ei72
+    from tsugi.nondeterminism import runs_to_resolve as _rtr72
+    _n1_72, _n2_72 = _rtr72(1e-3, 1e-2), _rtr72(5e-4, 1e-2)
+    check("INDISTINGUISHABLE yields an actionable run count N ~ (z*sigma/d)^2 (evidence accumulation)",
+          abs(_math72.sqrt(2) * _ei72(2 * 0.95 - 1) - 1.6449) < 0.01
+          and _rtr72(0.0, 1e-2) == 0 and _rtr72(2e-2, 1e-2) == 0
+          and _n1_72 > 1 and abs(_n2_72 / _n1_72 - 4.0) < 0.1
+          and _rtr72(1e-3, 1e-2, 0.99) > _rtr72(1e-3, 1e-2, 0.95))
 
 
 def main() -> int:

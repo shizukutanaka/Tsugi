@@ -187,6 +187,63 @@ def test_classify_nondeterminism_requires_noise_floor():
     assert det.max_risk == Risk.OK
 
 
+def test_runs_to_resolve_turns_indistinguishable_into_a_next_step():
+    """INDISTINGUISHABLE を終端でなく「あと N run」で決着する状態にする。
+
+    背景（文献）: 単発比較では良性の浮動小数ノイズと真の差を区別できないが、独立な run を
+    平均すれば平均のノイズは σ/√N に縮み、系統差 d は縮まない——よって SNR = d·√N/σ は
+    伸び、いずれ分離できる。必要条件 d > z·σ/√N より N > (z·σ/d)²。DiFR
+    ("Inference Verification Despite Nondeterminism") が多数トークンに証拠を累積して
+    設定誤りを検出するのと同型の枠組み（docs/SOURCES.md）。
+    """
+    import math
+
+    from tsugi.nondeterminism import _erfinv, runs_to_resolve
+
+    # 逆誤差関数近似の精度（標準的な z 値と一致すること）
+    assert abs(math.sqrt(2) * _erfinv(2 * 0.95 - 1) - 1.6449) < 0.01
+    assert abs(math.sqrt(2) * _erfinv(2 * 0.99 - 1) - 2.3263) < 0.01
+
+    # 分離不要なケースは 0（差が無い・ノイズが無い・既に分離済み）
+    assert runs_to_resolve(0.0, 1e-2) == 0
+    assert runs_to_resolve(1e-3, 0.0) == 0
+    assert runs_to_resolve(2e-2, 1e-2) == 0      # d > σ は既に分離済み
+
+    # N は (σ/d)² に比例（d を半分にすると 4 倍）
+    n1 = runs_to_resolve(1e-3, 1e-2)
+    n2 = runs_to_resolve(5e-4, 1e-2)
+    assert n1 > 1 and abs(n2 / n1 - 4.0) < 0.1, (n1, n2)
+
+    # 信頼水準を上げるほど多くの run が要る
+    assert runs_to_resolve(1e-3, 1e-2, 0.99) > runs_to_resolve(1e-3, 1e-2, 0.95)
+
+
+def test_compare_stable_reports_runs_needed_when_indistinguishable():
+    """compare_stable が INDISTINGUISHABLE 時に「あと何 run で決着するか」を出す。
+
+    従来この判定は「等価判定は未定義」で行き止まりだった（ユーザーに次手が無い）。
+    """
+    from tsugi.nondeterminism import INDISTINGUISHABLE, compare_stable
+
+    rng = np.random.default_rng(0)
+    base = rng.standard_normal((32, 32)).astype(np.float32)
+
+    # 両ベンダーとも同程度の run-to-run ノイズを持ち、クロス差がノイズに埋もれる構成
+    def run_a(seed):
+        return base + np.random.default_rng(1000 + seed).standard_normal(base.shape).astype(np.float32) * 1e-3
+
+    def run_b(seed):
+        return base + np.random.default_rng(2000 + seed).standard_normal(base.shape).astype(np.float32) * 1e-3
+
+    rep = compare_stable(run_a, run_b, K=256, dtype="float16", n_runs=8)
+    if rep.verdict == INDISTINGUISHABLE:
+        assert rep.runs_needed >= 0
+        txt = rep.to_text()
+        assert "区別不能" in txt
+        # 差があるなら具体的な run 数の提示、無いなら「差が無い」旨を出す
+        assert ("run を平均すれば分離可能" in txt) or ("差が無い" in txt), txt
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -205,6 +262,8 @@ def main() -> int:
         test_cumsum_kthvalue_median_are_nondet_but_not_atomic,
         test_op_catalog_tolerates_naming_variants,
         test_classify_nondeterminism_requires_noise_floor,
+        test_runs_to_resolve_turns_indistinguishable_into_a_next_step,
+        test_compare_stable_reports_runs_needed_when_indistinguishable,
     ]
     for t in tests:
         try:

@@ -5,6 +5,25 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 ## [Unreleased]
 
 ### Added
+- **INDISTINGUISHABLE に「あと N run で決着する」次手を追加（文献: 非決定下での検証・証拠の累積）**:
+  問題: `nondeterminism.compare_stable` はクロス差が run-to-run ノイズに埋もれると
+  `INDISTINGUISHABLE`（等価判定は未定義）を返して **そこで終端** だった。正直ではあるが
+  ユーザーに次手が無く、実機検証（A-2）で最も起きやすいこの状態が行き止まりになっていた。
+  - 文献（DiFR "Inference Verification Despite Nondeterminism" 他）: 参照実装自体が
+    非決定的でも、**多数の試行に証拠を累積すれば SNR が伸びて検出できる**。
+  - `runs_to_resolve(cross_diff, noise_floor, confidence=0.95)` を追加。独立 run を平均すると
+    平均のノイズは σ/√N に縮む一方、系統差 d は縮まないため SNR = d·√N/σ が伸びる。
+    必要条件 d > z·σ/√N より **N > (z·σ/d)²**。差が無い/ノイズが無い/既に分離済みなら 0。
+    z は scipy 非依存の逆誤差関数近似（Winitzki）で算出（標準 z 値と 0.1% 以内で一致）。
+  - `StabilityReport.runs_needed` を追加し、`compare_stable` の INDISTINGUISHABLE 所見に
+    「1 ベンダーあたり約 N run を平均すれば分離可能」を併記——行き止まりを実行可能な次手に。
+  - `docs/SOURCES.md`「非決定下での検証」節に出典を追記。**採用したのは「独立試行の平均で
+    ノイズが √N で縮む」という初等統計の帰結のみ**で、論文固有の数値は一切ハードコードしない
+    （出典の確度と一次確認の要否も明記）。
+  - tests 2 件（z 値の精度・N ∝ (σ/d)²・信頼水準の単調性・compare_stable の報告）。
+    verify.py 不変条件 72（166/166）。
+
+### Added
 - **検出境界の seed 非依存性を実測で固定（SOCRATIC-50 Q43 解消・A-10 一部解消）**:
   問題: Q43 の懸念は「乱数依存テストは seed を固定していても境界付近では脆く、別 seed なら
   判定が反転しうる」。これは *仮定* のまま残っており、既存の固定 seed テスト群が

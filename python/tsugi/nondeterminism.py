@@ -38,6 +38,7 @@ tolerance.derive_tolerance は noise_floor 引数を持つが既定 0（＝決�
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -234,6 +235,47 @@ def attribute(cross_diff: float, noise_floor: float, tol: float) -> str:
     return DIVERGENT
 
 
+def runs_to_resolve(cross_diff: float, noise_floor: float,
+                    confidence: float = 0.95, max_runs: int = 10 ** 6) -> int:
+    """INDISTINGUISHABLE を解消するのに要る 1 ベンダーあたりの run 数を返す（0=解消不要）。
+
+    単発比較でクロス差がノイズに埋もれても、**独立な run を平均すれば平均のノイズは
+    σ/√N に縮む**——系統差 d は平均しても縮まないので、N を増やせば SNR = d·√N/σ は
+    伸び、いずれ分離できる。必要条件 d > z·σ/√N より **N > (z·σ/d)²**。
+
+    これは DiFR（"Inference Verification Despite Nondeterminism"）が採る枠組みと同型:
+    単発では良性の浮動小数ノイズと真の差を区別できないが、**多数トークン/試行に証拠を
+    累積すれば SNR が伸び検出できる**（同論文は数千トークンで設定誤りを検出できるとする）。
+    `docs/SOURCES.md`「非決定下での検証（証拠の累積）」節を参照。
+
+    本ライブラリでの意義: 従来 INDISTINGUISHABLE は *終端* 状態（「判定未定義」で行き止まり）
+    だった。本関数はそれを「あと N run 集めれば決着する」という **実行可能な次手** に変える。
+    d=0（完全一致）なら分離すべき差が無いので 0。d>σ なら既に分離済みで 0。
+
+    confidence: 片側信頼水準（既定 0.95 → z≈1.645）。max_runs は非現実的な巨大値の上限。
+    """
+    d = abs(float(cross_diff))
+    sigma = abs(float(noise_floor))
+    if d <= 0.0 or sigma <= 0.0 or d > sigma:
+        return 0                       # 差が無い／ノイズが無い／既に分離済み
+    # 片側正規分位点（scipy 非依存の逆誤差関数近似・0.90/0.95/0.99 を実用範囲で被覆）
+    z = math.sqrt(2.0) * _erfinv(2.0 * confidence - 1.0)
+    n = math.ceil((z * sigma / d) ** 2)
+    return int(min(max(n, 1), max_runs))
+
+
+def _erfinv(y: float) -> float:
+    """逆誤差関数の近似（Winitzki）。scipy 非依存（このプロジェクトは numpy のみに依存）。"""
+    if y <= -1.0 or y >= 1.0:
+        raise ValueError(f"erfinv domain error: {y}")
+    if y == 0.0:
+        return 0.0
+    a = 0.147
+    ln1my2 = math.log(1.0 - y * y)
+    t1 = 2.0 / (math.pi * a) + ln1my2 / 2.0
+    return math.copysign(math.sqrt(math.sqrt(t1 * t1 - ln1my2 / a) - t1), y)
+
+
 @dataclass
 class StabilityReport(FindingReport):
     verdict: str = INDISTINGUISHABLE
@@ -241,6 +283,7 @@ class StabilityReport(FindingReport):
     cross_diff: float = 0.0
     tol: float = 0.0
     numerical_floor: float = 0.0
+    runs_needed: int = 0   # INDISTINGUISHABLE を解消するのに要る 1 ベンダーあたり run 数
 
     @property
     def noise_limited(self) -> bool:
@@ -287,9 +330,14 @@ def compare_stable(run_a: Callable[[int], np.ndarray],
     rep = StabilityReport(verdict=attribute(cross, noise, tol), noise_floor=noise,
                           cross_diff=cross, tol=tol, numerical_floor=numerical)
     if rep.verdict == INDISTINGUISHABLE:
+        # 終端で終わらせず「あと何 run で決着するか」を出す（証拠の累積・DiFR 同型）。
+        rep.runs_needed = runs_to_resolve(cross, noise)
+        nxt = (f"→ 1 ベンダーあたり約 {rep.runs_needed} run を平均すれば分離可能"
+               "（平均のノイズは σ/√N で縮み系統差は縮まない）"
+               if rep.runs_needed else "→ クロス差が 0（分離すべき差が無い）")
         rep.add(Risk.WARN, "noise",
                 f"クロス差 {cross:.2e} ≤ run-to-run ノイズ {noise:.2e} "
-                "→ ベンダー内ノイズと区別不能・等価判定は未定義")
+                f"→ ベンダー内ノイズと区別不能・等価判定は未定義 {nxt}")
     elif rep.verdict == DIVERGENT:
         rep.add(Risk.BLOCK, "cross",
                 f"クロス差 {cross:.2e} > 許容 {tol:.2e}（ノイズ {noise:.2e} 超）→ 真の発散")
