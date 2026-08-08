@@ -276,7 +276,12 @@ docstring に明記）、共通の判定インターフェース `risk`/`max_ris
 ## J. 主張の統計的厳密さ（Q48–50）
 
 **Q48.** 「per-model 発散 ~2000倍」等の数字は単一 seed・単一構成。一般性は？
-→ 例示値。**改善: 複数 seed の分布（中央値±）で示し、example でなく統計と明記。**
+→ ✅**修正済**: 60 seed で再測し、`docs/PERSPECTIVE-error-propagation.md` の表を
+**中央値＋p10-p90** に置き換えた。結論（1 層で無視できる発散が 12 層で 2 桁以上に育つ）は
+seed に依らず頑健だが、**倍率自体は seed で 2 倍以上ばらつく**（中央値 ≈2,400 倍・
+p10-p90 = 1,600-3,300 倍）——「約 2000 倍」は代表値であって精密な定数ではないことを明記。
+test: `test_depth_amplification_is_stable_across_seeds`（15 seed で結論の頑健性・
+中央値のレンジ・ばらつきの存在の 3 点を固定）。
 
 **Q49.** noise_floor は spread(max-min)。外れ値 1 つで過大評価では？
 → ✅ **修正済**: `measure_noise_floor`/`measure_batch_variance` が `spread_robust`（10-90

@@ -215,6 +215,46 @@ def test_empirical_cond_makes_amplification_fire():
     assert rep.model_divergence > rep.naive_sum   # 実測 cond で増幅が発火
 
 
+def test_depth_amplification_is_stable_across_seeds():
+    """深さによる発散増大が seed に依らず頑健であることを実測で固定（SOCRATIC-50 Q48）。
+
+    `docs/PERSPECTIVE-error-propagation.md` は「12 層で約 2000 倍」と書いていたが、
+    これは *単一 seed の例示* であって統計ではなかった。多 seed で測ると:
+      - 結論（1 層では無視できる発散が 2 桁以上に育つ）は seed に依らず頑健
+      - **倍率そのものは seed で 2 倍以上ばらつく**（p10-p90 で ~1,600-3,300 倍）
+    例示値を統計に置き換え、「約 2000 倍」が精密な定数でなく代表値であることを固定する。
+    """
+    from tsugi.equivalence import simulate_vendor_matmul
+
+    def rmsnorm(x):
+        return x / (np.sqrt(np.mean(x ** 2, axis=-1, keepdims=True)) + 1e-6)
+
+    def chain(seed, depth, N=64, K=64):
+        rng = np.random.default_rng(seed)
+        x = rng.standard_normal((N, K)).astype(np.float16)
+        ws = [rng.standard_normal((K, K)).astype(np.float16) for _ in range(depth)]
+        a = x.astype(np.float32)
+        b = x.astype(np.float32)
+        for w in ws:
+            # 2 ベンダーの違いは累積順序（split_k）のみ
+            a = rmsnorm(simulate_vendor_matmul(a.astype(np.float16), w, split_k=1))
+            b = rmsnorm(simulate_vendor_matmul(b.astype(np.float16), w, split_k=4))
+        return float(np.max(np.abs(a - b)))
+
+    n_seeds = 15
+    ratios = sorted(chain(s, 12) / max(chain(s, 1), 1e-30) for s in range(n_seeds))
+    med = ratios[len(ratios) // 2]
+
+    # 結論の頑健性: 全 seed で 2 桁以上の増大（これは seed に依らない）
+    assert ratios[0] > 100.0, f"最小 seed でも 100 倍超のはず: {ratios[0]:.0f}"
+    # 中央値は文書の記載レンジ（~1,600-3,300 倍）に収まる
+    assert 1000.0 < med < 5000.0, f"中央値が想定レンジ外: {med:.0f}"
+    # ばらつきの存在自体を固定（単一 seed を精密な定数として扱わない根拠）
+    assert ratios[-1] / ratios[0] > 1.3, (
+        f"seed 間のばらつきが消えている（実験構成の変化を疑う）: "
+        f"{ratios[0]:.0f}-{ratios[-1]:.0f}")
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -232,6 +272,7 @@ def main() -> int:
         test_only_genuine_relative_amplifiers,
         test_empirical_cond_is_data_driven,
         test_empirical_cond_makes_amplification_fire,
+        test_depth_amplification_is_stable_across_seeds,
     ]
     for t in tests:
         try:

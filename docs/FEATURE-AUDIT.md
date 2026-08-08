@@ -41,7 +41,7 @@
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
 | A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
-| A-7 | 不足 | P2 | `decision.py` 統計判定 | 一部解消 | per-sample δ（Q19）は解消済み。多 seed 分布報告（Q48）が残る |
+| A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
 | A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
 | A-10 | 不足 | P2 | 検証基盤の構造 | 一部解消 | main() 分割（Q34）・乱数境界点検（Q43・検出境界の seed 非依存性を実測で固定）は解消済み。カバレッジ計測（Q38）が残る |
