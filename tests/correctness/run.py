@@ -31,7 +31,7 @@ def _available_vendors() -> list[str]:
 
 def main() -> int:
     rc = 0
-    cpu_suites = ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_rollout.py", "test_audit.py", "test_properties.py", "test_fxbridge.py", "test_oracle_check.py", "test_provenance.py")
+    cpu_suites = ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_rollout.py", "test_audit.py", "test_properties.py", "test_fxbridge.py", "test_oracle_check.py", "test_provenance.py", "test_tile_ops.py")
     print("=== [1] reference correctness (CPU/NumPy oracle) ===")
     for t in cpu_suites:
         r = subprocess.run([sys.executable, str(HERE / t)], check=False)
