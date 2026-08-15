@@ -4,6 +4,53 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
 
 ## [Unreleased]
 
+### Changed
+- **正規化層に検証済みの増幅則を導入し、旧警告の偽OK 主張を撤回（FEATURE-AUDIT A-5 解消）**:
+  問題: 台帳は A-5 を「LayerNorm/RMSNorm の scale リセットを未モデル化 → 予測が **過大**
+  （偽BLOCK 側）」と想定していたが、数値実験で検証したところ **実配線は両方向に誤っていた**。
+  `fxbridge._kind_of` が正規化を `"reduce"` に写し、reduce の条件数統計 `Σ|x|/|Σx|`
+  （符号相殺）を当てていたためで、正規化には無関係な統計量だった:
+
+  | 入力 | 旧 cond | 実 LayerNorm の実測 amp | 誤りの向き |
+  |---|---|---|---|
+  | 零平均 | 27.3 | 1.00 | 過大 → 偽BLOCK |
+  | shift=3 | 1.00 | 3.15 | 過小 → **偽OK** |
+  | shift=10 | 1.00 | 10.04 | 過小 → **偽OK** |
+
+  さらに `_tsugi_compile` の警告文「model_divergence は scale リセット未考慮の保守的な
+  上界（実際の発散はこれより小さい可能性）」は、**無条件に偽OK を誘導する未検証主張**だった。
+  - **「増幅 ≤1 のはず」という前提が実験で反転した**: LayerNorm のヤコビアン
+    `J=(g/√(σ²+eps))(I−11ᵀ/d−ŷŷᵀ/d)` は確かに 2 特異値（平均・半径方向）を落とすが、
+    残る最大特異値は `g/√(σ²+eps)`。相対量に直すと上界は `RMS(x)/√(σ²+eps)
+    = 1/√(1−(μ/RMS)²) ≥ 1` で、**1 を下回れない**。零平均で ≈1・平均優勢で ≫1。
+    実測 shift=10 で amp=10.10（上界 10.72）。「scale-invariant だから安全」は *絶対*
+    スケールの話で、*相対* 発散の増幅とは別物だった。
+  - `propagation` に kind `layer_norm`（増幅・`amp=max(1,cond)`）と `rms_norm`
+    （非増幅・`amp=1.0` 固定）を追加。RMSNorm は `J=(1/r)(I−ŷŷᵀ)` で増幅 ≤1 が無条件
+    （実測 worst=1.0021・shift 0〜100 × 8 seed）だが、**1 未満の減衰係数は入れない**
+    ——未検証係数の禁止であり、過大な dilution は偽OK の温床になる。
+  - `empirical_cond(x, "layer_norm")` は行ごと `RMS/√(σ²+eps)` の **max**。median でなく
+    max なのは、零平均の多数派に紛れた平均優勢の外れ行（massive activations 型）を median が
+    隠し偽OK になるため。reduce の `Σ|x|/|Σx|` と違い eps ガードで有界（≤RMS/√eps）なので
+    max が暴走しない。`eps=1e-5` は魔法数でなく `torch.nn.LayerNorm` 既定値＝実装が実際に割る数。
+  - `fxbridge._kind_of` を専用 kind へ（`rms_norm` 判定が先——`"_norm"` を含むため順序が本質）。
+    `mean`/`sum`/`var` は `reduce` のまま（正規化の *統計* op と正規化そのものは別物）。
+  - `_tsugi_compile` の警告を「RMSNorm は scale 中立（amp=1・実測検証済み）／LayerNorm は
+    平均優勢入力で amp≈RMS/σ に増幅しうる」に置換。
+  - 実証: テスト 7 本＋verify.py 不変条件 76/77。受け入れ基準（予測が実測を下回らない）は
+    `test_layer_norm_model_prediction_bounds_measured_divergence_numpy` が平均優勢・零平均の
+    **両レジーム**で固定する——零平均側は新統計で予測が下がるため、下がっても偽OK に
+    ならないことの機械的証拠になる。
+  - 副産物 `test_layer_norm_jacobian_nullspace_is_annihilated`: 実装中、摂動を入力と同一
+    seed で作り増幅が実測 0.0001 になるバグを踏んだ。これは理論の直接確認でもある——
+    同一 seed の摂動は x に平行＝スケール方向で、消える 2 特異値の一方（定数ベクトル＝平均
+    方向も同様）。**同じ大きさでも「向き」で増幅が 0 倍にも 10 倍にもなる**ことを実証として固定した。
+  - 残る限界（隠さない）: cond は *ネットワーク入力* sample から測っており、深部の正規化層が
+    実際に見る活性ではない（reduce/exp と共通の既存制限・解消には sample の前方伝播が要る）。
+  - `docs/SOURCES.md` に「正規化層の数値安定性」節（arXiv:2503.10251 の RMSNorm unconditional
+    forward stability・LN ヤコビアンの 2 消失特異値・PyTorch LayerNorm docs）。**論文中の数値は
+    ハードコードせず**設計判断の裏づけとしてのみ用い、cond は常に実測から導く。
+
 ### Added
 - **SAFETY 定数の実機校正手続きを実装し実機入口に接続（FEATURE-AUDIT A-2・文献根拠）**:
   問題: `SAFETY=4.0`（`constants.py`）は「4σ 相当」という経験的ヘッドルームで、**一度も

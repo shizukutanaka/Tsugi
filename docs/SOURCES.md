@@ -324,3 +324,57 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
 > 検索サマリ由来で一次確認前 —— **本ライブラリはこの数値を一切ハードコードせず**、
 > 「正規理論単独を信じない（標本最大と max を採る）」という*設計判断の根拠*として
 > のみ用いる。校正の結論そのものは実測標本から導く。
+
+## 正規化層の数値安定性（LayerNorm vs RMSNorm）
+
+> `tsugi.propagation` の kind `layer_norm` / `rms_norm`。`empirical_cond(x, "layer_norm")`。
+> FEATURE-AUDIT.md A-5。**この節は「検証してから導入」ガードレールが前提の誤りを
+> 捕まえた事例**——当初「正規化は増幅しない（≤1）はず」と想定していたが、数値実験で
+> LayerNorm は平均優勢入力で *増幅* すると判明し、設計が反転した。
+
+**ヤコビアンと相対増幅**（一次の摂動解析）:
+
+- LayerNorm `y = g·(x−μ)/√(σ²+eps)` のヤコビアンは
+  `J = (g/√(σ²+eps))·(I − 11ᵀ/d − ŷŷᵀ/d)`。射影項が **平均方向（1）と半径＝スケール
+  方向（ŷ）の 2 つの特異値を消す**（この 2 方向の摂動は出力を一切変えない:
+  `LN((1+c)x + b·1) = LN(x)`）。残る最大特異値は `g/√(σ²+eps)` で、相対 RMS 増幅の
+  上界は `RMS(x)/√(σ²+eps) = 1/√(1−(μ/RMS)²)`（eps→0）。零平均で ≈1、
+  **平均優勢（μ/RMS→1）で ≫1**。
+- RMSNorm `y = g·x/RMS(x)` は `J = (g/r)(I − ŷŷᵀ)`——μ を引かないので σ でなく RMS で
+  割り、消えるのは半径方向のみ。相対増幅は **無条件に ≤1**。
+
+**本ライブラリでの実測**（`tests/correctness/test_propagation.py`・32×512 標準正規＋shift）:
+
+| shift（μ/RMS） | LayerNorm 実測 amp | 上界 RMS/√(σ²+eps) | RMSNorm 実測 amp |
+|---|---|---|---|
+| 0 | 1.00 | 1.01 | ≤1.00 |
+| 3 | 3.15 | 3.37 | ≤1.00 |
+| 10 | 10.10 | 10.72 | ≤1.00（shift=100 でも worst 1.0021） |
+
+**文献**:
+- "Numerical stability analysis of large language models"（arXiv:2503.10251）——
+  LayerNorm の forward error は **outlier の background entries の大きさに支配される**
+  一方、**RMSNorm は unconditional forward stability** を示す。条件数の比較では
+  どちらか一方が常に優位というわけではない。
+- LayerNorm のヤコビアンで平均・分散を動かす摂動が出力を変えない（2 つの消失特異値）、
+  ゲインが活性スケールに逆比例する（implicit gain control）という解析。
+  ε 付き LayerNorm の Lipschitz 定数は `ε^(-1/2)·max|γ|·N`（LipsFormer 系）。
+- PyTorch `torch.nn.LayerNorm` ドキュメント——`eps` 既定値 **1e-5**。
+
+**設計判断**:
+- `layer_norm` は増幅 op（`amp = max(1, cond)`）。cond は sample から
+  **行ごと `RMS/√(σ²+eps)` の max** で実測する。median でなく max なのは、零平均の
+  多数派に紛れた平均優勢の外れ行（massive activations 型・本文書の outlier feature 節）を
+  median が隠し偽OK になるため。reduce の `Σ|x|/|Σx|` と違い eps ガードで有界
+  （≤ RMS/√eps）なので max が暴走しない。
+- `rms_norm` は **非増幅（amp=1.0 固定）**。実測は ≤1 だが、**1 未満の減衰係数は入れない**
+  ——未検証係数の禁止であり、過大な dilution は偽OK の温床になる。amp=1 は実測 ≤1 を
+  決して過小評価しない保守側。
+- eps=1e-5 はハードコードした魔法数ではなく **torch.nn.LayerNorm 既定値＝実装が実際に割る数**。
+  それより小さい custom eps の近定数行では上界を超えうる（病的ケース・正直な限界）。
+
+> 出典の確度: ヤコビアンと相対増幅の式は本リポジトリの数値実験で機械検証済み
+> （verify.py 不変条件 76・実 LayerNorm 実装に対して上界性と零空間の両方を固定）。
+> arXiv:2503.10251 の記述は検索サマリ由来で一次確認前——**本ライブラリは論文中の
+> 数値を一切ハードコードせず**、「RMSNorm を非増幅に、LayerNorm を増幅に置く」という
+> *設計判断の裏づけ* としてのみ用い、cond は常に実測から導く。

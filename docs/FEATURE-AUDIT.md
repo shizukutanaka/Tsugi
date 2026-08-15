@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 169/169 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 174/174 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -39,7 +39,7 @@
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU)・手続きは完了 | 実機 GPU での end-to-end 検証がゼロ。**実機入手日に実行できる手順（`docs/GPU-BRINGUP.md`）と SAFETY 校正の機械的手続き（`calibration.calibrate_safety`・実機入口に接続済み）は完成**——残るのは実機そのもの |
 | A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出を接続済み。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
 | A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
-| A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
+| A-5 | 不足 | — | `propagation.py` / `fxbridge._kind_of` | 解消済み(3a29b94) | **数値実験で前提が反転**: 正規化は「増幅しない」のでなく LayerNorm は平均優勢入力で amp≈RMS/σ に増幅。専用 kind(`layer_norm`増幅/`rms_norm`非増幅)を導入し旧警告の偽OK 主張を撤回。残: cond は入力 sample 実測で深部活性の分布シフト未追跡 |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
@@ -139,23 +139,43 @@
    - 推奨アクション: LLVM/MLIR 環境が要る Phase 4 作業。ロードマップは
      `python/tsugi_torch/__init__.py` の docstring に 5 段階で記載済み。
 
-5. **[A-5] 一部解消(commit 425fc22)** `python/tsugi/propagation.py` が正規化層での
-   scale リセットを追えない（Q11）
-   - 何が無いか: `propagate()` は相対発散を op 列に沿って合成するが、LayerNorm/RMSNorm が
-     活性の scale を正規化して発散の絶対量をリセットする効果をモデル化していない（amp≈1 と単純化）。
-   - なぜ危険か: 深いモデルでの発散予測が過大（偽BLOCK 側）または構造誤りになりうる。
-   - **一部解消済み**: `propagate()` 自体の数値モデルはまだ scale リセットを考慮しないが
-     （恣意的な減衰係数を未検証のまま導入するリスクを避けるため意図的に据え置き）、
-     `fxbridge.audit_fx()` に `has_normalization: bool` を追加し、正規化層があるグラフでは
-     `model_divergence` が「scale リセット効果を未考慮の保守的な上界」であることを
-     `_tsugi_compile()` の警告メッセージで明示するようにした。ユーザーが過大な
-     WARN を額面通り受け取り過剰反応しないための透明性確保。
-   - 推奨アクション（残る本体）: `GraphOp` に scale 伝播を追加し、正規化 op で発散を
-     再基準化する版を検討。ただし減衰係数は理論的検証済みの値であるべき——例えば
-     `residual=True` の √ 合成は実際の pre-norm transformer 数値実験で検証済みだったが、
-     正規化層の scale-invariance を反映する減衰係数はまだ検証されていない。
-     未検証のまま導入すると過大な dilution が偽OK の温床になりうるため、
-     実際の LayerNorm/RMSNorm 実装に対する数値実験による検証が先決。
+5. **[A-5] ✅ 解消済み(commit 3a29b94)** 正規化層の相対発散増幅をモデル化していなかった
+   問題（Q11）——**数値実験で当初の前提が反転した事例**
+   - 何が無かったか: `propagate()` は LayerNorm/RMSNorm を専用に扱わず、`fxbridge._kind_of`
+     がこれらを `"reduce"` に写していた。そのため reduce の条件数統計 `Σ|x|/|Σx|`
+     （符号相殺）が当たっていたが、これは正規化には無関係な統計量だった。
+   - **なぜ危険だったか（台帳の当初の記述は誤りだった）**: 当初は「scale リセットを
+     未考慮 → 予測が過大（偽BLOCK 側）」とだけ書かれていた。実際は **両方向に誤っていた**:
+
+     | 入力 | 旧 cond | 実 LayerNorm の実測 amp | 誤りの向き |
+     |---|---|---|---|
+     | 零平均 | 27.3 | 1.00 | 過大 → 偽BLOCK（想定通り） |
+     | shift=3 | 1.00 | 3.15 | 過小 → **偽OK**（想定の逆） |
+     | shift=10 | 1.00 | 10.04 | 過小 → **偽OK**（想定の逆） |
+
+     さらに `_tsugi_compile` の警告文「実際の発散はこれより小さい可能性」自体が
+     **無条件の偽OK 主張**だった。
+   - **前提の反転**: 作業指示は「LN のヤコビアンは 2 方向を射影落とすので増幅は理論上
+     ≤1 になるはず」と書いていた。射影は正しいが、残る最大特異値は `g/√(σ²+eps)` で、
+     相対量では上界が `RMS(x)/√(σ²+eps) = 1/√(1−(μ/RMS)²) ≥ 1` となり **1 を下回れない**。
+     「scale-invariant だから安全」は *絶対* スケールの話で、*相対* 発散の増幅とは別物。
+     設計ガードレール 2（未検証の数値係数を導入しない）が誤った符号の係数を防いだ実例。
+   - 修正内容: kind `layer_norm`（増幅・`amp=max(1,cond)`）/`rms_norm`（非増幅・`amp=1.0`
+     固定）を追加。`empirical_cond(x,"layer_norm")` は行ごと `RMS/√(σ²+eps)` の **max**
+     （median は零平均多数派に紛れた外れ行を隠し偽OK になる。eps ガードで有界なので
+     reduce と違い max が暴走しない）。`eps=1e-5` は `torch.nn.LayerNorm` 既定値。
+     RMSNorm は実測 ≤1（worst 1.0021）だが **1 未満の減衰係数は入れない**（過大な
+     dilution は偽OK の温床）。`_kind_of` は `rms_norm` 判定が先（`"_norm"` を含むため）。
+     `mean`/`sum`/`var` は `reduce` のまま。
+   - 実証: テスト 7 本・verify.py 不変条件 76/77。受け入れ基準「予測が実測を下回らない」は
+     平均優勢・零平均の **両レジーム**で固定（零平均側は新統計で予測が下がるため、
+     下がっても偽OK にならないことの機械的証拠）。副産物として
+     `test_layer_norm_jacobian_nullspace_is_annihilated`（実装中に踏んだ seed 衝突バグを
+     2 消失特異値の実証として資産化——同じ大きさの摂動でも *向き* で増幅が 0 倍にも
+     10 倍にもなる）。
+   - **残（隠さない）**: cond は *ネットワーク入力* sample から測っており、深部の正規化層が
+     実際に見る活性ではない（bias 等で平均がシフトしうる）。reduce/exp と共通の既存制限で、
+     解消には sample の前方伝播が要る。出典は `docs/SOURCES.md`「正規化層の数値安定性」節。
 
 6. **[A-6] ✅ 解消済み(commit 88846ec)** facade 未接続・デッドコードの機械的
    スキャンが手動のままだった問題（Q56）
@@ -314,7 +334,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 169 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 174 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---
