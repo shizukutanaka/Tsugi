@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 174/174 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 178/178 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -43,7 +43,7 @@
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
-| A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
+| A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消(29964d0) | Q31(oracle 照合)と **Q32(温度サンプリング下の分布一致)** は解消——`compare_task(task="sampling")` が TV 距離で判定し T→0 で argmax 層に一致。残: Q22 の beam search・Q21(代表 logit のガイド) |
 | A-10 | 不足 | — | 検証基盤の構造 | 解消済み | main() 分割（Q34）・乱数境界点検（Q43）・カバレッジ計測（Q38・`coverage_report.py` で関数 93.0%・未実行 op を発見し解消）、すべて解消 |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | — | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 解消済み | 恒等路つき（residual/softmax）＋計算 N 分岐（N≥2・attention ヘッド和/N-ary 合流）を SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 交差辺のある一般 DAG のみ（SP 近似の設計上の限界） |
@@ -249,12 +249,23 @@
    （Q48: 「発散 ~2000倍」等の数字が単一 seed）。
 8. **[A-8] scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
-9. **[A-9] タスクモデルの拡張（一部解消）**: Q31（oracle がある時の accuracy 差併記）は
-   解消——`audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率を併記し、A↔B が一致
+9. **[A-9] タスクモデルの拡張（一部解消・Q32 を追加解消）**: Q31（oracle がある時の accuracy
+   差併記）は解消——`audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率を併記し、A↔B が一致
    （低フリップ率）でも両方 oracle 判断と食い違う task レベル shared-mode を WARN する
-   （`decision.flip_rate` を oracle 相手に再利用・`verify.py` 不変条件 65）。残: Q21（代表
-   logit はキャリブレーション集合から、というガイド）、Q22/Q32（beam search・温度
-   サンプリング下の分布一致）。
+   （`decision.flip_rate` を oracle 相手に再利用・`verify.py` 不変条件 65）。
+   - **Q32（温度サンプリング下の分布一致）も解消済み（commit 29964d0）**:
+     `compare_task(task="sampling", temperature=T)` が出力分布の全変動距離で判定する。
+     上界は `tanh(ε/T)`（確率比が `[e^{−2ε/T},e^{2ε/T}]` に収まることの帰結・一次近似でなく
+     大域的）。**ε の定義が要点**——softmax は shift 不変だが scale 非不変、argmax は両方に
+     不変という非対称のため、既存の `residual_divergence_rms`（純 scale で ≈0 → 偽OK）も
+     `divergence_rms`（純 shift で大 → 偽BLOCK）も使えず、shift のみを除いた第 3 の量
+     `sampling_epsilon` を導入した。T→0 で mean TV が argmax フリップ率に一致することを
+     実測で固定（サンプリング層は decision 層の厳密な一般化）。`verify.py` 不変条件 78/79。
+   - 残: **Q22 の beam search**（`compare_task(ranking)`+`rollout` の再利用が主で新規数学は
+     薄いが、`decode="beam"` が `ValueError` を送出することを固定した負のテストが
+     `tests/correctness/test_rollout.py:153` にあり、それを意図的に壊す独立ラウンドが要る）、
+     Q21（代表 logit はキャリブレーション集合から、というガイド）。
+
 10. **[A-10] 検証基盤の構造**: Q34（`verify.py` 単一巨大 main() の関数分割）は解消済み——
     61 セクションをテーマ別の 12 個の `_check_*()` 関数に分割し、`main()` は順に呼ぶだけの
     薄い関数にした（挙動・実行順・check 文言・件数は分割前と一字一句同一であることを
@@ -334,7 +345,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 174 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 178 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

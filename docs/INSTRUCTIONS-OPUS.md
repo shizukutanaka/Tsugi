@@ -46,16 +46,34 @@ Fable ほどの重さは不要な中間層）。会話履歴に依存せず、�
   過小評価する偽OK を全モデルに仕込んでいた。**指示書に書かれた理論的予想も検証対象**。
 - 詳細は `FEATURE-AUDIT.md` A-5・`PERSPECTIVE-error-propagation.md` 追補2。
 
-### 5. A-9 残: beam search・温度サンプリング下の分布一致（次の担当分）
-- **現状**: `decision.compare_decisions`/`compare_task` は貪欲（argmax）・回帰・二値・
-  ランキングを扱うが、**確率的デコーディングは対象外**。温度サンプリングでは同じ logit 差でも
-  出力分布の差として現れ、argmax フリップ率はこれを捉えない（`FEATURE-AUDIT.md` A-9・Q22/Q32）。
-- **やること**: logit 発散 → サンプリング分布の距離（TV 距離や KL の上界）への橋を作る。
-  温度 T の softmax は logit 差 δ を分布差に写す——`|p_a − p_b|₁ ≤ (2/T)·δ` 型の上界が
-  出発点になるが、**係数は数値実験で確かめてから入れる**（A-5 の先例）。
-  beam search は上位 k 集合の変化として `compare_task(ranking)` の再利用を検討。
-- **受け入れ基準**: 予測した分布距離が実測（多 seed のサンプリング）を下回らないことを
-  テストで固定。温度 T→0 で既存の argmax フリップ率に一致することも固定（連続性）。
+### 5. ✅ A-9/Q32: 温度サンプリング下の分布一致（完了・29964d0）
+- `compare_task(task="sampling", temperature=T)` が出力分布の TV 距離で判定する。
+  上界は `tanh(ε/T)`（大域的・実測でタイト）。指示書が出発点に挙げた係数 1/2 型は
+  **実測比 2.0 で破れた**（偽OK）——A-5 に続き「係数は数値実験で確かめてから入れる」が効いた。
+- **得られた知見**: softmax は shift 不変だが scale 非不変、argmax は両方に不変。この非対称の
+  ため既存の `residual_divergence_rms`（純 scale で ≈0 → 偽OK）も `divergence_rms`（純 shift で
+  大 → 偽BLOCK）も使えず、shift のみを除いた第 3 の量が要った。**既存関数の再利用を検討する際は
+  「その関数が前提にしている不変性」が新しい用途でも成り立つかを確かめること**。
+- 詳細は `PERSPECTIVE-task-equivalence.md` 追補・`SOURCES.md`「サンプリング下の分布一致」節。
+
+### 6. A-9 残: beam search（Q22・次の担当分）
+- **現状**: `rollout._per_token_flips` は greedy/topk/nucleus をサポートするが
+  `decode="beam"` は `ValueError`。beam 探索の等価性は未対応。
+- **やること**: beam は「上位 k 仮説集合が変わるか」なので、既存
+  `decision.ranking_flip_rate`（top-k 集合変化）と `rollout.sequence_survival`（系列合成）の
+  再利用が主。**新規の数学は薄いが、`decode="beam"` が ValueError を送出することを固定した
+  負のテスト `tests/correctness/test_rollout.py:153` を意図的に壊す変更**になるため、
+  そのテストの書き換えとセットで 1 ラウンドとする。
+- **注意**: beam は per-step の貪欲選択でなく *累積対数尤度* で仮説を並べる。ゆえに per-token
+  フリップ率の単純合成（`(1-p)^L`）が妥当かは自明でない——**合成則を数値実験で確かめてから
+  入れる**（A-5/A-9 の先例）。ビーム幅 k と系列長 L の両方でスケールを確認すること。
+- **受け入れ基準**: 予測した系列レベルの不一致率が実測（多 seed の beam 実行）を下回らないこと。
+  ビーム幅 k=1 で既存の greedy 経路に一致することも固定（連続性・T→0 と同型の検査）。
+
+### 7. A-9 残: Q21（代表 logit のガイド）
+- `flip_bound_from_divergence`/`tv_bound_from_divergence` は代表 logit 分布に依存するが、
+  「その代表集合をどう選ぶか」の指針が無い（本番分布とずれれば予測は外れる）。
+  キャリブレーション集合の取り方を文書化する（コード変更は最小・`docs/` 主体）。
 
 ## 設計ガードレール（違反しそうなら手を止めて人間に確認）
 1. **偽OK 方向の変更は「問題を再現するテスト」を先に書く**（修正前に赤・修正後に緑）。
