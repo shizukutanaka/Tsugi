@@ -32,6 +32,10 @@ _NEAR_TIE_MARGIN_FRAC: float = 0.5
 _FLIP_BLOCK_RATIO: float = 10.0
 # flip_budget=0 の場合の BLOCK 最小フリップ率（1% = 実用上無視できない規模）。
 _FLIP_BLOCK_MIN: float = 0.01
+# サンプリングの worst-case TV 上界がこの値を超えたら「実質無情報」と自己申告する。
+# TV=0.5 は「確率質量の半分が動きうる」＝判定材料にならない水準。低温では tanh(ε/T) が
+# 1 に飽和して必ずここを超えるので、上界でなく実測 TV を見るよう促すために使う。
+_TV_BOUND_VACUOUS: float = 0.5
 
 
 def margin(logits: np.ndarray) -> np.ndarray:
@@ -262,6 +266,106 @@ def ranking_flip_rate(scores_a: np.ndarray, scores_b: np.ndarray, *, k: int = 10
     return float(np.mean(np.any(ta != tb, axis=-1))) if n else 0.0
 
 
+# ── 新視点: 確率的デコーディング（温度サンプリング）下の分布一致 ──────────────
+# argmax フリップ率は「どちらの語を選ぶか」を測るが、実運用 LLM は温度サンプリングで
+# 出力するため、同じ logit 発散が **出力分布の差** として現れる。貪欲だけの認証は
+# 実際の出荷形態を覆っていない（FEATURE-AUDIT.md A-9・Q22/Q32）。
+
+def _softmax(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """温度つき softmax（_nucleus_mask と同じ temperature ガードを共有）。"""
+    x = np.asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
+    e = np.exp(x - x.max(axis=-1, keepdims=True))
+    return e / e.sum(axis=-1, keepdims=True)
+
+
+def sampling_epsilon(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """サンプリング等価に効く per-sample の logit 発散 = **shift を除いた ∞ ノルム**。
+
+    なぜ既存の 2 つの発散量ではだめか（本関数の存在理由）:
+    softmax は **shift 不変だが scale 非不変**（logit の一様スケールは温度変化そのもの）。
+    一方 argmax は scale・shift ともに不変。この非対称のため既存量はどちらも壊れる:
+
+      | ケース | argmax flip | residual_divergence_rms | divergence_rms(total) | 実測 TV(T=1) |
+      |---|---|---|---|---|
+      | 純 scale b=1.1a | 0.0000 | 3.6e-16（≈0） | 2.0e-1 | 0.0546 |
+      | 純 shift b=a+3  | 0.0000 | 3.5e-16       | 3.0e+0 | 0.0000 |
+
+    - `compare_decisions` が使う **residual**（アフィン成分を除去）は純 scale で ≈0 に
+      なるが実際の TV は 0.055 → **偽OK**。
+    - **total** は純 shift で 3.0 になるが実際の TV は厳密に 0 → tanh が飽和し **偽BLOCK**。
+
+    ゆえに「shift のみを除いた第 3 の量」が正しい:
+        ε_i = ‖(b_i − mean b_i) − (a_i − mean a_i)‖∞
+    最後の軸を語彙（クラス）軸とみなし、サンプルごとに返す。
+    """
+    a_ = np.asarray(a, dtype=np.float64)
+    b_ = np.asarray(b, dtype=np.float64)
+    d = ((b_ - b_.mean(axis=-1, keepdims=True))
+         - (a_ - a_.mean(axis=-1, keepdims=True)))
+    return np.abs(d).max(axis=-1)
+
+
+def tv_bound(eps, temperature: float = 1.0):
+    """logit 摂動 ε（∞ノルム）と温度 T から全変動距離の **大域的** 上界を返す。
+
+        ‖softmax(z/T) − softmax((z+b)/T)‖_TV ≤ tanh(ε/T)   （‖b‖∞ ≤ ε）
+
+    証明の骨子: 各確率の比が `[e^{−2ε/T}, e^{2ε/T}]` に収まることから、最悪ケースが
+    閉形式 `(e^{2ε/T}−1)/(e^{2ε/T}+1) = tanh(ε/T)` になる（docs/SOURCES.md）。
+    ヤコビアン `J=(1/T)(diag(p)−ppᵀ)` に基づく一次近似と違い **大域的に有効**——
+    摂動が小さいという仮定を置かない。
+
+    数値検証済み（V∈{2,5,50,1000}×T∈{0.1..2}×ε∈{0.01..3}×300 試行）:
+    `max TV / tanh(ε/T) = 1.0000`（有効かつ達成される＝タイト）。係数 1/2 版
+    （`tanh(ε/T)/2` 型）は実測比 2.0 で **破れる＝偽OK** なので採らない。
+
+    注意: T→0 で tanh→1 に飽和し実質無情報になる（実運用温度帯 T≲0.2 で顕著）。
+    fail-safe（偽OK にはならない）だがそのまま BLOCK 判定に使えば偽BLOCK を量産するため、
+    `compare_task(task="sampling")` は判定を *実測* TV で行い、本上界は別枠で報告し、
+    無情報なら自己申告する（`_TV_BOUND_VACUOUS`）。
+    """
+    return np.tanh(np.asarray(eps, dtype=np.float64) / max(temperature, 1e-9))
+
+
+def sampling_divergence(a: np.ndarray, b: np.ndarray,
+                        temperature: float = 1.0) -> dict[str, float]:
+    """2 ベンダーの logit から、温度 T のサンプリング分布の差を **実測** する。
+
+    返り値の `tv_mean` は最適結合の下で「両ベンダーから引いた 1 サンプルが食い違う確率」
+    そのものなので、他タスクの flip_rate と同じ意味を持ち `flip_budget` と直接比較できる。
+    T→0 で argmax フリップ率に収束する（サンプリング層は decision 層の厳密な一般化）。
+    """
+    pa = _softmax(a, temperature)
+    pb = _softmax(b, temperature)
+    tv = 0.5 * np.abs(pa - pb).sum(axis=-1)
+    eps = sampling_epsilon(a, b)
+    return {"tv_mean": float(tv.mean()) if tv.size else 0.0,
+            "tv_max": float(tv.max()) if tv.size else 0.0,
+            "eps_max": float(eps.max()) if eps.size else 0.0,
+            "temperature": float(temperature)}
+
+
+def tv_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
+                             temperature: float = 1.0) -> float:
+    """*相対* 発散（propagation のモデル発散）を TV 距離の上界へ翻訳する（予測経路）。
+
+    `flip_bound_from_divergence` の scale 導出を再利用する: 各サンプルについて
+    「グローバル RMS」と「そのサンプル自身の RMS」の大きい方を使い、低スケール多数派に
+    紛れた高スケールサンプルで δ を過小評価しない（SOCRATIC-50 Q19 の fail-safe）。
+
+    **既知の限界（暗黙化しない）**: ここで得る δ は RMS 由来だが、tanh 上界が要求するのは
+    ∞ ノルムであり、両者には最大 √V 倍の開きがある（実測: ガウス Δz・V=1000 で実効 3.4 倍・
+    最悪は √V=31.6）。ゆえに本関数は *予測* 用であり、両ベンダーの実 logit が手元にある
+    ときは `sampling_divergence`（実測 ε）を使うこと。この仮定は
+    `flip_bound_from_divergence` の妥当域仮定（audit のレポートに明示）と同系統。
+    """
+    x = np.asarray(ref_logits, dtype=np.float64)
+    global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
+    per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
+    delta = rel_divergence * np.maximum(global_scale, per_sample_scale)
+    return float(np.max(tv_bound(delta, temperature))) if x.size else 0.0
+
+
 @dataclass
 class TaskReport(FindingReport):
     """非分類タスク（回帰/バイナリ/ランキング）の判断フリップ所見。
@@ -269,7 +373,7 @@ class TaskReport(FindingReport):
     DecisionReport は argmax 分類専用。TaskReport はタスク種別に応じた flip_rate を持つ。
     """
 
-    task: str = "regression"     # "regression" / "binary" / "ranking"
+    task: str = "regression"     # "regression" / "binary" / "ranking" / "sampling"
     flip_rate: float = 0.0
     flip_rate_ub: float = 0.0
     n: int = 0
@@ -279,6 +383,10 @@ class TaskReport(FindingReport):
     rtol: float = 1e-3           # regression のみ
     flipped_margin_median: float = 0.0   # binary のみ（near-tie 健全性チェック用）
     overall_margin_median: float = 0.0   # binary のみ
+    temperature: float = 1.0     # sampling のみ
+    tv_mean: float = 0.0         # sampling のみ（= flip_rate。最適結合での食い違い確率）
+    tv_max: float = 0.0          # sampling のみ
+    tv_predicted: float = 0.0    # sampling のみ（tanh(ε/T) の worst-case 上界）
 
     def to_text(self) -> str:  # type: ignore[override]
         detail = ""
@@ -289,6 +397,9 @@ class TaskReport(FindingReport):
             detail = f", k={self.k}"
         elif self.task == "regression":
             detail = f", atol={self.atol:.1e}, rtol={self.rtol:.1e}"
+        elif self.task == "sampling":
+            detail = (f", T={self.temperature:g}, TV max={self.tv_max:.3g}, "
+                      f"worst-case 上界 tanh(ε/T)={self.tv_predicted:.3g}")
         return super().to_text(
             header=(f"task={self.task} flip_rate={self.flip_rate * 100:.2f}%"
                     f"(≤{self.flip_rate_ub * 100:.2f}% Wilson) "
@@ -299,11 +410,12 @@ class TaskReport(FindingReport):
 def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
                  flip_budget: float = 0.0, threshold: float = 0.5, k: int = 10,
                  atol: float = 0.0, rtol: float = 1e-3,
+                 temperature: float = 1.0,
                  confidence: float = 0.95) -> TaskReport:
-    """非分類タスク（回帰/バイナリ/ランキング）のタスクレベル等価判定。
+    """非分類タスク（回帰/バイナリ/ランキング/サンプリング）のタスクレベル等価判定。
 
     task: "regression"（値の許容乖離）/ "binary"（sigmoid+threshold）/
-          "ranking"（top-k 集合一致）。
+          "ranking"（top-k 集合一致）/ "sampling"（温度 T の出力分布の TV 距離）。
     分類は compare_decisions へ（argmax は多クラス専用）。
 
     これにより decision 層が非分類タスクの出荷判断を持てる:
@@ -319,6 +431,14 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
     複数試行から推定した比率ではないため Wilson widening を適用しない
     （flip_rate_ub = flip_rate のまま）。ranking の 2D 入力（クエリのバッチ）は
     クエリ数（a_.shape[0]）を試行数として widening する。
+
+    sampling タスクは温度 T の出力分布どうしの全変動距離を測る。実運用 LLM は温度
+    サンプリングで出力するため、argmax フリップ率は「どちらの語を選ぶか」しか見ておらず
+    出力分布の差を捉えない（A-9・Q22/Q32）。TV は最適結合の下で「両ベンダーから引いた
+    1 サンプルが食い違う確率」なので、他タスクの flip_rate と同じ意味を持つ。
+    判定は *実測* TV で行い、`tanh(ε/T)` の worst-case 上界は `tv_predicted` に併記する
+    ——低温では上界が 1 に飽和して無情報になるため、判定基準にはできない（無情報なら
+    その旨を自己申告する）。
 
     binary タスクは compare_decisions と同型の near-tie 健全性チェックも行う: フリップは
     決定境界近傍（低マージン）に集中するはずで、確信領域（高マージン）まで巻き込む
@@ -343,12 +463,16 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
         overall_margin_median = float(np.median(bm)) if bm.size else 0.0
     elif task == "ranking":
         fr = ranking_flip_rate(a_, b_, k=k)
+    elif task == "sampling":
+        sd = sampling_divergence(a_, b_, temperature)
+        fr = sd["tv_mean"]
     else:
-        raise ValueError(f"unknown task: {task!r} (regression/binary/ranking)")
+        raise ValueError(
+            f"unknown task: {task!r} (regression/binary/ranking/sampling)")
     if task == "ranking" and a_.ndim == 1:
         fr_ub = fr    # 決定的な単一比較結果（推定値でない）ゆえ信頼区間は無意味
     else:
-        n_trials = int(a_.shape[0]) if task == "ranking" else n
+        n_trials = int(a_.shape[0]) if task in ("ranking", "sampling") else n
         fr_ub = (flip_rate_upper_bound(int(round(fr * n_trials)), n_trials,
                                        confidence=confidence)
                  if n_trials else fr)
@@ -356,13 +480,30 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
                      threshold=threshold, k=k, atol=atol, rtol=rtol,
                      flipped_margin_median=flipped_margin_median,
                      overall_margin_median=overall_margin_median)
+    if task == "sampling":
+        rep.temperature = float(temperature)
+        rep.tv_mean = sd["tv_mean"]
+        rep.tv_max = sd["tv_max"]
+        rep.tv_predicted = float(tv_bound(sd["eps_max"], temperature))
     if fr_ub > flip_budget:
-        risk = Risk.BLOCK if fr_ub > max(10 * flip_budget, 0.01) else Risk.WARN
+        # 定数は compare_decisions と単一情報源を共有する（従来ここだけ 10/0.01 が
+        # インライン literal で二重定義されていた・値は同一なので挙動不変の DRY 修正）。
+        risk = (Risk.BLOCK
+                if fr_ub > max(_FLIP_BLOCK_RATIO * flip_budget, _FLIP_BLOCK_MIN)
+                else Risk.WARN)
         rep.add(risk, "task",
                 f"{task} フリップ率 {fr * 100:.2f}%（上側限界 {fr_ub * 100:.2f}%）"
                 f"> 予算 {flip_budget * 100:.2f}% → ベンダー間でユーザーに見える判断が変わる")
     elif fr > 0.0:
         rep.add(Risk.INFO, "task", f"{task} フリップ {fr * 100:.2f}%（予算内）")
+    if task == "sampling" and rep.tv_predicted > _TV_BOUND_VACUOUS:
+        # 低温では tanh(ε/T) が 1 に飽和し「TV ≤ 0.98」のような無情報な上界になる
+        # （実測は桁違いに小さいことが多い）。fail-safe だが額面通り受け取ると偽BLOCK
+        # を量産するため、上界が使えないことを明示して実測 TV を見るよう促す。
+        rep.add(Risk.INFO, "task",
+                f"worst-case 上界 tanh(ε/T)={rep.tv_predicted:.3g} は T={temperature:g} では"
+                f"実質無情報（実測 TV={rep.tv_mean:.3g}）→ 判定は実測 TV で行うこと。"
+                "上界を締めたいなら温度を上げるか logit 発散 ε を下げる")
     if (task == "binary" and overall_margin_median > 0
             and flipped_margin_median > _NEAR_TIE_MARGIN_FRAC * overall_margin_median):
         rep.add(Risk.WARN, "task",

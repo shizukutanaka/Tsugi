@@ -343,7 +343,8 @@ def _iter_graphops(nodes):
 
 
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
-          block_dims=None, ref_logits=None, sample=None, provenance=None) -> Audit:
+          block_dims=None, ref_logits=None, sample=None, provenance=None,
+          temperature: float = 1.0) -> Audit:
     """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。
 
     ref_logits を渡すと、propagation のモデル発散を decision に橋渡しして、第2ベンダーを
@@ -488,6 +489,17 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             prop.lines.append(
                 "  ↑ 仮定: op グラフ相対発散が最終 logit にそのまま乗る（正規化の scale "
                 "リセット・最終射影の条件数・分布シフトで妥当域を外れうる・要再評価）")
+            # 貪欲デコードだけでは実運用を覆えない（A-9）。同じ静的発散を、温度 T の
+            # サンプリング分布の差（全変動距離）の上界へも翻訳する。argmax フリップ率が
+            # 「どちらの語を選ぶか」なのに対し、TV は「分布がどれだけ違うか」を測る。
+            from .decision import tv_bound_from_divergence
+            tvb = tv_bound_from_divergence(ref_logits, pr.model_divergence, temperature)
+            prop.lines.append(
+                f"タスク影響(予測・温度サンプリング T={temperature:g}): "
+                f"分布差 TV ≤ {tvb:.3g}"
+                + ("（低温で上界は 1 に飽和し無情報になる——実 logit があれば "
+                   "audit_runtime(task='sampling') の実測 TV を見よ）"
+                   if tvb > 0.5 else ""))
         a.phases.append(prop)
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---
@@ -655,6 +667,18 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             dp = AuditPhase(f"decision タスクレベル等価({task})", "decided", tr.max_risk)
             dp.lines.append(f"{task} フリップ率 {tr.flip_rate * 100:.2f}% "
                             f"(予算 {flip_budget * 100:.2f}%・n={tr.n})")
+            if task == "sampling":
+                # 実運用 LLM は温度サンプリングで出力するため、argmax フリップ率だけでは
+                # 出荷形態を覆えない（A-9）。TV は最適結合の下で「両ベンダーから引いた
+                # 1 サンプルが食い違う確率」なので他タスクの flip_rate と同義。
+                # worst-case 上界 tanh(ε/T) は低温で 1 に飽和し無情報になるため併記に留め、
+                # 判定は実測 TV で行う（compare_task が無情報なら自ら INFO で申告する）。
+                dp.lines.append(
+                    f"  T={tr.temperature:g}: 実測 TV mean={tr.tv_mean:.3g}/"
+                    f"max={tr.tv_max:.3g}・worst-case 上界 tanh(ε/T)={tr.tv_predicted:.3g}"
+                    "（TV=最適結合での食い違い確率・T→0 で argmax フリップ率に一致）")
+                for f in tr.findings:
+                    dp.lines.append(f"  [{f.risk.name}] {f.message}")
         ad.phases.append(dp)
 
         # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）。

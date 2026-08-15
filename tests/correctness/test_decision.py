@@ -19,6 +19,7 @@ from tsugi.decision import (  # noqa: E402
     compare_task,
     decision_flips,
     decompose_divergence,
+    divergence_rms,
     flip_rate,
     margin,
     nucleus_flip_rate,
@@ -26,8 +27,12 @@ from tsugi.decision import (  # noqa: E402
     ranking_flip_rate,
     regression_flip_rate,
     residual_divergence_rms,
+    sampling_divergence,
+    sampling_epsilon,
     tie_rate,
     topk_flip_rate,
+    tv_bound,
+    tv_bound_from_divergence,
 )
 
 
@@ -486,6 +491,157 @@ def test_flip_bound_from_divergence_does_not_underestimate_high_scale_outlier():
         f"fixed={bound_fixed} ≤ global-only={bound_global_only}")
 
 
+# --- A-9: 温度サンプリング下の分布一致（TV 距離の橋） ---
+
+def _softmax_np(z, T=1.0):
+    e = np.exp((z - z.max(-1, keepdims=True)) / T)
+    return e / e.sum(-1, keepdims=True)
+
+
+def _measured_tv(a, b, T):
+    return 0.5 * np.abs(_softmax_np(a, T) - _softmax_np(b, T)).sum(-1)
+
+
+def test_tv_bound_is_upper_bound_across_temperature_and_eps():
+    """tanh(ε/T) が実測 TV を上界する（大域的・一次近似でない）。tanh/2 では破れる。
+
+    ‖b‖∞ ≤ ε のとき ‖softmax(z/T)−softmax((z+b)/T)‖_TV ≤ tanh(ε/T)。証明は確率比が
+    [e^{−2ε/T}, e^{2ε/T}] に収まることから閉形式 (e^{2ε/T}−1)/(e^{2ε/T}+1) を得る
+    （docs/SOURCES.md）。指示書は出発点として `|p_a−p_b|₁ ≤ (2/T)·δ` 型の係数を挙げていたが、
+    **係数は数値実験で確かめてから入れる**（A-5 の先例）——ここで tanh/2 型が実際に
+    破れる（＝偽OK になる）ことを固定し、係数 1 の tanh が正しいことを外部検証する。
+    """
+    half_violated = False
+    for V in (2, 5, 50, 500):
+        for T in (0.1, 0.5, 1.0, 2.0):
+            for eps in (0.01, 0.1, 1.0, 3.0):
+                for seed in range(3):
+                    r = np.random.default_rng(seed * 97 + V)
+                    z = r.standard_normal(V) * r.choice([0.5, 2.0, 8.0])
+                    b = r.choice([-eps, eps], size=V)      # ∞ノルムちょうど eps
+                    tv = float(_measured_tv(z[None], (z + b)[None], T)[0])
+                    bound = float(tv_bound(eps, T))
+                    assert tv <= bound + 1e-9, \
+                        f"V={V} T={T} eps={eps}: 実測 {tv:.4f} > 上界 {bound:.4f}"
+                    if tv > bound / 2 + 1e-9:
+                        half_violated = True
+    assert half_violated, "tanh/2 型の係数が破れる例が無い（係数の外部検証が効いていない）"
+    # 極限の挙動: T→∞ で 0（分布が一様に潰れる）・ε→0 で 0
+    assert tv_bound(1.0, 1e6) < 1e-5 and tv_bound(0.0, 1.0) == 0.0
+
+
+def test_sampling_epsilon_is_shift_invariant_but_scale_sensitive():
+    """サンプリングの ε は shift 不変・scale 非不変（既存 2 量がどちらも壊れることの固定）。
+
+    softmax は shift 不変だが scale 非不変（一様スケールは温度変化そのもの）。argmax は
+    両方に不変。この非対称のため:
+      - residual_divergence_rms（argmax 用・アフィン成分を除去）は純 scale で ≈0 →
+        実際は TV≠0 なので **偽OK**
+      - divergence_rms（total）は純 shift で大きな値 → 実際は TV=0 なので **偽BLOCK**
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((500, 32)) * 2.0
+
+    shifted = a + 3.0
+    scaled = 1.1 * a
+    # 純 shift: TV は厳密に 0、ε も 0（total を使うと 3.0 になり偽BLOCK）
+    assert float(_measured_tv(a, shifted, 1.0).max()) < 1e-12
+    assert float(sampling_epsilon(a, shifted).max()) < 1e-9
+    assert divergence_rms(a, shifted) > 2.9                    # total は大きい＝使えない
+    # 純 scale: TV は明確に非ゼロ、ε も非ゼロ（residual を使うと ≈0 になり偽OK）
+    assert float(_measured_tv(a, scaled, 1.0).mean()) > 0.01
+    assert float(sampling_epsilon(a, scaled).min()) > 0.01
+    assert residual_divergence_rms(a, scaled) < 1e-9           # residual は ≈0＝偽OK
+
+    # scale+shift の合成では shift 成分だけが落ちる（scale 成分は残る）
+    both = 1.1 * a + 3.0
+    assert np.allclose(sampling_epsilon(a, both), sampling_epsilon(a, scaled))
+    # ε は上界の入力として妥当（per-sample で実測 TV を上回る）
+    tv = _measured_tv(a, both, 1.0)
+    assert bool((tv <= tv_bound(sampling_epsilon(a, both), 1.0) + 1e-12).all())
+
+
+def test_sampling_flip_rate_converges_to_argmax_flip_rate_as_temperature_falls():
+    """T→0 で TV 平均が argmax フリップ率に一致する（層の連続性・受け入れ基準）。
+
+    TV は最適結合の下で「両ベンダーから引いた 1 サンプルが食い違う確率」。T→0 では
+    分布が argmax の点質量に潰れるので、その確率はちょうど argmax フリップ率になる。
+    ゆえに **サンプリング層は decision 層の厳密な一般化**（貪欲は T→0 の特例）。
+    """
+    z = _logits(seed=0, n=4000, c=32) * 2.0
+    a, b = _vendor(z, 0.05, 1), _vendor(z, 0.05, 2)
+    greedy = flip_rate(a, b)
+    assert greedy > 0.005, "フリップが起きない設定では連続性を検証できない"
+    low_t = compare_task(a, b, task="sampling", temperature=0.01).flip_rate
+    assert abs(low_t - greedy) <= 0.1 * greedy, \
+        f"T→0 で argmax フリップ率に収束しない: TV={low_t:.4f} vs argmax={greedy:.4f}"
+    # 温度を上げると分布が滑らかになり食い違い確率は単調に下がる
+    temps = [compare_task(a, b, task="sampling", temperature=T).flip_rate
+             for T in (0.01, 0.5, 1.0, 4.0)]
+    assert temps == sorted(temps, reverse=True), f"温度について単調でない: {temps}"
+
+
+def test_tv_bound_reports_itself_vacuous_at_low_temperature():
+    """低温では worst-case 上界が無情報になることを自ら申告する（偽BLOCK 対策）。
+
+    tanh(ε/T) は T→0 で 1 に飽和し「TV ≤ 0.98」のような無意味な上界になる（実測は桁違いに
+    小さい）。fail-safe だが額面通り BLOCK 判定に使えば偽BLOCK を量産するため、判定は実測
+    TV で行い、上界が使えないときは INFO で明示する。閾値 _TV_BOUND_VACUOUS が実際に
+    その境界を支配することも固定する（Q5 の定数感度テストと同型）。
+    """
+    from tsugi.decision import _TV_BOUND_VACUOUS
+    z = _logits(seed=0, n=500, c=32) * 2.0
+    a, b = _vendor(z, 0.05, 1), _vendor(z, 0.05, 2)
+
+    cold = compare_task(a, b, task="sampling", temperature=0.02)
+    assert cold.tv_predicted > _TV_BOUND_VACUOUS
+    assert any("無情報" in f.message for f in cold.findings), cold.to_text()
+    # 上界が無情報でも判定自体は実測 TV で行うので過剰 BLOCK にならない
+    assert cold.flip_rate < 0.5 and cold.tv_predicted > 0.9
+
+    warm = compare_task(a, b, task="sampling", temperature=8.0)
+    assert warm.tv_predicted <= _TV_BOUND_VACUOUS
+    assert not any("無情報" in f.message for f in warm.findings), warm.to_text()
+
+
+def test_compare_task_sampling_blocks_high_distribution_divergence():
+    """分布差が予算を超えたら BLOCK し、小標本では Wilson 上側限界で判定する。"""
+    from tsugi.report import Risk as _Risk
+    z = _logits(seed=0, n=2000, c=32) * 2.0
+    big = compare_task(z, _vendor(z, 1.0, 3), task="sampling", temperature=1.0,
+                       flip_budget=0.001)
+    assert big.max_risk is _Risk.BLOCK and big.flip_rate > 0.01
+    # 同一 logit なら TV は厳密に 0（予算は Wilson の分解能より上に取る必要がある——
+    # n=2000・0 件観測でも上側限界は 0.14% なので、それ未満の予算は原理的に満たせない）
+    same = compare_task(z, z.copy(), task="sampling", temperature=1.0, flip_budget=0.01)
+    assert same.flip_rate == 0.0 and same.max_risk < _Risk.WARN
+    # fail-safe: 予算 0（完全一致要求）では 0 件観測でも Wilson 上側限界が 0 を上回るため
+    # 警告が出る。他タスクと同じ「0 観測を p=0 と過信しない」規約がサンプリングにも効く。
+    strict = compare_task(z, z.copy(), task="sampling", temperature=1.0, flip_budget=0.0)
+    assert strict.flip_rate == 0.0 and strict.flip_rate_ub > 0.0
+    assert strict.max_risk >= _Risk.WARN
+    # fail-safe: 小標本では点推定でなく上側限界で判定する（他タスクと同型）
+    small = compare_task(z[:20], _vendor(z, 0.05, 4)[:20], task="sampling",
+                         temperature=1.0, flip_budget=0.0)
+    assert small.flip_rate_ub > small.flip_rate
+
+
+def test_tv_bound_from_divergence_bridges_propagation_to_sampling():
+    """相対発散 → TV 上界の予測橋（実 logit 無しでサンプリング影響を予測）。"""
+    z = _logits(seed=0, n=1000, c=32) * 2.0
+    warm = tv_bound_from_divergence(z, 0.01, temperature=1.0)
+    cold = tv_bound_from_divergence(z, 0.01, temperature=0.1)
+    assert 0.0 < warm < cold <= 1.0        # 低温ほど上界は大きい（飽和方向）
+    assert tv_bound_from_divergence(z, 0.0, temperature=1.0) == 0.0
+    # 一様 shift は分布を変えない（softmax の shift 不変性）。厳密性を見るため float64 で
+    # 確かめる——float32 では 0.05 の加算自体が丸めを生み、ε は 0 でなく ~1e-7 になる
+    # （それ自体は正しい: 丸めも実在する微小摂動）。
+    z64 = z.astype(np.float64)
+    sd = sampling_divergence(z64, z64 + 0.05, temperature=1.0)
+    assert sd["tv_mean"] < 1e-12 and sd["eps_max"] < 1e-12
+    assert sampling_divergence(z, z + 0.05, temperature=1.0)["eps_max"] < 1e-5
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -515,6 +671,12 @@ def main() -> int:
         test_compare_task_binary_ok_for_large_margin,
         test_compare_task_binary_warns_when_flips_not_near_tie,
         test_compare_task_unknown_raises,
+        test_tv_bound_is_upper_bound_across_temperature_and_eps,
+        test_sampling_epsilon_is_shift_invariant_but_scale_sensitive,
+        test_sampling_flip_rate_converges_to_argmax_flip_rate_as_temperature_falls,
+        test_tv_bound_reports_itself_vacuous_at_low_temperature,
+        test_compare_task_sampling_blocks_high_distribution_divergence,
+        test_tv_bound_from_divergence_bridges_propagation_to_sampling,
     ]
     for t in tests:
         try:

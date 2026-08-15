@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-77: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-79: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1729,6 +1729,74 @@ def _check_meta_integrity() -> None:
           _hot77["model_divergence"] > _static77 * 3 and "layer_norm" in _hot77["amplifiers"]
           and len(_w77) == 1 and "増幅" in str(_w77[0].message)
           and "小さい可能性" not in str(_w77[0].message))
+
+    # 78. 温度サンプリング下の分布一致（A-9・Q22/Q32）。実運用 LLM は温度サンプリングで
+    #     出力するため argmax フリップ率だけでは出荷形態を覆えない。TV 距離の大域的上界
+    #     tanh(ε/T) を採る（確率比が [e^{−2ε/T},e^{2ε/T}] に収まることの帰結・一次近似でない）。
+    #     指示書が出発点に挙げた係数 1/2 型は実測で **破れる**（偽OK）ので採らない——
+    #     A-5 と同じ「係数は数値実験で確かめてから入れる」適用例。
+    #     ε は shift 不変・scale 非不変でなければならない: softmax は shift 不変だが
+    #     scale 非不変（一様スケール＝温度変化）で、argmax は両方に不変という非対称がある。
+    #     既存の residual（argmax 用）は純 scale で ≈0 → 偽OK、total は純 shift で大 → 偽BLOCK。
+    from tsugi.decision import compare_task as _ct78
+    from tsugi.decision import divergence_rms as _drms78
+    from tsugi.decision import flip_rate as _fr78
+    from tsugi.decision import residual_divergence_rms as _res78
+    from tsugi.decision import sampling_epsilon as _se78
+    from tsugi.decision import tv_bound as _tvb78
+
+    def _sm78(z, T):
+        e = np.exp((z - z.max(-1, keepdims=True)) / T)
+        return e / e.sum(-1, keepdims=True)
+
+    def _tv78(a, b, T):
+        return 0.5 * np.abs(_sm78(a, T) - _sm78(b, T)).sum(-1)
+
+    _rng78 = np.random.default_rng(0)
+    _z78 = _rng78.standard_normal((2000, 32)) * 2.0
+    _b78 = _z78 + 0.05 * _rng78.standard_normal(_z78.shape)
+    # 上界が有効（任意の摂動）／tanh/2 では破れる（係数の外部検証）。
+    # 後者は **敵対的な摂動**（各座標 ±ε）でのみ露出する——ランダムなガウス摂動は
+    # 最悪ケースから遠く、そこだけ見ると誤って「1/2 でも足りる」と結論しかねない。
+    _ok78 = True
+    for _T in (0.2, 1.0, 4.0):
+        _tv = _tv78(_z78, _b78, _T)
+        _bd = _tvb78(_se78(_z78, _b78), _T)
+        _ok78 = _ok78 and bool((_tv <= _bd + 1e-12).all())
+    _half78 = False
+    for _eps78 in (0.1, 1.0, 3.0):
+        _adv78 = _z78 + np.random.default_rng(7).choice([-_eps78, _eps78], size=_z78.shape)
+        for _T in (0.5, 1.0):
+            _tva = _tv78(_z78, _adv78, _T)
+            _bda = _tvb78(_se78(_z78, _adv78), _T)
+            _ok78 = _ok78 and bool((_tva <= _bda + 1e-12).all())
+            _half78 = _half78 or bool((_tva > _bda / 2).any())
+    check("tanh(eps/T) bounds sampling TV globally and the 1/2-coefficient form breaks (A-9)",
+          _ok78 and _half78)
+    check("sampling epsilon is shift-invariant but scale-sensitive (residual/total both wrong)",
+          float(_se78(_z78, _z78 + 3.0).max()) < 1e-9          # 純 shift → ε=0
+          and float(_tv78(_z78, _z78 + 3.0, 1.0).max()) < 1e-12  # 実際 TV も 0
+          and _drms78(_z78, _z78 + 3.0) > 2.9                  # total は大＝偽BLOCK
+          and float(_se78(_z78, 1.1 * _z78).min()) > 0.01      # 純 scale → ε>0
+          and float(_tv78(_z78, 1.1 * _z78, 1.0).mean()) > 0.01  # 実際 TV も非ゼロ
+          and _res78(_z78, 1.1 * _z78) < 1e-9)                 # residual は ≈0＝偽OK
+    # T→0 で TV 平均が argmax フリップ率に一致する（サンプリング層は decision 層の一般化）
+    _greedy78 = _fr78(_z78, _b78)
+    _cold78 = _ct78(_z78, _b78, task="sampling", temperature=0.01).flip_rate
+    check("sampling flip rate converges to the argmax flip rate as T->0 (layer continuity)",
+          _greedy78 > 0.005 and abs(_cold78 - _greedy78) <= 0.1 * _greedy78)
+
+    # 79. facade: audit_runtime(task="sampling") が実測 TV と worst-case 上界を報告し、
+    #     低温で上界が無情報になることを自ら申告する（額面通り BLOCK に使わせない）。
+    from tsugi.audit import audit_runtime as _ar79
+
+    _ad79 = _ar79(_z78, _b78, 256, logits_a=_z78, logits_b=_b78, task="sampling",
+                  task_kwargs={"temperature": 0.02}, flip_budget=0.01)
+    _dp79 = next((p for p in _ad79.phases if "sampling" in p.name), None)
+    _txt79 = _dp79.to_text() if _dp79 is not None else ""
+    check("audit_runtime(task=sampling) reports measured TV and flags a vacuous bound (A-9)",
+          _dp79 is not None and "実測 TV" in _txt79 and "tanh" in _txt79
+          and "無情報" in _txt79)
 
 
 def main() -> int:
