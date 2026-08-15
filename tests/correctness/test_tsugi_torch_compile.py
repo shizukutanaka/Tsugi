@@ -97,8 +97,13 @@ def test_tsugi_compile_no_nondeterminism_tag_for_deterministic_graph():
 
 
 def test_tsugi_compile_warns_about_normalization_layers():
-    """正規化層（LayerNorm/RMSNorm）を含むグラフでは、model_divergence が
-    scale リセット効果を未考慮の保守的な上界であることを警告に明示する（FEATURE-AUDIT.md A-5）。
+    """正規化層を含むグラフでは、RMSNorm の中立性と LayerNorm の増幅を警告に明示する。
+
+    旧警告は「model_divergence は scale リセット未考慮の保守的な上界（実際の発散は
+    これより小さい可能性）」と *無条件に* 主張していたが、A-5 の数値実験でこれが
+    誤りと判明した——LayerNorm は平均優勢入力で相対発散を amp≈RMS/σ に増幅する
+    （shift=10 で実測 10.10）。「実際はもっと小さい」は偽OK 方向の未検証主張であり、
+    ユーザーが WARN を過小評価する根拠になるため撤回した（FEATURE-AUDIT.md A-5）。
     """
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
@@ -106,7 +111,10 @@ def test_tsugi_compile_warns_about_normalization_layers():
     assert len(w) == 1
     msg = str(w[0].message)
     assert "has_normalization" in msg, f"正規化層の情報が警告に含まれない: {msg}"
-    assert "保守的な上界" in msg
+    assert "増幅" in msg, f"LayerNorm の増幅が警告に含まれない: {msg}"
+    # 撤回した偽OK 方向の主張が復活していないこと（文言の回帰防止）
+    assert "小さい可能性" not in msg and "保守的な上界" not in msg, \
+        f"撤回済みの偽OK 主張が警告に復活している: {msg}"
 
     # 正規化層の無いグラフにはこのタグが付かない
     with warnings.catch_warnings(record=True) as w2:

@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-73: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-77: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1299,10 +1299,11 @@ def _check_meta_integrity() -> None:
           len(_w58) == 1 and "scatter_add" in str(_w58[0].message)
           and "noise floor" in str(_w58[0].message))
 
-    # 59. audit_fx/_tsugi_compile が正規化層（LayerNorm/RMSNorm）を検出し、
-    # model_divergence が scale リセット効果を未考慮の保守的な上界であることを警告する
-    # （FEATURE-AUDIT.md A-5）。恣意的な減衰係数の導入でなく、既知の過大評価バイアスを
-    # 隠さず可視化する fail-safe な選択。
+    # 59. audit_fx/_tsugi_compile が正規化層（LayerNorm/RMSNorm）を検出し、警告に出す
+    # （FEATURE-AUDIT.md A-5）。当初は「scale リセット未考慮の保守的な上界」という
+    # 但し書きだったが、数値実験で LayerNorm は平均優勢入力で *増幅* すると判明したため
+    # 文言を撤回した（不変条件 77 が新文言と旧主張の非復活を固定する）。検出フラグ自体は
+    # 可視化として維持。
     from tsugi_torch.fxbridge import audit_fx as _afx59
     _gm_norm59 = _GM58([
         _Node58("placeholder", "x"),
@@ -1660,6 +1661,74 @@ def _check_meta_integrity() -> None:
           and _cs75(np.zeros(0), 256).required == float("inf")   # 標本ゼロは校正済み扱いしない
           and np.allclose(_pd75(_st75), 6.0)                     # 対の差 2d（中心偏差 d の 2 倍）
           and _pd75(_st75[:1]).size == 0)
+
+    # 76. 正規化層の相対発散増幅を *数値実験で検証してから* モデルへ入れた（A-5）。
+    #     LayerNorm y=(x−μ)/√(σ²+eps) のヤコビアン J=(1/√(σ²+eps))(I−11ᵀ/d−ŷŷᵀ/d) は
+    #     平均方向と半径（スケール）方向の 2 特異値が消える。ゆえに (a) x に平行な摂動は
+    #     出力を変えず、(b) 独立方向の摂動は RMS/√(σ²+eps) 倍まで増幅されうる。
+    #     旧実装は正規化を reduce に写し amp≈1 としており、平均優勢入力で増幅を
+    #     見逃していた（偽OK）。RMSNorm は J=(1/r)(I−ŷŷᵀ) で増幅 ≤1 が無条件に成り立つが、
+    #     1 未満の減衰係数は未検証ゆえ入れず amp=1.0 に固定する（保守側）。
+    from tsugi.propagation import GraphOp as _GO76
+    from tsugi.propagation import amplification as _amp76
+    from tsugi.propagation import empirical_cond as _ec76
+    from tsugi.propagation import is_amplifier as _ia76
+
+    def _ln76(x, eps=1e-5):
+        return (x - x.mean(-1, keepdims=True)) / np.sqrt(x.var(-1, keepdims=True) + eps)
+
+    def _measamp76(x, delta):
+        d_in = np.sqrt(np.mean(delta ** 2)) / np.sqrt(np.mean(x ** 2))
+        y, y2 = _ln76(x), _ln76(x + delta)
+        return (np.sqrt(np.mean((y2 - y) ** 2)) / np.sqrt(np.mean(y ** 2))) / d_in
+
+    _x76 = np.random.default_rng(0).standard_normal((32, 512)) + 10.0
+    _mag76 = 1e-4 * np.sqrt(np.mean(_x76 ** 2))
+    _generic76 = _measamp76(_x76, _mag76 * np.random.default_rng(9).standard_normal(_x76.shape))
+    _bound76 = _ec76(_x76, "layer_norm")
+    _zero76 = np.random.default_rng(1).standard_normal((32, 512))
+    check("layer_norm amplifies and rms_norm neither amplifies nor damps (A-5)",
+          _ia76("layer_norm") and not _ia76("rms_norm")
+          and _amp76(_GO76("rms_norm", cond=100.0)) == 1.0      # 減衰係数も入れない
+          and _amp76(_GO76("layer_norm", cond=7.0)) == 7.0)
+    check("empirical_cond(layer_norm)=max RMS/sqrt(var+eps) bounds measured amplification",
+          _generic76 > 2.0 and _generic76 <= _bound76 * 1.05      # 増幅は実在し上界内
+          and _bound76 > 5.0 and _ec76(_zero76, "layer_norm") < 2.0)
+    check("LayerNorm Jacobian nullspace (scale/mean directions) is annihilated as predicted",
+          _measamp76(_x76, 1e-4 * _x76) < 0.01                     # スケール方向
+          and _measamp76(_x76, np.full_like(_x76, _mag76)) < 0.01)  # 平均方向
+
+    # 77. torch 経路: 正規化は専用 kind に写り（mean/sum/var は reduce 据置）、平均優勢
+    #     sample の実測 cond が model_divergence を引き上げる。旧警告の「実際の発散は
+    #     これより小さい可能性」（無条件の偽OK 主張）が復活していないことも固定する。
+    from tsugi_torch.fxbridge import audit_fx as _afx77
+    from tsugi_torch.fxbridge import fx_to_graph_ops as _f2g77
+
+    def _gm77(target):
+        return _GM58([
+            _Node58("placeholder", "x"),
+            _Node58("call_function", "aten.addmm.default", (8, 512)),
+            _Node58("call_function", target),
+            _Node58("output", "output"),
+        ])
+
+    _rng77 = np.random.default_rng(0)
+    _hot77 = _afx77(_gm77("aten.native_layer_norm.default"),
+                    sample=_rng77.standard_normal((32, 512)) * 0.1 + 5.0)
+    _static77 = _afx77(_gm77("aten.native_layer_norm.default"))["model_divergence"]
+    with _warnings58.catch_warnings(record=True) as _w77:
+        _warnings58.simplefilter("always")
+        _compile58(_gm77("aten.native_layer_norm.default"), [])
+    check("fx maps norm ops to dedicated kinds (mean/sum stay reduce)",
+          [o.kind for o in _f2g77(_gm77("aten.native_layer_norm.default"))]
+          == ["matmul", "layer_norm"]
+          and [o.kind for o in _f2g77(_gm77("aten._rms_norm.default"))]
+          == ["matmul", "rms_norm"]                       # 判定順序（rms が先）を固定
+          and [o.kind for o in _f2g77(_gm77("aten.mean.dim"))] == ["matmul", "reduce"])
+    check("mean-dominated sample raises model_divergence and the false-OK claim is retracted",
+          _hot77["model_divergence"] > _static77 * 3 and "layer_norm" in _hot77["amplifiers"]
+          and len(_w77) == 1 and "増幅" in str(_w77[0].message)
+          and "小さい可能性" not in str(_w77[0].message))
 
 
 def main() -> int:

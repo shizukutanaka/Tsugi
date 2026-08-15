@@ -17,6 +17,7 @@ import numpy as np  # noqa: E402
 from tsugi.equivalence import simulate_vendor_matmul  # noqa: E402
 from tsugi.propagation import (  # noqa: E402
     GraphOp,
+    amplification,
     empirical_cond,
     is_amplifier,
     merge_divergence,
@@ -183,8 +184,11 @@ def test_dag_branch_merge_bounds_measured_divergence_numpy():
 
 
 def test_only_genuine_relative_amplifiers():
-    # 相対誤差を増幅するのは reduce/softmax/exp のみ。div/reciprocal/add は相対 ~1。
+    # 相対誤差を増幅するのは reduce/softmax/exp/layer_norm。div/reciprocal/add は相対 ~1。
+    # layer_norm は平均優勢入力で amp≈RMS/σ に増幅（A-5 の数値実験で検証）。
+    # rms_norm は無条件安定（≤1）だが 1 未満の減衰係数は入れないので非増幅・amp=1 固定。
     assert is_amplifier("reduce") and is_amplifier("exp") and is_amplifier("softmax")
+    assert is_amplifier("layer_norm") and not is_amplifier("rms_norm")
     assert not is_amplifier("div") and not is_amplifier("reciprocal")
     assert not is_amplifier("add") and not is_amplifier("matmul")
 
@@ -255,6 +259,156 @@ def test_depth_amplification_is_stable_across_seeds():
         f"{ratios[0]:.0f}-{ratios[-1]:.0f}")
 
 
+# --- A-5: 正規化層の相対発散増幅（数値実験で検証してから導入） ---
+
+def _layernorm(x, eps=1e-5):
+    """実 LayerNorm（torch.nn.LayerNorm と同じ式・eps 既定値も同じ 1e-5）。"""
+    mu = x.mean(axis=-1, keepdims=True)
+    var = x.var(axis=-1, keepdims=True)
+    return (x - mu) / np.sqrt(var + eps)
+
+
+def _measured_norm_amp(norm_fn, x, seed=0, rel=1e-4, delta=None):
+    """norm_fn を通した相対 RMS 発散の増幅率を実測する（δ_out/δ_in）。
+
+    摂動の seed は入力 x の seed と **独立** でなければならない（+1000 のずらし）。
+    同一 seed だと摂動が x の雑音成分と厳密に平行になり、LayerNorm がそれを完全に
+    消してしまう（amp≈0）——スケール方向と平均方向は LN ヤコビアンの *零空間* だから。
+    その落とし穴自体は test_layer_norm_jacobian_nullspace_is_annihilated で資産化した。
+    delta を明示すれば任意方向の摂動を注入できる（零空間の実証に使う）。
+    """
+    rng = np.random.default_rng(seed + 1000)
+    if delta is None:
+        delta = rel * rng.standard_normal(x.shape) * np.sqrt(np.mean(x ** 2))
+    d_in = np.sqrt(np.mean(delta ** 2)) / np.sqrt(np.mean(x ** 2))
+    y, y2 = norm_fn(x), norm_fn(x + delta)
+    d_out = np.sqrt(np.mean((y2 - y) ** 2)) / np.sqrt(np.mean(y ** 2))
+    return d_out / d_in
+
+
+def test_layer_norm_amplification_matches_jacobian_bound():
+    """LayerNorm は平均優勢入力で相対発散を増幅し、RMS/√(σ²+eps) がそれを上界する。
+
+    理論: y=(x−μ)/√(σ²+eps) のヤコビアンは J=(1/√(σ²+eps))(I−11ᵀ/d−ŷŷᵀ/d)——
+    2 方向（平均・半径）の特異値が消え、最大特異値は 1/√(σ²+eps)。相対 RMS 増幅は
+    δ_out/δ_in ≤ RMS(x)/√(σ²+eps) = 1/√(1−(μ/RMS)²) （eps→0）。零平均なら ≈1、
+    平均優勢（μ/RMS→1）なら ≫1。旧モデル（norm→reduce・amp 実質 1）はこの増幅を
+    見逃す偽OK だった——shift=10 で実測 amp≈10 に対し旧 cond≈1。
+    """
+    for shift in (0.0, 1.0, 3.0, 10.0):
+        for seed in range(5):
+            rng = np.random.default_rng(seed)
+            x = rng.standard_normal((32, 512)) + shift
+            meas = _measured_norm_amp(_layernorm, x, seed=seed)
+            bound = empirical_cond(x, "layer_norm")
+            assert meas <= bound * 1.05, \
+                f"shift={shift} seed={seed}: 実測 {meas:.2f} > 上界 {bound:.2f}"
+    # 増幅が実在する（旧 amp=1 が偽OK だった証拠）と、境界の挙動を固定
+    x0 = np.random.default_rng(0).standard_normal((32, 512))
+    x10 = x0 + 10.0
+    assert empirical_cond(x0, "layer_norm") < 2.0          # 零平均: 増幅なし
+    assert empirical_cond(x10, "layer_norm") > 5.0         # 平均優勢: 強い増幅
+    assert _measured_norm_amp(_layernorm, x10) > 2.0       # 実測でも増幅が起きている
+
+
+def test_layer_norm_jacobian_nullspace_is_annihilated():
+    """LayerNorm ヤコビアンの 2 消失特異値を実測で示す（理論の直接検証）。
+
+    J=(1/√(σ²+eps))(I−11ᵀ/d−ŷŷᵀ/d) は「平均方向（1）」と「半径＝スケール方向（ŷ）」の
+    2 つを射影で落とす。よって **x に平行な摂動**（スケール変化）と **定数ベクトルの摂動**
+    （平均シフト）は出力を一切変えない: LN((1+c)x + b·1) = LN(x)。
+    一方、独立方向の摂動は RMS/σ 倍に増幅される。同じ x・同じ大きさの摂動でも
+    「向き」で増幅が 0 倍にも 10 倍にもなる——増幅は入力の大きさだけでなく
+    摂動の方向にも依存する（このテストは実際に踏んだ落とし穴の資産化）。
+    """
+    rng = np.random.default_rng(0)
+    x = rng.standard_normal((32, 512)) + 10.0
+    mag = 1e-4 * np.sqrt(np.mean(x ** 2))
+
+    # (1) スケール方向（x に平行）→ 消える
+    parallel = 1e-4 * x
+    assert _measured_norm_amp(_layernorm, x, delta=parallel) < 0.01
+    # (2) 平均方向（定数ベクトル）→ 消える
+    mean_shift = np.full_like(x, mag)
+    assert _measured_norm_amp(_layernorm, x, delta=mean_shift) < 0.01
+    # (3) 独立方向 → RMS/σ 倍に増幅（上界の内側）
+    generic = _measured_norm_amp(_layernorm, x)
+    assert generic > 2.0
+    assert generic <= empirical_cond(x, "layer_norm") * 1.05
+
+
+def test_rms_norm_unconditional_stability_measured():
+    """RMSNorm の相対増幅は無条件に ≤1（実測）——だが減衰係数(<1)は入れず amp=1 固定。
+
+    J=(1/r)(I−ŷŷᵀ) は半径方向のみを落とす射影×縮小で、相対 RMS 増幅は厳密に ≤1
+    （文献: unconditional forward stability・docs/SOURCES.md）。平均優勢入力でも
+    増幅しない点が LayerNorm と決定的に違う（μ を引かないので σ でなく RMS で割る）。
+    1 未満の係数を入れないのは未検証係数の禁止（設計ガードレール 2）——amp=1.0 は
+    実測 ≤1 を決して過小評価しない保守側。
+    """
+    def rmsnorm(x, eps=1e-6):
+        return x / (np.sqrt(np.mean(x ** 2, axis=-1, keepdims=True)) + eps)
+
+    for shift in (0.0, 3.0, 100.0):
+        for seed in range(5):
+            rng = np.random.default_rng(seed)
+            x = rng.standard_normal((32, 512)) + shift
+            assert _measured_norm_amp(rmsnorm, x, seed=seed) <= 1.05
+    # モデル側: rms_norm は増幅も減衰もしない（cond を与えても厳密に 1.0）
+    assert amplification(GraphOp("rms_norm", cond=100.0)) == 1.0
+    assert amplification(GraphOp("layer_norm", cond=7.0)) == 7.0
+    assert empirical_cond(np.zeros((4, 8)), "rms_norm") == 1.0
+
+
+def test_empirical_cond_layer_norm_statistic():
+    """layer_norm の cond は行ごとの RMS/√(σ²+eps) の max（median だと外れ行で偽OK）。"""
+    rng = np.random.default_rng(0)
+    zero_mean = rng.standard_normal((32, 512))
+    assert empirical_cond(zero_mean, "layer_norm") < 2.0
+    assert empirical_cond(zero_mean + 10.0, "layer_norm") > 5.0
+    # 外れ行 1 本（massive activation 型）: 零平均 31 行 + 平均優勢 1 行。
+    # median なら <2 に埋もれるが max は外れ行を反映する（偽OK 封じ）。
+    mixed = zero_mean.copy()
+    mixed[7] += 10.0
+    rms = np.sqrt(np.mean(mixed ** 2, axis=-1))
+    sd = np.sqrt(np.maximum(mixed.var(axis=-1), 0.0) + 1e-5)
+    assert float(np.median(rms / sd)) < 2.0        # median は隠す
+    assert empirical_cond(mixed, "layer_norm") > 5.0   # max は捕まえる
+    # 定数行でも有限（eps ガード・inf/nan を出さない）
+    const = np.full((4, 64), 7.0)
+    c = empirical_cond(const, "layer_norm")
+    assert np.isfinite(c) and c > 100.0            # 近定数行は強増幅として報告（保守側）
+
+
+def test_layer_norm_model_prediction_bounds_measured_divergence_numpy():
+    """matmul→LayerNorm 連鎖で「実測 cond 込みの予測 ≥ 実測発散」を両レジームで固定。
+
+    偽OK ピン（受け入れ基準）: 平均優勢側は旧 reduce-cond≈1 で予測が実測を下回っていた
+    （このテストを旧写像で走らせると赤）。零平均側は逆に旧 cond が ~20-30 に爆発して
+    いた——新統計で予測は下がるが、それでも実測を上界することをここで保証する
+    （下がっても偽OK にならないことの機械的な証拠）。
+    """
+    def chain(shift, L=4, n=32, K=64, seed=0):
+        rng = np.random.default_rng(seed)
+        x = (rng.standard_normal((n, K)) + shift).astype(np.float16)
+        a = b = x
+        for i in range(L):
+            w = (rng.standard_normal((K, K)) / np.sqrt(K)).astype(np.float16)
+            a = _layernorm(simulate_vendor_matmul(a.astype(np.float16), w, accum="f32"))
+            b = _layernorm(simulate_vendor_matmul(b.astype(np.float16), w,
+                                                  accum="f32", split_k=8))
+        af, bf = a.astype(np.float64), b.astype(np.float64)
+        meas = float(np.linalg.norm(af - bf) / (np.linalg.norm(af) + 1e-30))
+        cond = empirical_cond(np.asarray(x, dtype=np.float64), "layer_norm")
+        ops = [GraphOp("matmul", K=K), GraphOp("layer_norm", cond=cond)] * L
+        return model_tolerance(ops), meas
+
+    for shift in (0.0, 10.0):
+        pred, meas = chain(shift)
+        assert pred >= meas, \
+            f"shift={shift}: 予測 {pred:.2e} が実測 {meas:.2e} を下回る（偽OK）"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -273,6 +427,11 @@ def main() -> int:
         test_empirical_cond_is_data_driven,
         test_empirical_cond_makes_amplification_fire,
         test_depth_amplification_is_stable_across_seeds,
+        test_layer_norm_amplification_matches_jacobian_bound,
+        test_layer_norm_jacobian_nullspace_is_annihilated,
+        test_rms_norm_unconditional_stability_measured,
+        test_empirical_cond_layer_norm_statistic,
+        test_layer_norm_model_prediction_bounds_measured_divergence_numpy,
     ]
     for t in tests:
         try:

@@ -60,12 +60,13 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             nondet = (f" [non-deterministic: {rep['nondeterministic_ops']} → "
                      "noise floor 実測が必須（静的許容では不十分）]"
                      if rep["requires_noise_floor"] else "")
-            # 正規化層（LayerNorm/RMSNorm）はほぼ scale-invariant で、上流のスケール型
-            # クロスベンダー乖離を実質的にリセットする効果を持つが、propagate() は
-            # これを考慮しない（FEATURE-AUDIT.md A-5）。安全な方向（過大評価）だが、
-            # ユーザーが WARN を額面通り受け取り過剰反応しないよう明示する。
-            norm = (" [has_normalization: model_divergence は正規化層のscaleリセット効果を"
-                   "未考慮の保守的な上界（実際の発散はこれより小さい可能性）]"
+            # 正規化層の扱い（A-5 の数値実験で当初想定が反転）: 旧警告は「実際の発散は
+            # これより小さい可能性」と無条件に主張していたが、LayerNorm は平均優勢入力
+            # （μ/RMS→1）で相対発散を amp≈RMS/σ に *増幅* する——旧文言自体が偽OK を
+            # 誘導する未検証主張だったため撤回。RMSNorm のみ無条件安定（amp=1）。
+            norm = (" [has_normalization: RMSNorm は scale 中立（amp=1・実測検証済み）。"
+                   "LayerNorm は平均優勢入力で相対発散を amp≈RMS/σ に増幅しうる"
+                   "（sample 指定時は実測 cond に反映済み）]"
                    if rep.get("has_normalization") else "")
             # A-3: 代表入力から scale/cond を実測できたなら、その旨と外れチャネルを報告。
             # 実測できていなければ「cond=1 は下界」の但し書きを従来通り残す（暗黙化しない）。
