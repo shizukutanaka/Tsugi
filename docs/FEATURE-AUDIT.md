@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 180/180 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 182/182 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -43,7 +43,7 @@
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
-| A-9 | 不足 | P2 | タスクモデル拡張 | 大部分解消 | Q31(oracle 照合)・**Q32(温度サンプリング=TV 距離)**・**Q22(beam search)** を解消。beam は数値実験で「静的 logit からは証明可能に認証不可」と結論し never-OK 処理（beam≥greedy は経験的下界のみ）。残: Q21(代表 logit のガイド・docs 主体) |
+| A-9 | 不足 | — | タスクモデル拡張 | **解消済み** | Q31(oracle 照合)・Q32(温度サンプリング=TV 距離)・Q22(beam=静的認証不可と結論)・**Q21(代表集合の裾サポート=超過数 k で信頼性を定量化)** をすべて解消。beam の系列レベル decode は実行時活動(別軸) |
 | A-10 | 不足 | — | 検証基盤の構造 | 解消済み | main() 分割（Q34）・乱数境界点検（Q43）・カバレッジ計測（Q38・`coverage_report.py` で関数 93.0%・未実行 op を発見し解消）、すべて解消 |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | — | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 解消済み | 恒等路つき（residual/softmax）＋計算 N 分岐（N≥2・attention ヘッド和/N-ary 合流）を SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 交差辺のある一般 DAG のみ（SP 近似の設計上の限界） |
@@ -272,7 +272,18 @@
      下界の参考値として返しつつ verdict を **決して OK にしない**（`verify.py` 不変条件 80/81）。
      真の beam 認証には系列レベル decode（モデル状態が要る実行時活動）が必要——worstcase/
      attribution が「codegen 後」なのと同型の静的検証の境界。docs/SOURCES.md 参照。
-   - 残: Q21（代表 logit はキャリブレーション集合から、というガイド・docs 主体）。
+   - **Q21（代表 logit のキャリブレーション集合）も解消済み（本ラウンド）——散文でなく
+     定量診断で**: 予測橋は代表集合から `P(margin<2δ)` を推定するが、大マージンばかりの
+     集合は決定境界（near-tie）をほとんど踏まず、near-tie が多い本番のフリップ率を過小評価
+     する（偽OK・実測で予測 4.0% vs 本番 13.6%＝3.4 倍）。この gap は Wilson では閉じない
+     （Wilson は与えられた集合の比率不確実性しか見ない）。`decision.flip_bound_support` が
+     裾サポート＝**超過数 k**（= margin<2δ のサンプル数）を報告する——裾確率の相対不確実性は
+     total n でなく k に支配される（≈1/√k・n 非依存）。極値理論（POT）の安定裾サポート目安
+     30 未満なら「n でなく決定境界近傍のサンプルを増やせ」と促す。判定は変えず（Wilson が
+     既に値を保守化済み）透明化に徹する。audit の橋の従来の散文警告に定量行を追加。
+     `verify.py` 不変条件 82。docs/SOURCES.md「代表集合の裾サポート」節。
+   - **A-9 は Q21/Q22/Q31/Q32 をすべて解消し完全解消**（beam の系列レベル decode のみ
+     実行時活動として別軸に残る）。
 
 10. **[A-10] 検証基盤の構造**: Q34（`verify.py` 単一巨大 main() の関数分割）は解消済み——
     61 セクションをテーマ別の 12 個の `_check_*()` 関数に分割し、`main()` は順に呼ぶだけの
@@ -353,7 +364,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 180 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 182 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---
