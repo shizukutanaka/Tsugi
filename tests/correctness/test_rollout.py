@@ -148,12 +148,86 @@ def test_decode_mode_matches_generation_sampling():
     assert nucleus.flip_rate >= greedy.flip_rate
     assert topk.flip_rate >= greedy.flip_rate
     assert nucleus.survival <= greedy.survival + 1e-12
-    # 未知のデコード方式は弾く
+    # 未知のデコード方式は弾く（beam は既知だが別扱い——下の専用テスト参照）
     try:
-        rollout_from_logits(a, b, target_length=10, decode="beam")
+        rollout_from_logits(a, b, target_length=10, decode="lattice")
         raise AssertionError("unknown decode mode should raise")
     except ValueError:
         pass
+
+
+def test_beam_is_never_certified_from_static_logits():
+    """beam は静的 logit から *証明可能に* 認証できないので verdict を OK にしない（A-9/Q22）。
+
+    数値実験（docs/SOURCES.md）で判明: per-token フリップ率を (1−p)^L で系列へ合成する
+    既存の合成則は beam に不健全。argmax フリップを p にすると beam が過渡的発散を復元する
+    ため survival を過小評価し **偽OK**（実測: L=20 で実 survival が合成の 50〜95 倍）、
+    beam frontier(top-k 集合)フリップを p にすると復元を無視して過度に悲観的（k=16 で
+    p≈0.997・実質全 BLOCK）。beam は各ステップ argmax でなく *累積対数尤度* で仮説を
+    並べ替えるため per-token 独立合成の前提が崩れる。ゆえに greedy 合成を経験的下界の
+    *参考値* として返しつつ、verdict は必ず WARN 以上にする（never OK・fail-safe）。
+    """
+    from tsugi.report import Risk
+
+    # greedy が真に OK（同一 logit・大マージン）でも beam は WARN に格上げされる
+    ident = np.zeros((100, 4), dtype=np.float32)
+    ident[:, 0] = 10.0
+    g_ok = rollout_from_logits(ident, ident.copy(), target_length=8,
+                               decode="greedy", conservative=False)
+    beam_ok = rollout_from_logits(ident, ident.copy(), target_length=8,
+                                  decode="beam", conservative=False)
+    assert g_ok.max_risk == Risk.OK
+    assert beam_ok.max_risk >= Risk.WARN, "beam must never certify OK from static logits"
+    assert any("証明可能に" in f.message for f in beam_ok.findings)
+
+    # 参考値は greedy と同じ flip_rate（beam は経験的にこれ以上に等価・下界）
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal((1500, 80)).astype(np.float32)
+    b = a + 5e-2 * rng.standard_normal(a.shape).astype(np.float32)
+    g = rollout_from_logits(a, b, target_length=64, decode="greedy")
+    beam = rollout_from_logits(a, b, target_length=64, decode="beam", beam_width=8)
+    assert abs(beam.flip_rate - g.flip_rate) < 1e-12
+    assert beam.survival <= g.survival + 1e-12
+
+
+def test_beam_survival_dominates_greedy_survival_numerically():
+    """beam survival ≥ greedy survival を実 beam 探索で実証（beam の冗長性が復元する）。
+
+    beam は幅 k の仮説を保持するので、片方のベンダーで一時的に順位を落とした仮説も
+    beam 内に残れば復元しうる。これが「greedy を beam の下界として使うのは安全側」の
+    根拠であり、同時に「greedy を beam の *認証値* に流用してはいけない」（beam は実際は
+    もっと等価＝greedy は過度に悲観的な参考値にすぎない）理由でもある。
+    自己回帰トイモデル（次トークン logit が直前トークンに依存）で beam≥greedy を固定する。
+    """
+    def _beam(start, trans, k, steps, noise):
+        V = start.shape[0]
+        beams = [([], 0.0)]
+        for t in range(steps):
+            cand = []
+            for toks, sc in beams:
+                prev = toks[-1] if toks else None
+                lp = (start if prev is None else trans[prev]) + noise[t]
+                lp = lp - np.log(np.exp(lp).sum())
+                for v in np.argpartition(-lp, min(k, V - 1))[:min(k, V)]:
+                    cand.append((toks + [int(v)], sc + float(lp[v])))
+            cand.sort(key=lambda x: -x[1])
+            beams = cand[:k]
+        return tuple(beams[0][0])
+
+    rng = np.random.default_rng(0)
+    V, steps, eps, n = 24, 6, 0.6, 120
+    start = rng.standard_normal(V) * 1.5
+    trans = rng.standard_normal((V, V)) * 1.5
+    beam_match = greedy_match = 0
+    for _ in range(n):
+        noise = [rng.standard_normal(V) for _ in range(steps)]
+        na = [z + eps * rng.standard_normal(V) for z in noise]
+        nb = [z + eps * rng.standard_normal(V) for z in noise]
+        beam_match += (_beam(start, trans, 6, steps, na) == _beam(start, trans, 6, steps, nb))
+        greedy_match += (_beam(start, trans, 1, steps, na) == _beam(start, trans, 1, steps, nb))
+    assert beam_match >= greedy_match, (
+        f"beam survival {beam_match / n} < greedy {greedy_match / n}（復元の前提が崩れた）")
+    assert beam_match > greedy_match   # このシードでは厳密に beam のほうが等価
 
 
 def test_upper_bound_properties():
@@ -178,6 +252,8 @@ def main() -> int:
         test_rollout_from_logits_uses_per_token_flip_rate,
         test_zero_observed_flips_is_not_false_confidence,
         test_decode_mode_matches_generation_sampling,
+        test_beam_is_never_certified_from_static_logits,
+        test_beam_survival_dominates_greedy_survival_numerically,
         test_upper_bound_properties,
     ]
     for t in tests:

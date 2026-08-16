@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-79: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-81: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1797,6 +1797,59 @@ def _check_meta_integrity() -> None:
     check("audit_runtime(task=sampling) reports measured TV and flags a vacuous bound (A-9)",
           _dp79 is not None and "実測 TV" in _txt79 and "tanh" in _txt79
           and "無情報" in _txt79)
+
+    # 80. beam 探索は静的な代表 logit から *証明可能に* 認証できない（A-9/Q22）。
+    #     per-token フリップ率を (1−p)^L で合成する既存則は beam に不健全: argmax フリップは
+    #     beam の復元を無視して survival を過小評価（偽OK）、frontier(top-k 集合)フリップは
+    #     過度に悲観的。beam は累積対数尤度で並べ替えるため独立合成の前提が崩れる。
+    #     rollout_from_logits(decode="beam") は greedy を経験的下界の参考値として返しつつ
+    #     verdict を必ず WARN 以上にする（never OK・fail-safe）。
+    from tsugi.report import Risk as _Risk80
+    from tsugi.rollout import rollout_from_logits as _rfl80
+
+    _id80 = np.zeros((100, 4), dtype=np.float64)
+    _id80[:, 0] = 10.0
+    _g80 = _rfl80(_id80, _id80.copy(), 8, decode="greedy", conservative=False)
+    _bm80 = _rfl80(_id80, _id80.copy(), 8, decode="beam", conservative=False)
+    check("beam is never certified OK from static logits (greedy reference, +WARN)",
+          _g80.max_risk == _Risk80.OK and _bm80.max_risk >= _Risk80.WARN
+          and abs(_bm80.flip_rate - _g80.flip_rate) < 1e-12
+          and any("証明可能に" in f.message for f in _bm80.findings))
+
+    # 81. beam survival ≥ greedy survival を実 beam 探索（自己回帰トイモデル）で実証。
+    #     beam は幅 k の仮説を保持し過渡的な順位低下を復元するため、クロスベンダー一致は
+    #     greedy 以上になる。これが「greedy を beam の下界に使うのは安全側」の根拠であり、
+    #     同時に「greedy を beam の *認証値* に流用してはいけない（beam は実際もっと等価）」理由。
+    def _beam81(start, trans, k, steps, noise):
+        V = start.shape[0]
+        beams = [([], 0.0)]
+        for t in range(steps):
+            cand = []
+            for toks, sc in beams:
+                prev = toks[-1] if toks else None
+                lp = (start if prev is None else trans[prev]) + noise[t]
+                lp = lp - np.log(np.exp(lp).sum())
+                for v in np.argpartition(-lp, min(k, V - 1))[:min(k, V)]:
+                    cand.append((toks + [int(v)], sc + float(lp[v])))
+            cand.sort(key=lambda x: -x[1])
+            beams = cand[:k]
+        return tuple(beams[0][0])
+
+    _rng81 = np.random.default_rng(0)
+    _V81, _st81, _eps81, _n81 = 24, 6, 0.6, 120
+    _start81 = _rng81.standard_normal(_V81) * 1.5
+    _trans81 = _rng81.standard_normal((_V81, _V81)) * 1.5
+    _bmatch81 = _gmatch81 = 0
+    for _ in range(_n81):
+        _noise81 = [_rng81.standard_normal(_V81) for _ in range(_st81)]
+        _na81 = [z + _eps81 * _rng81.standard_normal(_V81) for z in _noise81]
+        _nb81 = [z + _eps81 * _rng81.standard_normal(_V81) for z in _noise81]
+        _bmatch81 += (_beam81(_start81, _trans81, 6, _st81, _na81)
+                      == _beam81(_start81, _trans81, 6, _st81, _nb81))
+        _gmatch81 += (_beam81(_start81, _trans81, 1, _st81, _na81)
+                      == _beam81(_start81, _trans81, 1, _st81, _nb81))
+    check("beam survival dominates greedy survival (redundancy recovers divergence)",
+          _bmatch81 >= _gmatch81 and _bmatch81 > _gmatch81)
 
 
 def main() -> int:

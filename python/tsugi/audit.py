@@ -522,6 +522,7 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   logits_oracle=None,
                   flip_budget: float = 0.001, oracle=None, provenance=None,
                   gen_length: int = 0, task: str = "classification",
+                  decode: str = "greedy", beam_width: int = 4,
                   task_kwargs: dict | None = None,
                   layers_a=None, layers_b=None, layers_oracle=None, x0=None,
                   layer_names=None,
@@ -693,6 +694,13 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             rp.lines.append(f"L={gen_length}: survival={rr.survival * 100:.2f}%・"
                             f"safe_len={rr.safe_length}・p≤{p_safe * 100:.3f}%/tok(上側限界)"
                             f"（per-token 許容 ⇏ per-sequence 許容）")
+            if decode == "beam":
+                # beam は静的 logit から証明可能に認証できない（累積対数尤度で並べ替え・
+                # 過渡発散を復元）。greedy を経験的下界の参考値として出しつつ verdict を
+                # 必ず WARN 以上に格上げする（never OK・A-9/Q22・rollout._BEAM_UNCERTIFIABLE）。
+                from .rollout import _BEAM_UNCERTIFIABLE
+                rp.max_risk = max(rp.max_risk, Risk.WARN)
+                rp.lines.append("  [WARN] " + _BEAM_UNCERTIFIABLE.format(k=beam_width))
             ad.phases.append(rp)
 
     # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。
