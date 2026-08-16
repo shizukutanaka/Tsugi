@@ -439,3 +439,44 @@ argmax フリップ率 0.0275。**サンプリング層は decision 層の厳密
 > （verify.py 不変条件 78）。論文の該当補題は検索サマリ由来で一次確認前——
 > **本ライブラリは論文中の数値をハードコードせず**、閉形式の *設計判断* の裏づけとして
 > のみ用い、ε も TV も常に実測から導く。
+
+## beam search の等価性はなぜ静的 logit から合成できないか（A-9/Q22）
+
+> `tsugi.rollout.rollout_from_logits(decode="beam")`。**これは負の結果（できないことの
+> 証拠）を記録する節**——数値実験で 2 つの候補合成則を試し、どちらも不健全と判明した。
+
+**問題**: 温度サンプリング（Q32）は解決したが、beam search は per-token フリップ率を
+`(1−p)^L` で系列へ合成する既存の `rollout` 枠組みに乗らない。beam は各ステップで
+argmax でなく **累積対数尤度** で幅 k の仮説を並べ替えるため、per-token 独立という
+合成の前提が崩れる。
+
+**数値実験（自己回帰トイモデル・次トークン logit が直前トークンに依存）で判明した 2 つの失敗**:
+
+| 合成則 | 挙動 | 誤りの向き |
+|---|---|---|
+| p = argmax フリップ率 | beam が過渡的発散を復元するため survival を過小評価（L=20 で実 survival が合成の **50〜95 倍**） | **偽OK** |
+| p = frontier(top-k 集合)フリップ率 | 復元を無視して過度に悲観的（k=16 で p≈0.997 → 実質全 BLOCK） | 無情報 |
+
+**検証した唯一の頑健な法則**: `beam survival ≥ greedy survival`（全 k/L/ε で成立）。
+beam は幅 k の仮説を保持するので、片ベンダーで一時的に順位を落とした仮説も beam 内に
+残れば復元しうる（冗長性）。ゆえに greedy は beam の **経験的下界** になる——だが
+これは *証明* でなく傾向なので、`decode="beam"` は greedy 合成を参考値として返しつつ
+verdict を **決して OK にしない**（fail-safe・verify.py 不変条件 80/81）。
+
+**帰結**: 真の beam 認証には系列レベルの beam decode（モデル状態が要る実行時活動）が
+必要で、静的な代表 logit の袋からは原理的に不可能。これは worstcase/attribution が
+「codegen 後」なのと同型の、静的検証の設計上の境界。
+
+**文献**:
+- 決定論的 beam と確率的サンプリングの理論的接続（Gumbel-Top-k trick）:
+  Kool, van Hoof, Welling, "Stochastic Beams and Where to Find Them", ICML 2019
+  (arXiv:1903.06059)。beam frontier に Gumbel ノイズを足すとサンプリングになる——
+  beam と sampling が連続体であり、beam の等価性が per-token だけでは決まらない（累積
+  尤度と探索幅に依存する）ことの理論的裏づけ。
+- beam の再現性は trie ベース decode で機械精度まで一致することが報告されている
+  （Efficient Beam Search for LLMs Using Trie-Based Decoding, arXiv:2502.00085）——
+  beam 出力はベンダー間の *実装差* に敏感で、単純な per-token 合成では捉えられない。
+
+> 出典の確度: 2 つの失敗と beam≥greedy の法則は本リポジトリの数値実験で機械検証済み
+> （不変条件 80/81・自己回帰トイモデル）。文献は beam と sampling の理論的接続を裏づける
+> ものとして参照し、**具体値はハードコードしない**。

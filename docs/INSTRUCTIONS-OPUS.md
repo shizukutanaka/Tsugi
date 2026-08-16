@@ -56,19 +56,17 @@ Fable ほどの重さは不要な中間層）。会話履歴に依存せず、�
   「その関数が前提にしている不変性」が新しい用途でも成り立つかを確かめること**。
 - 詳細は `PERSPECTIVE-task-equivalence.md` 追補・`SOURCES.md`「サンプリング下の分布一致」節。
 
-### 6. A-9 残: beam search（Q22・次の担当分）
-- **現状**: `rollout._per_token_flips` は greedy/topk/nucleus をサポートするが
-  `decode="beam"` は `ValueError`。beam 探索の等価性は未対応。
-- **やること**: beam は「上位 k 仮説集合が変わるか」なので、既存
-  `decision.ranking_flip_rate`（top-k 集合変化）と `rollout.sequence_survival`（系列合成）の
-  再利用が主。**新規の数学は薄いが、`decode="beam"` が ValueError を送出することを固定した
-  負のテスト `tests/correctness/test_rollout.py:153` を意図的に壊す変更**になるため、
-  そのテストの書き換えとセットで 1 ラウンドとする。
-- **注意**: beam は per-step の貪欲選択でなく *累積対数尤度* で仮説を並べる。ゆえに per-token
-  フリップ率の単純合成（`(1-p)^L`）が妥当かは自明でない——**合成則を数値実験で確かめてから
-  入れる**（A-5/A-9 の先例）。ビーム幅 k と系列長 L の両方でスケールを確認すること。
-- **受け入れ基準**: 予測した系列レベルの不一致率が実測（多 seed の beam 実行）を下回らないこと。
-  ビーム幅 k=1 で既存の greedy 経路に一致することも固定（連続性・T→0 と同型の検査）。
+### 6. ✅ A-9/Q22: beam search（完了・「静的には認証不可」と結論）
+- **数値実験の結論**: per-token フリップ率の `(1−p)^L` 合成は beam に不健全。argmax フリップ→
+  復元を無視して偽OK（実 survival が合成の 50〜95 倍）、frontier 集合フリップ→過度に悲観的。
+  beam は累積対数尤度で並べ替えるため per-token 独立合成の前提が崩れる。
+- **得られた法則**: `beam survival ≥ greedy survival`（beam の冗長性が過渡的発散を復元・全
+  k/L/ε で実測）。だが証明でなく傾向なので `decode="beam"` は greedy を参考値として返しつつ
+  verdict を never-OK にする（fail-safe）。真の認証は系列レベル decode（実行時）が要る。
+- **教訓（3 つ目のパターン）**: A-5「前提が反転」・Q32「TV で解決」に続き、Q22 は
+  **「静的検証の原理的境界を数値実験で確定し、未解決 TODO を *解決済みの設計判断* に
+  格上げする」**。実装できないことの証拠を残すのも 1 ラウンドの成果。詳細は
+  `PERSPECTIVE-rollout.md` 追補・`SOURCES.md`「beam search の等価性はなぜ…」節。
 
 ### 7. A-9 残: Q21（代表 logit のガイド）
 - `flip_bound_from_divergence`/`tv_bound_from_divergence` は代表 logit 分布に依存するが、
