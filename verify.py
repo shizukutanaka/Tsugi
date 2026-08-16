@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-81: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-82: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1850,6 +1850,50 @@ def _check_meta_integrity() -> None:
                       == _beam81(_start81, _trans81, 1, _st81, _nb81))
     check("beam survival dominates greedy survival (redundancy recovers divergence)",
           _bmatch81 >= _gmatch81 and _bmatch81 > _gmatch81)
+
+    # 82. 予測フリップ率上界の *信頼性* を裾サポート（超過数 k）で定量化する（A-9/Q21）。
+    #     P(margin<2δ) は決定境界近傍の裾確率で、その相対不確実性は total n でなく k に
+    #     支配される（≈1/√k・n 非依存）。Wilson は与えられた集合の比率不確実性を織り込むが、
+    #     集合が本番を代表しているかは問えない —— 大マージンばかりの代表集合は少数の
+    #     near-tie しか含まず、near-tie が多い本番のフリップ率を過小評価する（偽OK）。
+    #     この gap を裾サポート（well_supported=k≥30・極値理論の安定裾目安）が暴く。
+    #     従来の散文「分布シフトで妥当域を外れうる」を定量シグナルに置き換えた。
+    from tsugi.decision import flip_bound_support as _fbs82
+    from tsugi.decision import flip_rate as _fr82
+    from tsugi.decision import predicted_flip_bound as _pfb82
+
+    _r82 = np.random.default_rng(0)
+    _delta82 = 0.05
+    _ref82 = _r82.standard_normal((500, 10)) * 6.0            # 大マージン・境界を踏まない
+    _pa82 = _r82.standard_normal((500, 10)) * 0.3            # 本番: 境界近傍に多い
+    _pb82 = _pa82 + _delta82 * _r82.standard_normal(_pa82.shape)
+    _bound82 = _pfb82(_ref82, _delta82)
+    _true82 = _fr82(_pa82, _pb82)
+    _sup82 = _fbs82(_ref82, _delta82)
+    # 1/√k が n 非依存: 同じ k なら n が桁違いでも rel_uncertainty は同じ
+    def _setk82(k, n):
+        m = np.full(n, 10.0)
+        m[:k] = 0.001
+        return np.stack([m, np.zeros(n)], axis=-1)
+    _u1_82 = _fbs82(_setk82(30, 1000), 0.5)["rel_uncertainty"]
+    _u2_82 = _fbs82(_setk82(30, 100000), 0.5)["rel_uncertainty"]
+    check("flip-bound tail support exposes an unrepresentative calibration set (A-9/Q21)",
+          _true82 > _bound82 * 2.0                            # 偽OK gap を再現
+          and not _sup82["well_supported"]                    # 診断が不足を暴く
+          and _sup82["exceedances"] < _sup82["min_exceedances"]
+          and abs(_u1_82 - 1.0 / (30 ** 0.5)) < 1e-9          # ≈1/√k
+          and abs(_u1_82 - _u2_82) < 1e-9)                    # n 非依存
+
+    # 82b. facade: audit の propagation→decision 橋が裾サポートを定量報告する（配線）。
+    from tsugi.audit import audit as _audit82
+    from tsugi.portcheck import _demo_module as _dm82
+
+    _mod82, _blk82, _cfg82 = _dm82()
+    _ad82 = _audit82(_mod82, _cfg82, block_dims=_blk82,
+                     ref_logits=_r82.standard_normal((300, 10)) * 6.0)
+    _prop82 = next(p for p in _ad82.phases if "propagation" in p.name)
+    check("audit bridge quantifies calibration-set tail support (not just prose)",
+          any("裾サポート" in ln for ln in _prop82.lines))
 
 
 def main() -> int:

@@ -489,6 +489,22 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             prop.lines.append(
                 "  ↑ 仮定: op グラフ相対発散が最終 logit にそのまま乗る（正規化の scale "
                 "リセット・最終射影の条件数・分布シフトで妥当域を外れうる・要再評価）")
+            # Q21: 上の予測の *信頼性* を定量化する（従来は散文の「分布シフトで外れうる」だけ）。
+            # P(margin<2δ) は決定境界近傍の裾確率で、その相対不確実性は total n でなく
+            # 超過数 k（= margin<2δ のサンプル数）に支配される（≈1/√k）。Wilson は与えられた
+            # 集合の比率不確実性を織り込むが、集合が本番を代表しているかは問えない。
+            from .decision import flip_bound_support_from_divergence
+            sup = flip_bound_support_from_divergence(ref_logits, pr.model_divergence)
+            if sup["well_supported"]:
+                prop.lines.append(
+                    f"  裾サポート: near-tie {sup['exceedances']} 件"
+                    f"（相対不確実性 ≈{sup['rel_uncertainty'] * 100:.0f}%・十分）")
+            else:
+                prop.lines.append(
+                    f"  裾サポート不足: near-tie は {sup['exceedances']} 件のみ"
+                    f"（要 ≥{sup['min_exceedances']}・相対不確実性 ≈"
+                    f"{sup['rel_uncertainty'] * 100:.0f}%）→ 予測は外挿寄り。n でなく"
+                    " *決定境界近傍* のサンプルを増やせ（境界を重点サンプリング）")
             # 貪欲デコードだけでは実運用を覆えない（A-9）。同じ静的発散を、温度 T の
             # サンプリング分布の差（全変動距離）の上界へも翻訳する。argmax フリップ率が
             # 「どちらの語を選ぶか」なのに対し、TV は「分布がどれだけ違うか」を測る。

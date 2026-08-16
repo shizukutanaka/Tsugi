@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -177,6 +178,59 @@ def predicted_flip_bound(ref_logits: np.ndarray, delta,
     return flip_rate_upper_bound(k, int(m.size), confidence=confidence)
 
 
+# 代表集合の「近傍サポート」下限。P(margin<2δ) は決定境界近傍（near-tie）の *裾* 確率であり、
+# その推定の相対不確実性は total n でなく **超過数 k（= margin<2δ のサンプル数）** に支配される
+# —— 二項比率の相対標準偏差は ≈1/√k で、n には依らない（k=4→50%・k=30→18%・k=100→10%）。
+# 極値理論（peaks-over-threshold）でも安定な裾推定には超過数 30〜50 以上が要るとされる
+# （Jonathan & Ewans 2013 は GPD 推定に ≥50 を推奨）。ここでは実用的な既定値 30 を採る。
+# docs/SOURCES.md「代表集合の裾サポート」節。
+_MIN_EXCEEDANCES: int = 30
+
+
+def _abs_delta(ref_logits: np.ndarray, rel_divergence: float) -> np.ndarray:
+    """相対発散 δ_rel を per-sample の絶対 logit 発散 δ_abs へ写す（Q19 の fail-safe scale）。
+
+    scale は「グローバル RMS」と「そのサンプル自身の RMS」の大きい方（低スケール多数派に
+    紛れた高スケールサンプルで δ を過小評価しない）。flip_bound_from_divergence /
+    tv_bound_from_divergence / flip_bound_support_from_divergence が共有する単一情報源。
+    """
+    x = np.asarray(ref_logits, dtype=np.float64)
+    global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
+    per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
+    return rel_divergence * np.maximum(global_scale, per_sample_scale)
+
+
+def flip_bound_support(ref_logits: np.ndarray, delta) -> dict:
+    """予測フリップ率上界がどれだけの near-tie サンプルに支えられているかを報告する（Q21）。
+
+    `predicted_flip_bound` は P(margin<2δ) を代表集合から推定するが、その値の信頼性は
+    total n でなく **超過数 k = #{margin<2δ}** に支配される（二項比率の相対不確実性は
+    ≈1/√k・n 非依存）。Wilson 上側限界（predicted_flip_bound が使う）は「k/n の *比率*
+    の不確実性」を織り込むが、**代表集合そのものが本番分布とずれている**場合（本番の方が
+    near-tie が多い等）は捕らえられない —— Wilson は与えられた集合の P(margin<2δ) を忠実に
+    上界するだけで、その集合が本番を代表しているかは問えない。
+
+    本関数は「その予測が決定境界をどれだけ実際に踏んでいるか」を透明化する診断:
+      exceedances: k（margin<2δ のサンプル数）
+      rel_uncertainty: ≈1/√k（k=0 なら inf）
+      well_supported: k ≥ _MIN_EXCEEDANCES（極値理論の安定裾サポート目安）
+    well_supported=False は「代表集合が決定境界を十分に踏んでおらず、予測は外挿寄り。
+    n を増やすのでなく *決定境界近傍のサンプルを増やす*（境界を重点サンプリングする）」の合図。
+    判定は変えない（Wilson が既に値を保守化済み）——過剰警告を避ける透明化に徹する。
+    """
+    m = margin(ref_logits)
+    n = int(m.size)
+    if n == 0:
+        return {"exceedances": 0, "n": 0, "rel_uncertainty": math.inf,
+                "well_supported": False, "min_exceedances": _MIN_EXCEEDANCES}
+    delta_arr = np.broadcast_to(np.asarray(delta, dtype=np.float64), m.shape)
+    k = int(np.count_nonzero(m < 2.0 * delta_arr))
+    return {"exceedances": k, "n": n,
+            "rel_uncertainty": (1.0 / math.sqrt(k)) if k > 0 else math.inf,
+            "well_supported": k >= _MIN_EXCEEDANCES,
+            "min_exceedances": _MIN_EXCEEDANCES}
+
+
 def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
                                confidence: float = 0.95) -> float:
     """*相対* 発散（propagation のモデル発散）を *タスク* フリップ率上界へ翻訳する。
@@ -190,16 +244,20 @@ def flip_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
     「平均的スケール」の見積りになる。低スケールのサンプルが多数を占めるバッチでは、
     その中に混じる少数の高スケールサンプルにとって scale が過小評価され、
     δ_abs = δ_rel·scale も過小評価されて margin<2δ を満たさなくなり、本来検出すべき
-    フリップ風険が見逃される（偽OK方向）。ここでは各サンプルについて「グローバル scale」
+    フリップ風険が見逃される（偽OK方向）。_abs_delta が各サンプルで「グローバル scale」
     と「そのサンプル自身の scale」の大きい方を使い（tolerance.derive_tolerance の
-    max(derived, noise_floor) と同じ保守側に倒すパターン）、どちらの効果が支配的でも
-    δ を過小評価しない per-sample 版にする。
+    max(derived, noise_floor) と同じ保守側に倒すパターン）、δ を過小評価しない。
+
+    予測の *信頼性* は別途 flip_bound_support で問う（代表集合の裾サポート・Q21）。
     """
-    x = np.asarray(ref_logits, dtype=np.float64)
-    global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
-    per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
-    delta = rel_divergence * np.maximum(global_scale, per_sample_scale)
-    return predicted_flip_bound(ref_logits, delta, confidence=confidence)
+    return predicted_flip_bound(ref_logits, _abs_delta(ref_logits, rel_divergence),
+                                confidence=confidence)
+
+
+def flip_bound_support_from_divergence(ref_logits: np.ndarray,
+                                       rel_divergence: float) -> dict:
+    """flip_bound_from_divergence と同じ δ で裾サポートを測る（橋の予測の信頼性・Q21）。"""
+    return flip_bound_support(ref_logits, _abs_delta(ref_logits, rel_divergence))
 
 
 # ── 新視点11: タスク多様性 — argmax ⇏ 全タスク ─────────────────────────────────
@@ -360,10 +418,7 @@ def tv_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
     `flip_bound_from_divergence` の妥当域仮定（audit のレポートに明示）と同系統。
     """
     x = np.asarray(ref_logits, dtype=np.float64)
-    global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
-    per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
-    delta = rel_divergence * np.maximum(global_scale, per_sample_scale)
-    return float(np.max(tv_bound(delta, temperature))) if x.size else 0.0
+    return float(np.max(tv_bound(_abs_delta(x, rel_divergence), temperature))) if x.size else 0.0
 
 
 @dataclass

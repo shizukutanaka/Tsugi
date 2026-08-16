@@ -20,6 +20,8 @@ from tsugi.decision import (  # noqa: E402
     decision_flips,
     decompose_divergence,
     divergence_rms,
+    flip_bound_support,
+    flip_bound_support_from_divergence,
     flip_rate,
     margin,
     nucleus_flip_rate,
@@ -642,6 +644,90 @@ def test_tv_bound_from_divergence_bridges_propagation_to_sampling():
     assert sampling_divergence(z, z + 0.05, temperature=1.0)["eps_max"] < 1e-5
 
 
+# --- A-9/Q21: 代表集合の裾サポート（予測フリップ率上界の信頼性） ---
+
+def test_flip_bound_support_exposes_unrepresentative_calibration_set():
+    """代表集合が決定境界を踏んでいないと予測が偽OK になり、裾サポートがそれを暴く（Q21）。
+
+    Wilson（predicted_flip_bound が使う）は「与えられた集合の P(margin<2δ) の比率不確実性」
+    は織り込むが、**その集合が本番分布を代表しているか**は問えない。大マージンばかりの
+    代表集合は少数の near-tie しか含まず、near-tie が多い本番のフリップ率を過小評価する
+    （偽OK）。この gap は Wilson では閉じない —— 裾サポート（超過数 k）が暴く。
+    """
+    rng = np.random.default_rng(0)
+    delta = 0.05
+    # 代表集合: 大マージン・決定境界をほとんど踏まない
+    ref = rng.standard_normal((500, 10)) * 6.0
+    # 本番: 同じモデルだが入力が境界近傍に多く落ちる
+    prod_a = rng.standard_normal((500, 10)) * 0.3
+    prod_b = prod_a + delta * rng.standard_normal(prod_a.shape)
+
+    bound = predicted_flip_bound(ref, delta)
+    true_flip = flip_rate(prod_a, prod_b)
+    # 問題の再現: 代表集合からの予測が本番フリップ率を過小評価する（偽OK）
+    assert true_flip > bound * 2.0, (
+        f"偽OK gap を再現できていない: 予測 {bound:.3f} vs 本番 {true_flip:.3f}")
+    # 診断がそれを暴く: 裾サポート不足（超過数が閾値未満・相対不確実性が大きい）
+    sup = flip_bound_support(ref, delta)
+    assert not sup["well_supported"]
+    assert sup["exceedances"] < sup["min_exceedances"]
+    assert sup["rel_uncertainty"] > 0.15               # ≈1/√k が無視できない大きさ
+
+    # 境界を十分踏む代表集合なら well_supported（回帰なし）
+    rich = rng.standard_normal((3000, 10)) * 0.3
+    sup_rich = flip_bound_support(rich, delta)
+    assert sup_rich["well_supported"] and sup_rich["exceedances"] >= sup_rich["min_exceedances"]
+
+
+def test_flip_bound_support_relative_uncertainty_tracks_one_over_sqrt_k():
+    """裾推定の相対不確実性は total n でなく超過数 k に支配される（≈1/√k・n 非依存）。"""
+    # 同じ k でも n が桁違いに違っても rel_uncertainty は同じ（k が支配）
+    def _set_with_k_exceedances(k, n, delta=0.5):
+        m = np.full(n, 10.0)          # 全員大マージン
+        m[:k] = 0.5 * delta           # k 件だけ margin<2δ に置く
+        # margin(logits)=top1-top2 を m にするため 2 クラス logit [m, 0] を作る
+        return np.stack([m, np.zeros(n)], axis=-1)
+
+    for k in (4, 30, 100):
+        s_small = flip_bound_support(_set_with_k_exceedances(k, 1000), 0.5)
+        s_large = flip_bound_support(_set_with_k_exceedances(k, 100000), 0.5)
+        assert s_small["exceedances"] == k and s_large["exceedances"] == k
+        # rel_uncertainty ≈ 1/√k, n に依らずほぼ同じ
+        assert abs(s_small["rel_uncertainty"] - 1.0 / np.sqrt(k)) < 1e-9
+        assert abs(s_small["rel_uncertainty"] - s_large["rel_uncertainty"]) < 1e-9
+    # k=0 は inf（外挿しかできない）——全員 margin=100（大）で誰も境界を踏まない
+    far = np.stack([np.full(50, 100.0), np.zeros(50)], axis=-1)
+    assert flip_bound_support(far, 0.01)["rel_uncertainty"] == float("inf")
+
+
+def test_min_exceedances_threshold_is_sensitive_to_its_constant():
+    """定数 _MIN_EXCEEDANCES が well_supported 境界を *実際に* 支配する（Q5 の感度テスト同型）。"""
+    from tsugi.decision import _MIN_EXCEEDANCES
+
+    def _set_with_k(k, n=2000):
+        m = np.full(n, 10.0)
+        m[:k] = 0.001
+        return np.stack([m, np.zeros(n)], axis=-1)
+
+    assert flip_bound_support(_set_with_k(_MIN_EXCEEDANCES), 0.5)["well_supported"]
+    assert not flip_bound_support(_set_with_k(_MIN_EXCEEDANCES - 1), 0.5)["well_supported"]
+
+
+def test_flip_bound_support_from_divergence_matches_bridge_delta():
+    """flip_bound_support_from_divergence は flip_bound_from_divergence と同じ δ を使う（Q21）。"""
+    rng = np.random.default_rng(1)
+    z = rng.standard_normal((1000, 32))
+    # 同じ相対発散で、bound と support が同一の δ（=_abs_delta）に基づくこと
+    from tsugi.decision import _abs_delta
+    d = _abs_delta(z, 0.02)
+    assert np.allclose(
+        flip_bound_support_from_divergence(z, 0.02)["exceedances"],
+        flip_bound_support(z, d)["exceedances"])
+    # 空入力でも壊れない
+    empty = flip_bound_support_from_divergence(np.zeros((0, 4)), 0.02)
+    assert empty["exceedances"] == 0 and not empty["well_supported"]
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -677,6 +763,10 @@ def main() -> int:
         test_tv_bound_reports_itself_vacuous_at_low_temperature,
         test_compare_task_sampling_blocks_high_distribution_divergence,
         test_tv_bound_from_divergence_bridges_propagation_to_sampling,
+        test_flip_bound_support_exposes_unrepresentative_calibration_set,
+        test_flip_bound_support_relative_uncertainty_tracks_one_over_sqrt_k,
+        test_min_exceedances_threshold_is_sensitive_to_its_constant,
+        test_flip_bound_support_from_divergence_matches_bridge_delta,
     ]
     for t in tests:
         try:
