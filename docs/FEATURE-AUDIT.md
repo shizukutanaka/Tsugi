@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 184/184 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 185/185 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -370,7 +370,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 184 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 185 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

@@ -192,23 +192,33 @@ def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> Equ
 _TENSORCORE_MANTISSA_BITS: dict[str, int] = {"ieee": 23, "tf32": 10, "bf16": 7}
 
 
-def truncate_to_tensorcore(x: np.ndarray, precision: str = "ieee") -> np.ndarray:
-    """fp32 入力をテンサーコアの縮小仮数へ丸める（round-to-nearest-even・フォーマット準拠）。
+def truncate_to_tensorcore(x: np.ndarray, precision: str = "ieee",
+                           rounding: str = "rne") -> np.ndarray:
+    """fp32 入力をテンサーコアの縮小仮数へ丸める（フォーマット準拠）。
 
     TF32（10 仮数）/bf16（7 仮数）はテンサーコアが *入力* を丸めてから積和する経路を持つ。
     これは累積順序差とは *別の* クロスベンダー発散源: 相対誤差 ≤ 2^-(仮数+1) で、実測でも
     max rel err が TF32=4.88e-4=2^-11・bf16=3.91e-3=2^-8 とフォーマット定義に一致する。
+
+    rounding: "rne"（round-to-nearest-even・既定・**ゼロ平均**）/ "rtz"（round-toward-zero
+      ＝仮数の切り捨て・**系統的に |値| を縮める＝バイアスあり**）。NVIDIA テンサーコアの
+      丸め挙動は実装定義で、RTZ 系の経路が報告されている（Fasi/Higham/Mikaitis/Pranesh,
+      PeerJ CS 7:e330, 2021）。片ベンダーが RTZ・他方が RNE なら *系統* 発散になり、
+      calibration.check_systematic（RMS 比）が捕まえる（max_abs だけでは見逃す偽OK）。
+      これは入力精度差・累積順序差（どちらもゼロ平均）とは第 3 の質的に異なる発散クラス。
     """
     mant = _TENSORCORE_MANTISSA_BITS.get(precision, 23)
     if mant >= 23:
         return np.asarray(x, dtype=np.float32)
     xi = np.asarray(x, dtype=np.float32).view(np.int32)
     drop = 23 - mant
+    trunc = (xi >> drop) << drop                    # 低位ビット切り捨て = ゼロ方向（RTZ）
+    if rounding == "rtz":
+        return trunc.view(np.float32)               # 仮数を縮める＝|値| が系統的に減る
     half = np.int32(1 << (drop - 1))
     mask = np.int32((1 << drop) - 1)
     rem = xi & mask
-    trunc = (xi >> drop) << drop
-    lsb = (trunc >> drop) & 1                       # RNE: 端数がちょうど半分なら偶数へ
+    lsb = (trunc >> drop) & 1                        # RNE: 端数がちょうど半分なら偶数へ
     roundup = (rem > half) | ((rem == half) & (lsb == 1))
     trunc = trunc + (roundup.astype(np.int32) << drop)
     return trunc.view(np.float32)
@@ -216,20 +226,23 @@ def truncate_to_tensorcore(x: np.ndarray, precision: str = "ieee") -> np.ndarray
 
 def simulate_vendor_matmul(a: np.ndarray, b: np.ndarray, *,
                            accum: str = "f32", split_k: int = 1,
-                           input_precision: str = "ieee") -> np.ndarray:
+                           input_precision: str = "ieee",
+                           input_rounding: str = "rne") -> np.ndarray:
     """異なるベンダーの数値挙動を擬似再現する（CPU・テスト専用）。
 
     accum="f16": fp16 で累積（一部 GPU 経路を模す・誤差大）
     split_k>1: K を分割して部分和を別精度で合算（累積順序差を模す）
     input_precision="tf32"/"bf16": テンサーコアの縮小仮数へ入力を丸めてから積和する
       （NVIDIA TF32 vs AMD IEEE のような *精度ポリシー* 差を模す・累積順序差とは別源）。
+    input_rounding="rtz": 入力仮数を round-toward-zero で丸める（既定 "rne" はゼロ平均だが
+      RTZ は |値| を系統的に縮める＝バイアス源。丸めモード差は第 3 の発散クラス）。
     これは *シミュレーション*。実 GPU の値ではない（主張と実装の一致）。
     """
     M, K = a.shape
     K2, N = b.shape
     assert K == K2
-    af = truncate_to_tensorcore(a, input_precision)
-    bf = truncate_to_tensorcore(b, input_precision)
+    af = truncate_to_tensorcore(a, input_precision, input_rounding)
+    bf = truncate_to_tensorcore(b, input_precision, input_rounding)
     acc_dtype = np.float16 if accum == "f16" else np.float32
     out = np.zeros((M, N), dtype=np.float32)
     step = max(1, K // split_k)

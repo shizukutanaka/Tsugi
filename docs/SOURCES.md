@@ -180,6 +180,25 @@ TF32 非対応。テンサーコアは *入力* を縮小仮数へ丸めてか�
   検証）。テストスイート: github.com/north-numerical-computing/tensor-cores-numerical-behavior。
   本ライブラリの入力精度モデルの外部裏づけ（フォーマット定義部分は一次確認済み・
   ライブラリは仮数ビット数のみ使い論文中の実測値はハードコードしない）。
+### テンサーコア発散の 3 クラス分類（丸めモード差 = 系統発散）
+
+入力仮数の丸め **モード** も発散源になる。テンサーコアの丸め挙動は実装定義で、
+round-toward-zero（RTZ・切り捨て）系の経路が報告されている（Fasi/Higham/Mikaitis/Pranesh,
+PeerJ CS 7:e330, 2021）。片ベンダーが RTZ・他方が RNE なら発散が生じ、その性質は前 2 者と
+質的に異なる。テンサーコア発散は 3 クラスに整理できる:
+
+| クラス | K 依存性 | 統計的性質 | 検出層 |
+|---|---|---|---|
+| 入力精度差（仮数幅・TF32/bf16） | K 非依存 ~u | ゼロ平均 | max_abs（equivalence） |
+| 累積順序差（split-K・atomic） | √K·u | ゼロ平均 | noise floor（nondeterminism） |
+| **丸めモード差（RTZ vs RNE）** | ~u | **系統（一方向）** | **RMS 比（calibration.check_systematic）** |
+
+RTZ は仮数を切り捨てて |値| を系統的に縮めるため RMS 比が 1 を下回る（実測: TF32 仮数で
+RTZ-vs-IEEE の bias ≈ -7e-4 に対し RNE-vs-IEEE は ≈ +3e-6＝ゼロ平均）。max_abs だけの等価
+判定はこの一方向バイアスを見逃しうる（偽OK）が、`check_systematic` が捕まえる —— この
+3 クラスがそれぞれ別の検証層で捕まる設計になっていることを `simulate_vendor_matmul` の
+`input_rounding="rtz"` で再現・機械検証した（verify.py 不変条件 84）。
+
 - **診断**: `precision_policy_hint` は fp32 系の発散が「fp32 累積（√K·u_fp32）では説明できない
   ほど大きいが TF32 入力精度（safety·u_tf32・K 非依存）の範囲内」なら、バグでなく既知の精度
   ポリシー差の *兆候* として拾う（LAYOUT 判定と同系統の良性差検出・magnitude ベースの弱い

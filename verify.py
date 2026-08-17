@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-83: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-84: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1934,6 +1934,34 @@ def _check_meta_integrity() -> None:
     _eqp83 = next(p for p in _ad83.phases if "equivalence" in p.name)
     check("audit_runtime surfaces the TF32 precision-policy hint on fp32 divergence",
           any("精度ポリシー差" in ln for ln in _eqp83.lines))
+
+    # 84. テンサーコアの丸めモード差（RTZ vs RNE）は *系統* 発散＝第 3 の発散クラス。
+    #     入力精度差（~u・K 非依存）と累積順序差（√K·u）はどちらもゼロ平均だが、
+    #     round-toward-zero は仮数を切り捨てて |値| を系統的に縮めるため RMS 比が下がる
+    #     （一方向バイアス）。テンサーコアの丸めは実装定義で RTZ 系が報告される
+    #     （Fasi/Higham/Mikaitis/Pranesh, PeerJ CS 7:e330, 2021）。max_abs だけの等価判定は
+    #     この一方向差を見逃しうるが、calibration.check_systematic（RMS 比）が捕まえる。
+    from tsugi.calibration import check_systematic as _cs84
+    from tsugi.calibration import systematic_divergence as _sd84
+    from tsugi.equivalence import simulate_vendor_matmul as _svm84
+    from tsugi.equivalence import truncate_to_tensorcore as _ttc84
+
+    _r84 = np.random.default_rng(0)
+    _a84 = _r84.standard_normal((64, 2048)).astype(np.float32)
+    _b84 = _r84.standard_normal((2048, 64)).astype(np.float32)
+    _ie84 = _svm84(_a84, _b84)
+    _order84 = abs(_sd84(_ie84, _svm84(_a84, _b84, split_k=8)))
+    _prec84 = abs(_sd84(_ie84, _svm84(_a84, _b84, input_precision="tf32")))
+    _rtz84 = _svm84(_a84, _b84, input_precision="tf32", input_rounding="rtz")
+    _bias84 = _sd84(_ie84, _rtz84)
+    # RTZ 既定回帰なし: input_rounding 未指定 = rne
+    _v84 = _r84.standard_normal(1000).astype(np.float32)
+    check("round-toward-zero is a biased divergence class caught by check_systematic",
+          _bias84 < 0                                          # |値| が縮む（一方向）
+          and abs(_bias84) > 20 * max(_order84, _prec84)       # 他 2 クラスより桁違いに大
+          and not _cs84(_ie84, _rtz84, K=2048, dtype="float32").ok   # RMS 比が検出
+          and np.array_equal(_ttc84(_v84, "tf32"),             # 既定は RNE（後方互換）
+                             _ttc84(_v84, "tf32", "rne")))
 
 
 def main() -> int:

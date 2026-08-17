@@ -334,6 +334,51 @@ def test_precision_policy_hint_discriminates_tf32_from_bug_and_noise():
     assert precision_policy_hint(ieee, tf32, 2048, "float16") is None
 
 
+def test_rounding_mode_is_a_biased_divergence_class_distinct_from_precision_and_order():
+    """丸めモード差（RTZ vs RNE）は *系統* 発散——入力精度差・累積順序差（ゼロ平均）と別クラス。
+
+    テンサーコアの丸め挙動は実装定義で RTZ 系の経路が報告される（Fasi/Higham/Mikaitis/Pranesh,
+    PeerJ CS 7:e330, 2021）。RTZ は仮数を切り捨てて |値| を系統的に縮めるので RMS 比が下がる
+    ＝ calibration.check_systematic が捕まえる。max_abs だけ見る等価判定は、この一方向バイアスを
+    見逃しうる（偽OK）——3 つの発散クラス（入力精度/累積順序/丸めモード）の質的な違いを固定する。
+    """
+    from tsugi.calibration import systematic_divergence
+
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 2048)).astype(np.float32)
+    b = rng.standard_normal((2048, 64)).astype(np.float32)
+    ieee = simulate_vendor_matmul(a, b)                                  # 基準
+    order = simulate_vendor_matmul(a, b, split_k=8)                       # 累積順序差
+    prec = simulate_vendor_matmul(a, b, input_precision="tf32")           # 入力精度差
+    rtz = simulate_vendor_matmul(a, b, input_precision="tf32", input_rounding="rtz")  # 丸めモード差
+
+    bias_order = abs(systematic_divergence(ieee, order))
+    bias_prec = abs(systematic_divergence(ieee, prec))
+    bias_rtz = abs(systematic_divergence(ieee, rtz))
+    # RTZ の系統バイアスは他 2 クラスより桁違いに大きい（一方向・ゼロ平均でない）
+    assert bias_rtz > 20 * bias_order, f"RTZ bias {bias_rtz:.1e} not >> order {bias_order:.1e}"
+    assert bias_rtz > 20 * bias_prec, f"RTZ bias {bias_rtz:.1e} not >> precision {bias_prec:.1e}"
+    # RTZ のバイアスは負（|値| が縮む＝RMS 比 < 1）
+    assert systematic_divergence(ieee, rtz) < 0
+    # check_systematic（RMS 比）が RTZ を系統発散として検出する
+    from tsugi.calibration import check_systematic
+    assert not check_systematic(ieee, rtz, K=2048, dtype="float32").ok
+
+
+def test_rtz_rounding_backward_compatible_default_is_rne():
+    """input_rounding 既定（rne）は従来の truncate_to_tensorcore と完全一致（回帰なし）。"""
+    rng = np.random.default_rng(2)
+    a = rng.standard_normal((32, 512)).astype(np.float32)
+    b = rng.standard_normal((512, 32)).astype(np.float32)
+    assert np.array_equal(
+        simulate_vendor_matmul(a, b, input_precision="tf32"),
+        simulate_vendor_matmul(a, b, input_precision="tf32", input_rounding="rne"))
+    # RTZ は RNE と違う結果（実際に別経路）
+    assert not np.array_equal(
+        simulate_vendor_matmul(a, b, input_precision="tf32", input_rounding="rtz"),
+        simulate_vendor_matmul(a, b, input_precision="tf32", input_rounding="rne"))
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -357,6 +402,8 @@ def main() -> int:
         test_input_precision_divergence_is_flat_in_K_unlike_accumulation,
         test_simulate_vendor_matmul_input_precision_is_backward_compatible,
         test_precision_policy_hint_discriminates_tf32_from_bug_and_noise,
+        test_rounding_mode_is_a_biased_divergence_class_distinct_from_precision_and_order,
+        test_rtz_rounding_backward_compatible_default_is_rne,
     ]
     for t in tests:
         try:
