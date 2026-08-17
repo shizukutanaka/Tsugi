@@ -19,7 +19,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 182/182 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 184/184 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -235,10 +235,16 @@
      test: `test_graph_ops_extracts_three_way_computed_fork`。verify.py 不変条件 68。
    - **残（設計上の限界）**: 交差辺のある一般 DAG（重み共有・cross-attention の往復）は
      series-parallel で表現できないため線形/SP 近似に留まる（`propagate_dag` の設計前提）。
-   - 将来の精緻化候補: `equivalence.simulate_vendor_matmul` は累積順序差のみを模擬する
-     単純モデル。テンサーコアのビット精度（累積幅・truncation/RNE 差）を明示的にモデル化する
-     手法が報告されている（docs/SOURCES.md「確度中」節・一次確認前）——`propagate_dag` の
-     fork/merge 構造が入った後、ノード単位の誤差モデルをこの方向に精緻化する余地がある。
+   - **精緻化（一部実装済み・commit 8a7aa46）**: `equivalence.simulate_vendor_matmul` は
+     従来 累積順序差のみを模擬していたが、テンサーコアの **入力精度**（TF32=10 仮数・
+     bf16=7 仮数）を `truncate_to_tensorcore`＋`input_precision=` で模せるようにした。
+     これは実運用で最も一般的なクロス発散源（NVIDIA TF32 vs AMD IEEE・PyTorch 2.9
+     fp32_precision）で、累積順序差（√K·u）とは **別源**——入力精度発散は K 非依存（~u・
+     数値実験で確認）。`precision_policy_hint` が fp32 の TF32 帯発散を「バグでなく精度
+     ポリシー差」の兆候として `audit_runtime` で診断（LAYOUT 判定と同系統）。一次資料は
+     Fasi/Higham/Mikaitis/Pranesh, PeerJ CS 7:e330 (2021)（docs/SOURCES.md「入力精度…」節・
+     verify.py 不変条件 83）。残: 累積幅そのもの（fp16 vs fp32 accumulate の中間丸め）の
+     ノード単位モデル化は `propagate_dag` の fork/merge と組み合わせる将来課題。
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
@@ -364,7 +370,7 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 182 件**（`verify.py`）と 27 テストファイル・property test
+- **機械検証可能な不変条件 184 件**（`verify.py`）と 27 テストファイル・property test
   （10 性質 × 200 試行）。
 
 ---

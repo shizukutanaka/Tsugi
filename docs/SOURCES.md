@@ -151,10 +151,39 @@ INDISTINGUISHABLE（等価判定が原理的に未定義）。
   「そもそもこの dtype を選んで良いか」という移植性判断であり、数値許容モデルの範囲外。
 
 確度中（検索サマリ由来・一次確認前——将来の精緻化候補として記録のみ）:
-- テンサーコアのビット精度モデル（arXiv 2512.07004、2511.10909 とされる）: クロスベンダー
-  matmul の発散を累積幅＋truncation/RNE 差として決定論的にモデル化できるとする報告。
-  `tsugi.equivalence.simulate_vendor_matmul` の外部裏づけになりうるが、arXiv ID は
-  検索サマリ経由で得たものであり一次確認前（ハードコード前に確認要）。
+- テンサーコアのビット精度モデル（arXiv 2512.07004「Accurate Models of NVIDIA Tensor
+  Cores」、2511.10909 とされる）: クロスベンダー matmul の発散を累積幅＋truncation/RNE 差として
+  決定論的にモデル化できるとする報告。`tsugi.equivalence.simulate_vendor_matmul` の外部裏づけに
+  なりうるが、arXiv ID は検索サマリ経由で得たものであり一次確認前（ハードコード前に確認要）。
+
+### 入力精度（TF32/bf16）のクロス発散モデル — 実装済み（累積順序差とは別源）
+
+> `tsugi.equivalence.truncate_to_tensorcore` / `simulate_vendor_matmul(input_precision=)` /
+> `input_precision_divergence` / `precision_policy_hint`。
+
+従来 `simulate_vendor_matmul` は発散を **累積順序差**（split_k）でしか模せなかったが、実運用で
+最も一般的なクロス発散源は **入力精度ポリシー差**である。NVIDIA は fp32 GEMM を既定で TF32
+（1 符号 + 8 指数 + **10 仮数**）に落としうる（下記 PyTorch 2.9 fp32_precision）が、AMD ROCm は
+TF32 非対応。テンサーコアは *入力* を縮小仮数へ丸めてから積和するため、「同一 fp32 モデル」が
+ベンダー間で ~2⁻¹¹ 相対だけ食い違う。
+
+- **フォーマット定義（発明した係数でない）**: TF32=10 仮数 → 相対丸め ≤ 2⁻¹¹=4.88e-4、
+  bf16=7 仮数 → ≤ 2⁻⁸=3.91e-3。`truncate_to_tensorcore` の RNE 実装が実測でこの上界に一致。
+- **本ラウンドの発見: 入力精度発散は K 非依存（~u）**。入力仮数の丸めは各要素の *相対* 摂動
+  なので、K 個の積を和しても相対発散は ~u のまま **K に依らない**（実測: TF32 で
+  K=256/2048/8192 いずれも相対 ~2.9e-4）。これは累積順序差（各累積ステップの丸めが √K·u で
+  深さとともに増える・Higham & Mary の確率的境界）と **質的に別源**。ゆえに大 K では √K·u の
+  累積項が支配し、TF32 の許容（`dtype="tf32"` の √K·u）は入力精度発散を保守的に覆う。
+- **一次資料**: Fasi, Higham, Mikaitis, Pranesh, "Numerical Behavior of the NVIDIA Tensor
+  Cores", PeerJ Computer Science 7:e330 (2021) —— テンサーコアの中間精度・丸めモード・
+  subnormal 対応・累積順序を実験的に同定した論文（TF32/binary16/bf16/binary64 を Ampere で
+  検証）。テストスイート: github.com/north-numerical-computing/tensor-cores-numerical-behavior。
+  本ライブラリの入力精度モデルの外部裏づけ（フォーマット定義部分は一次確認済み・
+  ライブラリは仮数ビット数のみ使い論文中の実測値はハードコードしない）。
+- **診断**: `precision_policy_hint` は fp32 系の発散が「fp32 累積（√K·u_fp32）では説明できない
+  ほど大きいが TF32 入力精度（safety·u_tf32・K 非依存）の範囲内」なら、バグでなく既知の精度
+  ポリシー差の *兆候* として拾う（LAYOUT 判定と同系統の良性差検出・magnitude ベースの弱い
+  ヒント）。`audit_runtime` に接続済み（verify.py 不変条件 83）。
 - TBIK（arXiv 2511.17826 とされる）: 縮約木トポロジーが一致すれば TP サイズに依らず
   ビット一致するという報告。既存の batch-invariance 節（「タイルが違う＝実効バッチが違う」）
   の一般化に相当しうるが同様に一次確認前。
