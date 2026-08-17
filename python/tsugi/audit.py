@@ -644,6 +644,14 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         if dv == DV_LAYOUT:
             eqp.lines.append("LAYOUT: 値の多重集合は一致 → レイアウト不一致（転置/再タイル）"
                              "の疑い・数値精度バグでなく codegen の整列問題を調査せよ")
+        else:
+            # fp32 系の発散が TF32 入力精度ポリシー差（NVIDIA TF32 vs AMD IEEE）の兆候か
+            # を診断する（バグでない可能性・PyTorch 2.9 fp32_precision）。LAYOUT と同様、
+            # 「発散＝バグ」と決めつける前に既知の良性差を候補に挙げる。
+            from .equivalence import precision_policy_hint
+            hint = precision_policy_hint(af, bf, K, dtype)
+            if hint is not None:
+                eqp.lines.append(hint)
     sysrep = check_systematic(af, bf, K, dtype)
     if not sysrep.ok:
         eqp.max_risk = max(eqp.max_risk, sysrep.max_risk)

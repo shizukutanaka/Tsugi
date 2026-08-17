@@ -17,7 +17,10 @@ from tsugi.equivalence import (  # noqa: E402
     DV_LAYOUT,
     classify_divergence,
     compare,
+    input_precision_divergence,
+    precision_policy_hint,
     simulate_vendor_matmul,
+    truncate_to_tensorcore,
 )
 
 
@@ -258,6 +261,79 @@ def test_mxfp4_catches_real_divergence_but_accepts_quantization_noise():
     assert not rep_div.equivalent, "MXFP4 で真の発散(×10)を見逃した（偽OK）"
 
 
+# --- テンサーコア入力精度（TF32）をクロス発散源としてモデル化（累積順序差とは別源） ---
+
+def test_tensorcore_truncation_matches_format_spec():
+    """TF32/bf16 の入力仮数 truncation の相対誤差がフォーマット定義に一致する。"""
+    rng = np.random.default_rng(0)
+    v = (rng.standard_normal(100000).astype(np.float32) * 10)
+    for prec, mant in (("tf32", 10), ("bf16", 7)):
+        t = truncate_to_tensorcore(v, prec)
+        rel = np.abs((t - v) / v)
+        u = 2.0 ** -(mant + 1)
+        assert rel.max() <= u + 1e-9, f"{prec}: max rel {rel.max():.2e} > u=2^-{mant+1}={u:.2e}"
+        assert rel.max() > u * 0.5     # 実際に丸めている（no-op でない）
+    # ieee は無改変
+    assert np.array_equal(truncate_to_tensorcore(v, "ieee"), v.astype(np.float32))
+
+
+def test_input_precision_divergence_is_flat_in_K_unlike_accumulation():
+    """入力精度発散は K 非依存（~u）——累積順序差（√K·u）と *別源* であることを実証。
+
+    入力仮数の丸めは各要素の相対摂動で、和をとっても相対発散は ~u のまま K に依らない。
+    これは累積順序差（各累積ステップの丸めが √K で増える）と質的に異なる。
+    """
+    rng = np.random.default_rng(0)
+    divs = []
+    for K in (256, 2048, 8192):
+        a = rng.standard_normal((64, K)).astype(np.float32)
+        b = rng.standard_normal((K, 64)).astype(np.float32)
+        ieee = simulate_vendor_matmul(a, b)
+        tf32 = simulate_vendor_matmul(a, b, input_precision="tf32")
+        r = float(np.linalg.norm(tf32 - ieee) / np.linalg.norm(ieee))
+        divs.append(r)
+        assert r <= input_precision_divergence("tf32"), "予測上界を超えた"
+    # K が 32 倍になっても発散はほぼ一定（√K なら 5.6 倍になるはず）
+    assert max(divs) / min(divs) < 1.5, f"K 依存が見える（flat でない）: {divs}"
+    # bf16 は tf32 より大きい（仮数が少ない）
+    a = rng.standard_normal((64, 2048)).astype(np.float32)
+    b = rng.standard_normal((2048, 64)).astype(np.float32)
+    ieee = simulate_vendor_matmul(a, b)
+    d_tf32 = np.linalg.norm(simulate_vendor_matmul(a, b, input_precision="tf32") - ieee)
+    d_bf16 = np.linalg.norm(simulate_vendor_matmul(a, b, input_precision="bf16") - ieee)
+    assert d_bf16 > d_tf32
+
+
+def test_simulate_vendor_matmul_input_precision_is_backward_compatible():
+    """input_precision 既定（ieee）は従来と完全に同一（回帰なし）。"""
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((32, 512)).astype(np.float16)
+    b = rng.standard_normal((512, 32)).astype(np.float16)
+    assert np.array_equal(simulate_vendor_matmul(a, b, accum="f32", split_k=8),
+                          simulate_vendor_matmul(a, b, accum="f32", split_k=8,
+                                                 input_precision="ieee"))
+
+
+def test_precision_policy_hint_discriminates_tf32_from_bug_and_noise():
+    """fp32 の TF32-vs-IEEE 発散だけを兆候として拾い、バグ/ノイズ/非fp32 では黙る。"""
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 2048)).astype(np.float32)
+    b = rng.standard_normal((2048, 64)).astype(np.float32)
+    ieee = simulate_vendor_matmul(a, b)
+    tf32 = simulate_vendor_matmul(a, b, input_precision="tf32")
+    # TF32 精度差 → 兆候を出す
+    assert precision_policy_hint(ieee, tf32, 2048, "float32") is not None
+    # 同一 → 黙る（発散なし）
+    assert precision_policy_hint(ieee, ieee, 2048, "float32") is None
+    # 粗いバグ（1% スケール）→ 黙る（TF32 帯より大きい＝本物の発散）
+    assert precision_policy_hint(ieee, ieee * 1.01, 2048, "float32") is None
+    # fp32 累積順序差のみ（TF32 帯より小さい）→ 黙る
+    accum = simulate_vendor_matmul(a, b, split_k=8)
+    assert precision_policy_hint(ieee, accum, 2048, "float32") is None
+    # 非 fp32 系（fp16）→ そもそも TF32 の話でないので黙る
+    assert precision_policy_hint(ieee, tf32, 2048, "float16") is None
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -277,6 +353,10 @@ def main() -> int:
         test_fp8_e4m3_catches_real_divergence_but_accepts_quantization_noise,
         test_mxfp_tolerance_ordering_matches_mantissa_bits,
         test_mxfp4_catches_real_divergence_but_accepts_quantization_noise,
+        test_tensorcore_truncation_matches_format_spec,
+        test_input_precision_divergence_is_flat_in_K_unlike_accumulation,
+        test_simulate_vendor_matmul_input_precision_is_backward_compatible,
+        test_precision_policy_hint_discriminates_tf32_from_bug_and_noise,
     ]
     for t in tests:
         try:

@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-82: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-83: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1894,6 +1894,46 @@ def _check_meta_integrity() -> None:
     _prop82 = next(p for p in _ad82.phases if "propagation" in p.name)
     check("audit bridge quantifies calibration-set tail support (not just prose)",
           any("裾サポート" in ln for ln in _prop82.lines))
+
+    # 83. テンサーコアの入力精度（TF32/bf16）をクロスベンダー発散源としてモデル化する
+    #     （累積順序差とは *別源*）。NVIDIA は fp32 GEMM を既定で TF32 に落としうる
+    #     （PyTorch 2.9 fp32_precision・FlexAttention の ieee→tf32 回帰）が AMD は TF32 非対応。
+    #     入力仮数 truncation は各要素の相対摂動なので発散は ~u で **K 非依存**（累積は √K·u）。
+    #     precision_policy_hint が fp32 の TF32 帯発散を「バグでなく既知の精度ポリシー差」の
+    #     兆候として拾い（LAYOUT 判定と同系統の良性差検出）、audit_runtime に接続済み。
+    from tsugi.equivalence import input_precision_divergence as _ipd83
+    from tsugi.equivalence import precision_policy_hint as _pph83
+    from tsugi.equivalence import simulate_vendor_matmul as _svm83
+    from tsugi.equivalence import truncate_to_tensorcore as _ttc83
+
+    _r83 = np.random.default_rng(0)
+    _a83 = _r83.standard_normal((64, 2048)).astype(np.float32)
+    _b83 = _r83.standard_normal((2048, 64)).astype(np.float32)
+    _ie83 = _svm83(_a83, _b83)
+    _tf83 = _svm83(_a83, _b83, input_precision="tf32")
+    _rel83 = float(np.linalg.norm(_tf83 - _ie83) / np.linalg.norm(_ie83))
+    # 別の K でも発散はほぼ一定（flat・√K でない）
+    _a83b = _r83.standard_normal((64, 256)).astype(np.float32)
+    _b83b = _r83.standard_normal((256, 64)).astype(np.float32)
+    _rel83b = float(np.linalg.norm(_svm83(_a83b, _b83b, input_precision="tf32")
+                                   - _svm83(_a83b, _b83b))
+                    / np.linalg.norm(_svm83(_a83b, _b83b)))
+    _vtrunc83 = _ttc83(_a83, "tf32")
+    check("tensor-core input precision (TF32) is modeled as a K-independent divergence source",
+          np.abs((_vtrunc83 - _a83) / _a83).max() <= 2.0 ** -11 + 1e-9   # フォーマット定義
+          and _rel83 <= _ipd83("tf32")                                   # 予測上界内
+          and max(_rel83, _rel83b) / min(_rel83, _rel83b) < 1.5          # K 非依存（flat）
+          and _pph83(_ie83, _tf83, 2048, "float32") is not None          # 兆候を拾う
+          and _pph83(_ie83, _ie83 * 1.01, 2048, "float32") is None       # 粗いバグは拾わない
+          and _pph83(_ie83, _tf83, 2048, "float16") is None)             # 非 fp32 は黙る
+
+    # 83b. facade: audit_runtime が fp32 の TF32 帯発散に精度ポリシーヒントを surface する。
+    from tsugi.audit import audit_runtime as _ar83
+
+    _ad83 = _ar83(_ie83, _tf83, 2048, dtype="float32")
+    _eqp83 = next(p for p in _ad83.phases if "equivalence" in p.name)
+    check("audit_runtime surfaces the TF32 precision-policy hint on fp32 divergence",
+          any("精度ポリシー差" in ln for ln in _eqp83.lines))
 
 
 def main() -> int:
