@@ -379,6 +379,50 @@ def test_rtz_rounding_backward_compatible_default_is_rne():
         simulate_vendor_matmul(a, b, input_precision="tf32", input_rounding="rne"))
 
 
+def test_tf32x3_recovers_near_fp32_accuracy_and_is_not_flagged_as_policy_divergence():
+    """3xTF32（Triton input_precision="tf32x3"）は TF32 発散の *緩和策*——fp32 に肉薄する。
+
+    各 fp32 を hi+lo の 2 TF32 成分に分割し a_hi·b_hi + a_hi·b_lo + a_lo·b_hi の 3 項で積む
+    （lo·lo を落とす。Ootomo & Yokota 2022 arXiv:2203.03341・CUTLASS 3xTF32）。残差は
+    ~u_tf32²（~2⁻²²）で、平 TF32（~2⁻¹¹）より桁違いに小さい。よって tf32x3 を選ぶベンダーと
+    IEEE ベンダーの発散は fp32 相当——precision_policy_hint はこれを精度ポリシー差として
+    *拾わない*（fp32 等価だから）。精度ポリシー選択（ieee/tf32/tf32x3）が発散を決める。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((64, 2048)).astype(np.float32)
+    b = rng.standard_normal((2048, 64)).astype(np.float32)
+    ieee = simulate_vendor_matmul(a, b)
+    tf32 = simulate_vendor_matmul(a, b, input_precision="tf32")
+    x3 = simulate_vendor_matmul(a, b, input_precision="tf32x3")
+
+    def rel(x):
+        return float(np.linalg.norm(x - ieee) / np.linalg.norm(ieee))
+
+    # tf32x3 は tf32 より桁違いに正確（誤差補正が効く）
+    assert rel(x3) < rel(tf32) / 50, f"tf32x3 {rel(x3):.1e} not << tf32 {rel(tf32):.1e}"
+    # 予測上界（safety·u_tf32²）内に収まる
+    assert rel(x3) <= input_precision_divergence("tf32x3")
+    # tf32x3 の上界は tf32 の上界より小さい（復元を反映）
+    assert input_precision_divergence("tf32x3") < input_precision_divergence("tf32")
+    # precision_policy_hint: tf32 は拾う・tf32x3 は fp32 等価ゆえ拾わない
+    assert precision_policy_hint(ieee, tf32, 2048, "float32") is not None
+    assert precision_policy_hint(ieee, x3, 2048, "float32") is None
+
+
+def test_tf32x3_backward_compatible_and_distinct_from_tf32():
+    """tf32x3 は既定経路を変えず、tf32 とは別の結果を返す（回帰なし）。"""
+    rng = np.random.default_rng(3)
+    a = rng.standard_normal((32, 512)).astype(np.float32)
+    b = rng.standard_normal((512, 32)).astype(np.float32)
+    # ieee 既定は不変
+    assert np.array_equal(simulate_vendor_matmul(a, b),
+                          simulate_vendor_matmul(a, b, input_precision="ieee"))
+    # tf32x3 は tf32 とも ieee とも違う（3 成分の誤差補正）
+    x3 = simulate_vendor_matmul(a, b, input_precision="tf32x3")
+    assert not np.array_equal(x3, simulate_vendor_matmul(a, b, input_precision="tf32"))
+    assert not np.array_equal(x3, simulate_vendor_matmul(a, b))
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -404,6 +448,8 @@ def main() -> int:
         test_precision_policy_hint_discriminates_tf32_from_bug_and_noise,
         test_rounding_mode_is_a_biased_divergence_class_distinct_from_precision_and_order,
         test_rtz_rounding_backward_compatible_default_is_rne,
+        test_tf32x3_recovers_near_fp32_accuracy_and_is_not_flagged_as_policy_divergence,
+        test_tf32x3_backward_compatible_and_distinct_from_tf32,
     ]
     for t in tests:
         try:

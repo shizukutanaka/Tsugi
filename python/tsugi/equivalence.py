@@ -241,6 +241,20 @@ def simulate_vendor_matmul(a: np.ndarray, b: np.ndarray, *,
     M, K = a.shape
     K2, N = b.shape
     assert K == K2
+    if input_precision == "tf32x3":
+        # 3xTF32（Triton input_precision="tf32x3" / CUTLASS 3xTF32）: 各 fp32 を hi+lo の
+        # 2 TF32 成分に分割し、a_hi·b_hi + a_hi·b_lo + a_lo·b_hi の 3 項で積む（lo·lo は落とす）。
+        # TF32 テンサーコアから ~fp32 精度を復元する誤差補正——TF32 発散の *緩和策* であり、
+        # 精度ポリシー選択（ieee/tf32/tf32x3）の一つ（Ootomo & Yokota 2022, arXiv:2203.03341）。
+        a32 = np.asarray(a, dtype=np.float32)
+        b32 = np.asarray(b, dtype=np.float32)
+        a_hi = truncate_to_tensorcore(a32, "tf32", input_rounding)
+        a_lo = truncate_to_tensorcore(a32 - a_hi, "tf32", input_rounding)
+        b_hi = truncate_to_tensorcore(b32, "tf32", input_rounding)
+        b_lo = truncate_to_tensorcore(b32 - b_hi, "tf32", input_rounding)
+        def _mm(x, y):
+            return simulate_vendor_matmul(x, y, accum=accum, split_k=split_k)
+        return _mm(a_hi, b_hi) + _mm(a_hi, b_lo) + _mm(a_lo, b_hi)
     af = truncate_to_tensorcore(a, input_precision, input_rounding)
     bf = truncate_to_tensorcore(b, input_precision, input_rounding)
     acc_dtype = np.float16 if accum == "f16" else np.float32
@@ -296,5 +310,10 @@ def input_precision_divergence(precision: str, scale: float = 1.0,
     from .constants import SAFETY
     from .tolerance import unit_roundoff
     s = SAFETY if safety is None else safety
+    if precision == "tf32x3":
+        # 3xTF32 は lo·lo 項を落とすので残差は ~u_tf32²（~2⁻²²・fp32 に肉薄）。実測 ~5e-7 を
+        # safety·u_tf32² が保守的に覆う。TF32 発散の緩和策＝精度ポリシー選択の一つ。
+        u = unit_roundoff("tf32")
+        return s * u * u * scale
     return s * unit_roundoff("tf32" if precision == "tf32" else
                              "bfloat16" if precision == "bf16" else "float32") * scale

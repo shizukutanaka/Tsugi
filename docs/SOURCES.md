@@ -180,6 +180,37 @@ TF32 非対応。テンサーコアは *入力* を縮小仮数へ丸めてか�
   検証）。テストスイート: github.com/north-numerical-computing/tensor-cores-numerical-behavior。
   本ライブラリの入力精度モデルの外部裏づけ（フォーマット定義部分は一次確認済み・
   ライブラリは仮数ビット数のみ使い論文中の実測値はハードコードしない）。
+
+### 3xTF32 誤差補正 — TF32 発散の緩和策（関連ソフトウェア）
+
+> `input_precision="tf32x3"`。TF32 の ~2⁻¹¹ 発散は *緩和できる*。これは実運用の重要な事実:
+> ベンダー間発散は精度ポリシーの **選択**（ieee / tf32 / tf32x3）で決まる。
+
+3xTF32（別名 3xTF32・error-corrected TF32）は、各 fp32 を hi+lo の 2 TF32 成分に分割し、
+`a_hi·b_hi + a_hi·b_lo + a_lo·b_hi` の 3 項で積む（lo·lo 項を落とす）。TF32 テンサーコアから
+~fp32 精度を復元する。残差は落とした lo·lo ~ u_tf32²（~2⁻²²）で、実測でも tf32x3-vs-IEEE の
+相対発散 ~5e-7（平 TF32 ~3e-4 の **573 倍小さい**・実効仮数 ~21bit）。
+
+- **関連ソフトウェア**: Triton `tl.dot(input_precision="tf32x3")`（"tf32"/"tf32x3"/"ieee" を選択・
+  triton-lang.org の `triton.language.dot`）、NVIDIA CUTLASS の 3xTF32（"FP32 accuracy with
+  2x Performance"・cutlass discussions #361）。
+- **一次資料**: Ootomo & Yokota, "Recovering single precision accuracy from Tensor Cores
+  while surpassing the FP32 theoretical peak performance", IJHPCA (2022)・arXiv:2203.03341
+  —— Markidis et al. の 3 項誤差補正を改良し、**3 項のうち 1 項（lo·lo）を落として計算量を
+  75% に減らしても精度を保つ**ことを示した（本ライブラリの実装はこの 3 項版に一致）。
+  関連: Fasi, Higham, Lopez, Mary, Mikaitis, "Matrix Multiplication in Multiword Arithmetic"
+  （本 SOURCES 既出の multiword 誤差解析）。
+- **本ライブラリでの帰結**: 精度ポリシー選択がクロス発散を決める。tf32x3 を選ぶベンダーと
+  IEEE ベンダーの発散は fp32 等価（~2⁻²¹）ゆえ `precision_policy_hint` は拾わない（バグでない・
+  精度ポリシー差でもない）。一方 plain tf32 ベンダー vs IEEE は ~2⁻¹¹ で拾う。
+  `input_precision_divergence("tf32x3")` は残差上界 safety·u_tf32²（verify.py 不変条件 85）。
+
+| ベンダー A × ベンダー B | 相対発散の目安 | precision_policy_hint |
+|---|---|---|
+| IEEE × IEEE | ~fp32 累積（√K·u_fp32） | 黙る |
+| tf32 × IEEE | ~2⁻¹¹（K 非依存） | 拾う（tf32 ポリシー差） |
+| **tf32x3 × IEEE** | **~2⁻²¹（fp32 等価）** | **黙る（緩和済み）** |
+
 ### テンサーコア発散の 3 クラス分類（丸めモード差 = 系統発散）
 
 入力仮数の丸め **モード** も発散源になる。テンサーコアの丸め挙動は実装定義で、

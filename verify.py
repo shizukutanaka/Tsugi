@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-84: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-85: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1962,6 +1962,30 @@ def _check_meta_integrity() -> None:
           and not _cs84(_ie84, _rtz84, K=2048, dtype="float32").ok   # RMS 比が検出
           and np.array_equal(_ttc84(_v84, "tf32"),             # 既定は RNE（後方互換）
                              _ttc84(_v84, "tf32", "rne")))
+
+    # 85. 3xTF32（Triton input_precision="tf32x3" / CUTLASS 3xTF32）は TF32 発散の *緩和策*。
+    #     各 fp32 を hi+lo の 2 TF32 成分に分割し 3 項で積む（lo·lo を落とす・Ootomo & Yokota
+    #     2022, arXiv:2203.03341）。残差 ~u_tf32²（~2⁻²²）で平 TF32（~2⁻¹¹）より桁違いに正確。
+    #     精度ポリシー選択（ieee/tf32/tf32x3）が発散を決める——tf32x3 ベンダーと IEEE ベンダーの
+    #     発散は fp32 等価ゆえ precision_policy_hint は拾わない。
+    from tsugi.equivalence import input_precision_divergence as _ipd85
+    from tsugi.equivalence import precision_policy_hint as _pph85
+    from tsugi.equivalence import simulate_vendor_matmul as _svm85
+
+    _r85 = np.random.default_rng(0)
+    _a85 = _r85.standard_normal((64, 2048)).astype(np.float32)
+    _b85 = _r85.standard_normal((2048, 64)).astype(np.float32)
+    _ie85 = _svm85(_a85, _b85)
+    _tf85 = _svm85(_a85, _b85, input_precision="tf32")
+    _x3_85 = _svm85(_a85, _b85, input_precision="tf32x3")
+    def _rel(x):
+        return float(np.linalg.norm(x - _ie85) / np.linalg.norm(_ie85))
+    check("tf32x3 error-correction recovers near-fp32 accuracy (mitigates TF32 divergence)",
+          _rel(_x3_85) < _rel(_tf85) / 50                       # 桁違いに正確
+          and _rel(_x3_85) <= _ipd85("tf32x3")                  # 予測上界内
+          and _ipd85("tf32x3") < _ipd85("tf32")                 # 復元を上界も反映
+          and _pph85(_ie85, _tf85, 2048, "float32") is not None  # tf32 は拾う
+          and _pph85(_ie85, _x3_85, 2048, "float32") is None)    # tf32x3 は fp32 等価ゆえ黙る
 
 
 def main() -> int:
