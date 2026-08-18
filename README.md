@@ -19,15 +19,23 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 
 ## Features
 
-- **1ソース・2ベンダー** — 同じタイルカーネルが NVIDIA(PTX) と AMD(AMDGCN) で動く
-- **torch.compile バックエンド** — `torch.compile(model, backend="tsugi")` で透過利用。codegen 前でも FX グラフに静的検証（propagation）を走らせ増幅 op・モデル発散を warn（検証だけ先に届ける）
-- **Tensorコア抽象** — `tile.dot` が各社行列コア（WMMA/MFMA）へ自動 lowering
-- **autotuning** — タイルサイズ・レイアウトをベンダー別に自動探索
-- **escape-hatch** — 標準 GEMM は cuBLAS/rocBLAS へ委譲（性能優先）
-- **移植性検証** — `tsugi.portability` がクロスベンダー移植リスクを*実行前に*告げる（GPU不要・新視点）
-- **起動可能性検証** — `tsugi.feasibility` が「片方で起動すらしない」構成を*実行前に*BLOCK判定（占有率と別の上流ゲート・新視点3）
-- **数値等価性保証** — `tsugi.equivalence` が両ベンダーの数値発散を検出（Triton にない保証）
+**✅ 今日動く（検証・GPU 不要／`pip install` して `python -m tsugi`・[QUICKSTART](docs/QUICKSTART.md)）**
+
+- **移植性検証** — `tsugi.portability` がクロスベンダー移植リスクを*実行前に*告げる
+- **起動可能性検証** — `tsugi.feasibility` が「片方で起動すらしない」構成を*実行前に*BLOCK判定（占有率と別の上流ゲート）
+- **数値等価性保証** — `tsugi.equivalence` が両ベンダーの数値発散を検出（Triton にない保証。入力精度/累積順序/丸めモード＋TF32 ポリシーまで分類）
 - **占有率推定** — `tsugi.occupancy` が同一構成のベンダー別占有率差を計算
+- **タスク影響・実行時検証** — `tsugi.audit_runtime` が数値発散を判断フリップ率/サンプリング分布差へ翻訳
+- **CI ゲート** — 判定が終了コード契約（OK/INFO=0・WARN=1・BLOCK=2）——そのまま CI 合否に
+
+**🔜 Phase 4（要 LLVM/MLIR + 実機・未実装）**
+
+- **1ソース・2ベンダー codegen** — 同じタイルカーネルを NVIDIA(PTX) / AMD(AMDGCN) へ lowering
+- **torch.compile バックエンド** — `torch.compile(model, backend="tsugi")`（codegen 前でも FX 静的検証は届く）
+- **Tensorコア抽象**（`tile.dot`→WMMA/MFMA）・**autotuning**・**escape-hatch**（cuBLAS/rocBLAS 委譲）
+
+> 完成の線引きは [ASSESSMENT.md](docs/ASSESSMENT.md#プロダクト完成の線引きfirst-principles完成をless-dumbに定義) 参照——
+> **検証器プロダクトは完成（使える・正しい・境界明確）**、codegen は実機を要する別軸。
 - **導出許容誤差** — `tsugi.tolerance` が許容を K・dtype から導出（固定値でなく数学が許す範囲）
 - **合成的等価性** — `tsugi.propagation` が発散を op グラフに沿って伝播しモデルレベルで予測（per-kernel 等価 ⇏ per-model 等価・新視点4）
 - **実行時エンベロープ検査** — `tsugi.envelope` が本番入力の認証前提逸脱（overflow/denormal/scale/logit）を単一ベンダー・oracle 不要で検出（新視点5）
