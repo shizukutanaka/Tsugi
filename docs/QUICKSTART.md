@@ -67,7 +67,18 @@ def make_args():            # 必須: kernel をトレースする引数 tuple �
 python -m tsugi examples/user_kernel.py
 ```
 
-## 5. 実データがあるとき（Python API）
+## 5. Python から 1 行で（CLI と同じ判定）
+
+```python
+import tsugi
+ad = tsugi.verify("my_kernel.py")   # パス or traced module → Audit
+print(ad.exit_code)                 # CI ゲート契約（BLOCK=2）
+print(ad.to_text())                 # 人間可読レポート / ad.to_dict() で JSON
+```
+
+`tsugi.verify()` は `python -m tsugi` の Python 版——`trace()`＋`audit()` を手で繋ぐ必要はない。
+
+## 6. 実データがあるとき（タスク影響まで）
 
 logits やテンソルの実測出力があれば、静的検証を超えてタスク影響まで測れる:
 

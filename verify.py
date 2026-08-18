@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-86: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-87: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2004,6 +2004,21 @@ def _check_meta_integrity() -> None:
     _a86 = _audit86(_mod86, _cfg86, block_dims=_blk86)
     check("CLI exit code follows the OK/WARN/BLOCK gate contract (BLOCK=2, not collapsed)",
           _a86.max_risk.name == "BLOCK" and _rc86 == _a86.exit_code == 2)
+
+    # 87. tsugi.verify() は移植性検証のワンコール入口（CLI の Python 版・簡素化）。
+    #     パス（.py カーネル）と traced module の両方を受け、Audit を返す。手作業の
+    #     trace→audit 連結を 1 コールに畳んだ価値経路——CLI(portcheck)もこれ経由。
+    import tsugi as _tsugi87
+    from tsugi.portcheck import _demo_module as _dm87
+
+    _mod87, _blk87, _cfg87 = _dm87()
+    _ad87 = _tsugi87.verify(_mod87, block_dims=_blk87, cfg=_cfg87)
+    from pathlib import Path as _P87
+    _ex87 = _P87(__file__).resolve().parent / "examples" / "user_kernel.py"
+    _adp87 = _tsugi87.verify(str(_ex87))
+    check("tsugi.verify() one-call facade accepts module and path, returns gated Audit",
+          isinstance(_ad87, _tsugi87.Audit) and _ad87.exit_code == 2
+          and isinstance(_adp87, _tsugi87.Audit) and _adp87.exit_code in (0, 1, 2))
 
 
 def main() -> int:

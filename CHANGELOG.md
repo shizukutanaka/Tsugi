@@ -52,6 +52,10 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
     ハードコードせず**設計判断の裏づけとしてのみ用い、cond は常に実測から導く。
 
 ### Added
+- **`tsugi.verify()` ワンコール入口を追加（プログラム API の簡素化・Musk 第3段階）**:
+  従来 `trace()`＋`audit(module, cfg, block_dims=...)` を手で繋ぐ必要があった価値経路を
+  1 コールに畳んだ。`tsugi.verify("my_kernel.py")` or `tsugi.verify(traced_module)` → `Audit`
+  （`.exit_code` は CI ゲート契約）。CLI(portcheck) もこれ経由に統一（DRY）。verify.py 不変条件 87。
 - **SAFETY 定数の実機校正手続きを実装し実機入口に接続（FEATURE-AUDIT A-2・文献根拠）**:
   問題: `SAFETY=4.0`（`constants.py`）は「4σ 相当」という経験的ヘッドルームで、**一度も
   実機ノイズで校正されていない**。この定数は許容 `atol=SAFETY·√K·u·scale` と検出限界

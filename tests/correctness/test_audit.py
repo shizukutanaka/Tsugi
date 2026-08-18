@@ -834,6 +834,29 @@ def test_audit_cross_vendor_calibrates_safety_from_the_same_runs():
     assert sp2.max_risk >= Risk.WARN and "覆えていない" in sp2.to_text(), sp2.to_text()
 
 
+def test_verify_one_call_facade_accepts_path_and_module():
+    """tsugi.verify() は CLI の Python 版——パス or traced module の 1 コールで Audit を返す。
+
+    従来 trace→audit を手で繋ぐ必要があった価値経路を 1 コールに簡素化（Musk 第3段階）。
+    パス経路と module 経路が同じ判定を返し、Audit.exit_code が CI ゲート契約に従うことを固定。
+    """
+    import tsugi
+    from tsugi.portcheck import _demo_module
+
+    ex = Path(__file__).resolve().parents[2] / "examples" / "user_kernel.py"
+    # (1) パス経路: ファイルをトレースして検証
+    ad_path = tsugi.verify(str(ex))
+    assert isinstance(ad_path, tsugi.Audit)
+    assert ad_path.exit_code in (0, 1, 2)
+    # (2) module 経路: 既に traced な module を直接検証（demo は BLOCK）
+    mod, block, cfg = _demo_module()
+    ad_mod = tsugi.verify(mod, block_dims=block, cfg=cfg)
+    assert ad_mod.exit_code == 2 and ad_mod.max_risk.name == "BLOCK"
+    # audit を直接呼んだ結果と一致（verify は audit の薄い入口）
+    from tsugi.audit import audit
+    assert ad_mod.exit_code == audit(mod, cfg, block_dims=block).exit_code
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -872,6 +895,7 @@ def main() -> int:
         test_audit_cross_vendor_robust_resists_single_glitchy_run,
         test_audit_cross_vendor_forwards_provenance,
         test_audit_cross_vendor_calibrates_safety_from_the_same_runs,
+        test_verify_one_call_facade_accepts_path_and_module,
         test_audit_demo_runs_end_to_end,
     ]
     for t in tests:

@@ -74,7 +74,7 @@ def _demo_module():
 
 def report(module, block_dims, cfg=None) -> int:
     """統合ファサード tsugi.audit に委譲して 1 レポートにまとめる（重複排除）。"""
-    from .audit import audit
+    from .audit import verify
 
     print("=== Tsugi portability report ===\n")
     # ベンダー間の挙動差の疑い（audit に無い per-pair 差分）を先に併記
@@ -84,7 +84,7 @@ def report(module, block_dims, cfg=None) -> int:
         for d in diffs:
             print(f"  ! {d}")
         print()
-    a = audit(module, cfg, block_dims=block_dims)
+    a = verify(module, block_dims=block_dims, cfg=cfg)
     print(a.to_text())
     # CI ゲート契約（report.exit_code）に忠実に従う: OK/INFO=0・WARN=1・**BLOCK=2**。
     # 従来は `0 if portable else 1` で BLOCK(2) と WARN(1) を 1 に潰していた——CI が

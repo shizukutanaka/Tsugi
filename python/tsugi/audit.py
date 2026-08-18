@@ -342,6 +342,29 @@ def _iter_graphops(nodes):
             yield node
 
 
+def verify(target, *, block_dims=None, cfg=None, **audit_kwargs) -> "Audit":
+    """移植性検証のワンコール入口（CLI `python -m tsugi` の Python 版）。
+
+    `target` は次のどちらでもよい:
+      - 文字列パス: `@tsugi.jit` カーネル + `make_args()`（+任意 `BLOCK_DIMS`/`TILE_CONFIG`）を
+        定義した .py ファイル（portcheck 契約）。トレースして検証する。
+      - traced IR モジュール（`tsugi.trace(...)` の戻り値）: そのまま検証する。
+
+    返り値は `Audit`（`.exit_code` は CI ゲート契約・`.to_text()` は人間可読・
+    `.to_dict()` は JSON）。従来は trace→audit を手で繋ぐ必要があったが、これで
+    `ad = tsugi.verify("my_kernel.py"); print(ad.exit_code)` の 2 行で済む（簡素化）。
+    追加の検証引数（ref_logits/sample/provenance/temperature）は audit_kwargs で透過。
+    """
+    if isinstance(target, str):
+        from .portcheck import _load_user_module
+        module, loaded_block, loaded_cfg = _load_user_module(target)
+        block_dims = block_dims if block_dims is not None else loaded_block
+        cfg = cfg if cfg is not None else loaded_cfg
+    else:
+        module = target
+    return audit(module, cfg, block_dims=block_dims, **audit_kwargs)
+
+
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
           block_dims=None, ref_logits=None, sample=None, provenance=None,
           temperature: float = 1.0) -> Audit:
