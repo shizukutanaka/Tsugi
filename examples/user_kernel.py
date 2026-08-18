@@ -1,6 +1,10 @@
 """ユーザーカーネル例（portcheck 契約）。
 python -m tsugi.portcheck examples/user_kernel.py で解析される。"""
 import numpy as np
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[1] / "python"))
+
 import tsugi
 from tsugi import tile
 

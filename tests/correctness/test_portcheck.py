@@ -11,10 +11,25 @@ from tsugi.portcheck import _demo_module, _load_user_module, report  # noqa: E40
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "user_kernel.py"
 
 
-def test_demo_module_reports():
+def test_report_returns_audit_exit_code_not_collapsed():
+    """CLI の終了コードは CI ゲート契約（OK/INFO=0・WARN=1・BLOCK=2）に忠実であること。
+
+    従来 `report()` は `0 if portable else 1` で BLOCK(2) と WARN(1) を 1 に潰していた。
+    CI が「exit>=2 でのみ失敗」設定だと BLOCK が素通りする（プロセス層の偽OK）。
+    デモ構成は AMD で起動不能＝BLOCK なので、終了コードは 2 でなければならない。
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    from tsugi.audit import audit
+
     mod, block, cfg = _demo_module()
-    rc = report(mod, block, cfg)
-    assert rc in (0, 1)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = report(mod, block, cfg)
+    a = audit(mod, cfg, block_dims=block)
+    assert a.max_risk.name == "BLOCK"          # デモは起動不能 BLOCK
+    assert rc == a.exit_code == 2, f"BLOCK が exit=2 でなく {rc}（WARN と潰れている＝偽OK）"
 
 
 def test_demo_flags_launch_block_for_amd():
@@ -63,7 +78,7 @@ def test_report_includes_tolerance_for_accumulation(capsys=None):
 
 def main() -> int:
     ok = True
-    for t in (test_demo_module_reports, test_demo_flags_launch_block_for_amd, test_load_user_kernel, test_missing_contract_raises, test_report_includes_tolerance_for_accumulation):
+    for t in (test_report_returns_audit_exit_code_not_collapsed, test_demo_flags_launch_block_for_amd, test_load_user_kernel, test_missing_contract_raises, test_report_includes_tolerance_for_accumulation):
         try:
             t()
             print(f"[PASS] {t.__name__}")

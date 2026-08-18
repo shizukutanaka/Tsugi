@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-85: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-86: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1986,6 +1986,24 @@ def _check_meta_integrity() -> None:
           and _ipd85("tf32x3") < _ipd85("tf32")                 # 復元を上界も反映
           and _pph85(_ie85, _tf85, 2048, "float32") is not None  # tf32 は拾う
           and _pph85(_ie85, _x3_85, 2048, "float32") is None)    # tf32x3 は fp32 等価ゆえ黙る
+
+    # 86. CLI（portcheck.report / `python -m tsugi`）の終了コードは CI ゲート契約
+    #     （OK/INFO=0・WARN=1・BLOCK=2）に忠実であること。従来 `0 if portable else 1` で
+    #     BLOCK(2) と WARN(1) を 1 に潰しており、CI が exit>=2 でのみ失敗する設定だと BLOCK が
+    #     素通りした（プロセス層の偽OK）。report は audit.exit_code をそのまま返す。
+    from tsugi.audit import audit as _audit86
+    from tsugi.portcheck import _demo_module as _dm86
+    from tsugi.portcheck import report as _rep86
+
+    _mod86, _blk86, _cfg86 = _dm86()
+    import contextlib as _ctx86
+    import io as _io86
+    _buf86 = _io86.StringIO()
+    with _ctx86.redirect_stdout(_buf86):
+        _rc86 = _rep86(_mod86, _blk86, _cfg86)
+    _a86 = _audit86(_mod86, _cfg86, block_dims=_blk86)
+    check("CLI exit code follows the OK/WARN/BLOCK gate contract (BLOCK=2, not collapsed)",
+          _a86.max_risk.name == "BLOCK" and _rc86 == _a86.exit_code == 2)
 
 
 def main() -> int:

@@ -86,7 +86,10 @@ def report(module, block_dims, cfg=None) -> int:
         print()
     a = audit(module, cfg, block_dims=block_dims)
     print(a.to_text())
-    return 0 if a.portable else 1
+    # CI ゲート契約（report.exit_code）に忠実に従う: OK/INFO=0・WARN=1・**BLOCK=2**。
+    # 従来は `0 if portable else 1` で BLOCK(2) と WARN(1) を 1 に潰していた——CI が
+    # exit>=2 でしか失敗しない設定だと BLOCK が素通りする（プロセス層の偽OK）。
+    return a.exit_code
 
 
 def main(argv: list[str] | None = None) -> int:

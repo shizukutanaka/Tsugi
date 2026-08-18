@@ -57,13 +57,28 @@ pip install -e python/
 
 ## Usage（最小例）
 
+### 60 秒で試す（GPU 不要・今すぐ動く）
+
+Tsugi の**今日届く価値は「移植ブロッカーを実機前に告げる検証」**。1 コマンドで体験できる:
+
+```bash
+pip install -e python/
+python -m tsugi                 # 自己デモ: AMD で "起動すらしない" 構成を検出して見せる
+python -m tsugi my_kernel.py    # 自分のカーネル（@tsugi.jit + make_args() 契約）を検証
+```
+
+終了コードは **CI ゲート契約**（OK/INFO=0・WARN=1・BLOCK=2）——そのまま CI の合否に使える。
+詳しくは [QUICKSTART.md](docs/QUICKSTART.md)。
+
+### torch.compile バックエンド（Phase 4・要 LLVM/MLIR + 実機）
+
 ```python
 import torch
-import tsugi_torch  # backend登録
+import tsugi_torch  # backend登録（codegen 未実装時は検証だけ先に届き eager 実行）
 
 model = MyTransformer().cuda()           # or .to("hip")
 compiled = torch.compile(model, backend="tsugi")
-out = compiled(x)                        # Tsugi経由・両ベンダー対応
+out = compiled(x)                        # Tsugi経由・両ベンダー対応（codegen 完成後）
 ```
 
 タイルカーネルを直接書く:
@@ -101,7 +116,8 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 
 docs/ は 29 本あるため、**目的から入口を選ぶ**。
 
-**使う人**（API を叩きたい）
+**使う人**（今すぐ試したい）
+[QUICKSTART.md](docs/QUICKSTART.md)（60 秒・`python -m tsugi`）→
 [SPEC-verification.md](docs/SPEC-verification.md)（検証 API の仕様）→
 [FAQ.md](docs/FAQ.md) → [BENCHMARK.md](docs/BENCHMARK.md)
 
