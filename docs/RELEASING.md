@@ -85,9 +85,8 @@ GitHub の Tags/Releases ページにタグが公開され、ソースアーカ�
 
 ## チェックリスト（コピー用）
 
-- [ ] `python verify.py` 全 PASS（不変条件 62 = version 整合を含む）
-- [ ] `python tests/correctness/run.py` 全 PASS
-- [ ] `ruff check python/ tests/ examples/` clean
+- [ ] `python check.py` が ALL GATES PASS（不変条件 62 = version 整合を含む）
+- [ ] 配布物検証: wheel をクリーン venv に入れ `python -m tsugi` が exit 2（§4）
 - [ ] `pyproject.toml` の `version` と `tsugi.__version__` が一致・新バージョン
 - [ ] `CHANGELOG.md` に `[X.Y.Z] — 日付` 節を切り出し・空の `[Unreleased]` を新設
 - [ ] リリースコミットを作成・push
