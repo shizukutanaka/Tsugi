@@ -52,6 +52,18 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
     ハードコードせず**設計判断の裏づけとしてのみ用い、cond は常に実測から導く。
 
 ### Added
+- **検証ゲートを `check.py` の単一定義に畳んだ（重複の削除・ローカル/CI/リリースが共有）**:
+  ゲートが CONTRIBUTING.md・docs/ci-reference.yml・docs/RELEASING.md の **3 箇所に重複定義**
+  され実際に食い違っていた（CONTRIBUTING と RELEASING は `verify.py` を lint 対象から
+  落としていた＝「ローカル緑・CI 赤」の温床）。`python check.py` 1 コマンド（lint +
+  correctness + 不変条件 + examples スモーク・17〜18s、`--fast` でスモーク省略）に畳み、
+  3 文書は呼ぶだけに。ドリフトを検査でなく **構造的に不可能** にした。verify.py 不変条件 88
+  が「3 文書がゲートを再列挙しない」ことを固定（実際に RELEASING の残存を検出して赤にした）。
+- **配布物（wheel）の検証を必須化**: クリーン venv（ソースツリー無し）に wheel を入れ
+  `python -m tsugi` が移植レポート＋**exit 2** を返し、`tsugi.verify` 公開・`tsugi_torch`
+  同梱・`to_dict()` が JSON 直列化可能であることを実証。`docs/RELEASING.md` の
+  「インストール検証（任意）」を実手順つきの必須ステップへ格上げ（`pip install -e` は
+  ソース参照で配布物の検証にならない穴を塞ぐ）。
 - **`tsugi.verify()` ワンコール入口を追加（プログラム API の簡素化・Musk 第3段階）**:
   従来 `trace()`＋`audit(module, cfg, block_dims=...)` を手で繋ぐ必要があった価値経路を
   1 コールに畳んだ。`tsugi.verify("my_kernel.py")` or `tsugi.verify(traced_module)` → `Audit`
