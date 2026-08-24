@@ -5,8 +5,9 @@
 # そのため CI 定義はこのファイルを正本として追跡し、リポジトリ管理者が GitHub UI で
 # `.github/workflows/ci.yml` に反映する。ローカル代替は `run.py` + `verify.py`。
 #
-# ローカル検証と CI の lint 範囲・実行対象は一致させること（python/ verify.py tests/ examples/、
-# 加えて examples のスモーク実行）。差があると CI 緑がローカル失敗を見逃す。
+# ローカル検証と CI は `check.py` を **単一の定義** として共有する（ここでゲートを再列挙しない）。
+# 以前は本ファイルと CONTRIBUTING.md にゲートが二重定義され、実際に食い違っていた
+# （CONTRIBUTING は verify.py を lint 対象から落としていた）。呼ぶだけにすればドリフトは起き得ない。
 name: ci
 on: [push, pull_request]
 
@@ -17,19 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Install ruff
-        run: pip install ruff
-      - name: Lint
-        run: ruff check python/ verify.py tests/ examples/
-      - name: Correctness harness (skips GPU — honest)
-        run: python tests/correctness/run.py
-      - name: Verify invariants
-        run: python verify.py
-      - name: Examples smoke (user-facing entrypoints must run)
-        run: |
-          for ex in examples/matmul.py examples/user_kernel.py examples/audit_demo.py; do
-            echo "--- $ex ---"; PYTHONPATH=python python "$ex" >/dev/null
-          done
+      - name: Install deps
+        run: pip install numpy ruff
+      # ゲートの実体は check.py（ローカルと CI の単一定義）。ここでステップを再列挙すると
+      # ドリフトが生まれる（実際に CONTRIBUTING と食い違っていた）ので呼ぶだけにする。
+      - name: All gates (lint + correctness + invariants + examples smoke)
+        run: python check.py
 
   # 注: MLIR/LLVM ビルド + 実GPU correctness は self-hosted runner が必要。
   # CPU-only の GitHub runner では dialect の round-trip 検証に留まる。

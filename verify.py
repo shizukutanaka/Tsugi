@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-87: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-88: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2019,6 +2019,23 @@ def _check_meta_integrity() -> None:
     check("tsugi.verify() one-call facade accepts module and path, returns gated Audit",
           isinstance(_ad87, _tsugi87.Audit) and _ad87.exit_code == 2
           and isinstance(_adp87, _tsugi87.Audit) and _adp87.exit_code in (0, 1, 2))
+
+    # 88. 検証ゲートは `check.py` の **単一定義** をローカルと CI が共有する。
+    #     以前は CONTRIBUTING.md と docs/ci-reference.yml にゲートが二重定義され実際に
+    #     食い違っていた（CONTRIBUTING が verify.py を lint 対象から落としていた）——
+    #     「ローカル緑・CI 赤」の温床。両文書が check.py を *呼ぶだけ* になっており、
+    #     ゲートを再列挙していないことを機械的に固定する（ドリフトを構造的に不可能にする）。
+    _root88 = _P87(__file__).resolve().parent
+    _chk88 = (_root88 / "check.py").read_text(encoding="utf-8")
+    _ci88 = (_root88 / "docs" / "ci-reference.yml").read_text(encoding="utf-8")
+    _contrib88 = (_root88 / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    _rel88 = (_root88 / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    check("verification gates have a single definition (check.py) shared by local/CI/release",
+          "LINT_TARGETS" in _chk88 and "SMOKE_EXAMPLES" in _chk88   # ゲート実体は check.py
+          and "verify.py" in _chk88                                 # lint 対象に verify.py を含む
+          # 旧 3 重定義（CI/CONTRIBUTING/RELEASING）はいずれも呼ぶだけ・再列挙しない
+          and all("python check.py" in d for d in (_ci88, _contrib88, _rel88))
+          and not any("ruff check python/" in d for d in (_ci88, _rel88)))
 
 
 def main() -> int:
