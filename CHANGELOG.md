@@ -52,6 +52,16 @@ Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加
     ハードコードせず**設計判断の裏づけとしてのみ用い、cond は常に実測から導く。
 
 ### Added
+- **PyTorch 経路（このプロダクトの楔）にゲート付き判定を届けた（`audit_torch` / `tsugi.verify(gm)`）**:
+  ゲート付き判定（`exit_code`/`to_text`）は tile-DSL 経路だけが持ち、想定ユーザーである
+  **PyTorch 開発者は `audit_fx` の素の dict しか得られず出荷判断に使えなかった**
+  （`tsugi.verify(fx_graph)` は AttributeError で落ちた）。`audit_torch` が FX グラフを
+  `Audit` として返し、`tsugi.verify()` が FX GraphModule を duck-typed で受け取って
+  そこへ委譲する——tile-DSL と PyTorch の両経路で契約が揃った。
+  fail-safe: 静的 FX は等価性を認証できない（第2ベンダー出力が無い）ので**発散量に閾値を
+  発明して BLOCK にしない**。BLOCK は利用者が与えた `flip_budget` を予測フリップ率上界が
+  超えたときだけ。非決定 op / dynamic shape は WARN として判定に載せ、実機照合が要ることは
+  pending phase で明示。verify.py 不変条件 89・QUICKSTART に PyTorch 経路の節を追加。
 - **検証ゲートを `check.py` の単一定義に畳んだ（重複の削除・ローカル/CI/リリースが共有）**:
   ゲートが CONTRIBUTING.md・docs/ci-reference.yml・docs/RELEASING.md の **3 箇所に重複定義**
   され実際に食い違っていた（CONTRIBUTING と RELEASING は `verify.py` を lint 対象から

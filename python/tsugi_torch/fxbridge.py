@@ -212,3 +212,70 @@ def audit_fx(gm: Any, ref_logits=None, sample=None) -> dict:
         _rf = _np.asarray(ref_logits, dtype=_np.float64)
         out["ref_scale"] = float(_np.sqrt(_np.mean(_rf ** 2))) if _rf.size else 1.0
     return out
+
+
+def audit_torch(gm: Any, *, ref_logits=None, sample=None,
+                flip_budget: float = 0.001) -> "Any":
+    """FX グラフを **ゲート付き判定**（`Audit`）として返す——PyTorch 経路の製品入口。
+
+    `audit_fx` は素の dict を返すため、CI ゲート契約（`exit_code`）も人間可読レポート
+    （`to_text`）も持たなかった。**このプロダクトの楔は torch.compile（フレームワーク層）**
+    なのに、ゲート付きの判定は tile-DSL 経路だけが持っていた——想定ユーザー（PyTorch 開発者）が
+    出荷判断に使えない状態だった。ここで両経路の契約を揃える（`tsugi.verify(gm)` から到達）。
+
+    fail-safe の要（静的 FX で BLOCK を捏造しない）:
+    静的グラフだけでは *等価性を認証できない*（第 2 ベンダーの実出力が無い）。よって
+    発散量の絶対値に閾値を発明して BLOCK にはしない（未検証係数の禁止）。BLOCK にするのは
+    **利用者が与えた予算を超えたときだけ**——`ref_logits` があれば `task_flip_bound`
+    （判断フリップ率の上界）を `flip_budget` と比較する。それ以外は WARN/INFO に留め、
+    実機クロスベンダー照合が要ることを pending phase で明示する。
+    """
+    from tsugi.audit import Audit, AuditPhase
+    from tsugi.report import Risk
+
+    rep = audit_fx(gm, ref_logits=ref_logits, sample=sample)
+    ad = Audit()
+
+    p = AuditPhase("torch/FX 静的監査", "decided", Risk.INFO)
+    p.lines.append(f"{rep['n_ops']} numeric ops・増幅 op={rep['amplifiers']}・"
+                   f"モデル発散(予測)≈{rep['model_divergence']:.2e}"
+                   + (f"（dominant={rep['dominant']}）" if rep.get("dominant") else ""))
+    if rep.get("cond_measured"):
+        p.lines.append(f"  sample 実測: scale={rep['sample_scale']:.3g}"
+                       "（増幅 op の cond をデータから測定済み・静的下界を解消）")
+    else:
+        p.lines.append("  cond=1 は *下界*（sample 未指定）——実データで cond を実測すべき")
+    if rep.get("requires_noise_floor"):
+        p.max_risk = max(p.max_risk, Risk.WARN)
+        p.lines.append(f"  [WARN] 非決定 op {rep['nondeterministic_ops']} → run-to-run "
+                       "ノイズ床の実測が必須（静的許容では不十分）")
+    if rep.get("has_dynamic_shapes"):
+        p.max_risk = max(p.max_risk, Risk.WARN)
+        p.lines.append("  [WARN] dynamic shape 検出 → 形状ごとにカーネルが特化される。"
+                       "1 形状の認証は他形状に転用できない（per-shape 再検証が必要）")
+    if rep.get("has_normalization"):
+        p.lines.append("  正規化層あり: RMSNorm は scale 中立・LayerNorm は平均優勢入力で"
+                       " amp≈RMS/σ に増幅（sample 指定時は実測 cond に反映済み）")
+    ad.phases.append(p)
+
+    # タスク影響: 利用者の予算だけが BLOCK の根拠（閾値を発明しない）
+    if rep.get("task_flip_bound") is not None:
+        bound = rep["task_flip_bound"]
+        over = bound > flip_budget
+        dp = AuditPhase("decision タスク影響(予測)", "decided",
+                        Risk.BLOCK if over else Risk.INFO)
+        dp.lines.append(f"判断フリップ率 ≤ {bound * 100:.2f}%（予算 {flip_budget * 100:.2f}%）"
+                        "——第2ベンダー実行前・代表 logit 分布からの予測")
+        if over:
+            dp.lines.append("  予算超過 → このモデルはベンダー間でユーザーに見える判断が変わりうる")
+        ad.phases.append(dp)
+
+    rt = AuditPhase("runtime クロスベンダー照合", "pending", Risk.INFO)
+    rt.lines += [
+        "静的 FX だけでは *等価性は認証できない*（第2ベンダーの実出力が無い）。",
+        "実機/実データが揃ったら audit_runtime(out_a, out_b, K, logits_a=…, logits_b=…) へ。",
+        "実機ノイズ床とクロス発散は audit_cross_vendor(run_a, run_b, K) で実測する。",
+    ]
+    ad.phases.append(rt)
+    ad.stamp()
+    return ad

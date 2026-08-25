@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-from tsugi_torch.fxbridge import audit_fx, fx_to_graph_ops  # noqa: E402
+from tsugi_torch.fxbridge import audit_fx, audit_torch, fx_to_graph_ops  # noqa: E402
 
 
 class _TM:
@@ -308,6 +308,59 @@ def test_audit_fx_layer_norm_cond_fires_on_mean_dominated_sample():
         f"零平均入力で幻の増幅が出た（偽BLOCK）: {cool['model_divergence']:.2e} vs {static:.2e}"
 
 
+def test_audit_torch_gives_the_pytorch_path_a_gated_verdict():
+    """PyTorch 経路（このプロダクトの楔）にも CI ゲート契約付きの判定を届ける。
+
+    `audit_fx` は素の dict を返すため exit_code も to_text も無く、想定ユーザーである
+    PyTorch 開発者は出荷判断に使えなかった（ゲート付き判定は tile-DSL 経路だけが持っていた）。
+    `audit_torch`（`tsugi.verify(gm)` から到達）が両経路の契約を揃える。
+
+    fail-safe: 静的 FX は等価性を *認証できない*（第2ベンダーの実出力が無い）ので、発散量に
+    閾値を発明して BLOCK にはしない。BLOCK は **利用者が与えた flip_budget を超えたときだけ**。
+    """
+    import tsugi
+
+    gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten._softmax.default"),
+        _Node("output", "output"),
+    ])
+    ad = audit_torch(gm)
+    assert isinstance(ad, tsugi.Audit)
+    assert hasattr(ad, "exit_code") and hasattr(ad, "to_text")
+    # 予算が無ければ静的 FX だけで BLOCK にしない（閾値を発明しない）
+    assert ad.exit_code in (0, 1) and ad.portable
+    # 実機照合が要ることを pending phase で明示する（静的で認証済みと誤読させない）
+    assert any(p.when == "pending" and "runtime" in p.name for p in ad.phases)
+
+    # 予算超過なら BLOCK（利用者の基準のみが根拠）
+    rng = np.random.default_rng(0)
+    near_tie = rng.standard_normal((500, 32)) * 0.05     # マージン小 → フリップ上界が大
+    ad_block = audit_torch(gm, ref_logits=near_tie, flip_budget=0.001)
+    assert ad_block.exit_code == 2 and not ad_block.portable
+    # 予算が十分緩ければ同じグラフでも BLOCK にならない（予算が効いている証拠）
+    ad_ok = audit_torch(gm, ref_logits=near_tie, flip_budget=1.0)
+    assert ad_ok.exit_code < 2
+
+    # tsugi.verify(gm) から同じ判定に到達できる（1 コールの入口）
+    assert tsugi.verify(gm).exit_code == ad.exit_code
+
+
+def test_audit_torch_surfaces_nondeterminism_and_dynamic_shapes_as_warnings():
+    """非決定 op / dynamic shape は WARN として判定に載る（静的に分かる事実は決定済み扱い）。"""
+    nd = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.scatter_add.default"),   # atomicAdd 由来の非決定
+        _Node("output", "output"),
+    ])
+    ad = audit_torch(nd)
+    txt = ad.to_text()
+    assert "非決定 op" in txt and "ノイズ床" in txt
+    assert ad.exit_code >= 1        # WARN 以上（静的許容だけでは不十分と告げる）
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -321,6 +374,8 @@ def main() -> int:
         test_audit_fx_detects_normalization_layers,
         test_fx_maps_norm_ops_to_dedicated_kinds,
         test_audit_fx_layer_norm_cond_fires_on_mean_dominated_sample,
+        test_audit_torch_gives_the_pytorch_path_a_gated_verdict,
+        test_audit_torch_surfaces_nondeterminism_and_dynamic_shapes_as_warnings,
         test_audit_fx_flags_nondeterministic_atomic_ops,
         test_audit_fx_sample_replaces_scale1_cond1_assumptions,
     ]

@@ -67,7 +67,27 @@ def make_args():            # 必須: kernel をトレースする引数 tuple �
 python -m tsugi examples/user_kernel.py
 ```
 
-## 5. Python から 1 行で（CLI と同じ判定）
+## 5. PyTorch モデルを検証する（想定ユーザーの経路）
+
+タイル DSL を書いていなくてよい。`torch.compile` が作る FX グラフをそのまま渡せる:
+
+```python
+import torch, tsugi
+gm = torch.fx.symbolic_trace(model)        # or torch.compile の backend が受け取る GraphModule
+ad = tsugi.verify(gm, ref_logits=logits, flip_budget=0.001)
+print(ad.to_text()); raise SystemExit(ad.exit_code)   # CI ゲート契約
+```
+
+判定の考え方（fail-safe）: **静的な FX グラフだけでは等価性を認証できない**（第2ベンダーの
+実出力が無い）。よって発散量に閾値を発明して BLOCK にはしない。BLOCK になるのは
+**あなたが与えた `flip_budget` を予測フリップ率上界が超えたときだけ**。非決定 op や
+dynamic shape は WARN として判定に載り、実機クロスベンダー照合が要ることは
+pending phase で明示される。
+
+`torch.compile(model, backend="tsugi")` を使えば codegen 前でも同じ静的検証が警告として届く
+（実行は eager に素通し・嘘をつかない）。
+
+## 6. Python から 1 行で（CLI と同じ判定）
 
 ```python
 import tsugi
@@ -78,7 +98,7 @@ print(ad.to_text())                 # 人間可読レポート / ad.to_dict() �
 
 `tsugi.verify()` は `python -m tsugi` の Python 版——`trace()`＋`audit()` を手で繋ぐ必要はない。
 
-## 6. 実データがあるとき（タスク影響まで）
+## 7. 実データがあるとき（タスク影響まで）
 
 logits やテンソルの実測出力があれば、静的検証を超えてタスク影響まで測れる:
 

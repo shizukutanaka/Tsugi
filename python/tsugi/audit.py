@@ -360,6 +360,13 @@ def verify(target, *, block_dims=None, cfg=None, **audit_kwargs) -> "Audit":
         module, loaded_block, loaded_cfg = _load_user_module(target)
         block_dims = block_dims if block_dims is not None else loaded_block
         cfg = cfg if cfg is not None else loaded_cfg
+    elif hasattr(target, "graph") and hasattr(getattr(target, "graph"), "nodes"):
+        # torch.fx GraphModule（duck-typed・torch 非依存）——このプロダクトの楔は
+        # フレームワーク層（torch.compile）なので、想定ユーザーである PyTorch 開発者が
+        # 同じ 1 コールでゲート付き判定を得られる必要がある。tile-DSL 経路だけが
+        # ゲートを持つ状態は「使えるのは自分たちだけ」という不完全さだった。
+        from tsugi_torch.fxbridge import audit_torch
+        return audit_torch(target, **audit_kwargs)
     else:
         module = target
     return audit(module, cfg, block_dims=block_dims, **audit_kwargs)

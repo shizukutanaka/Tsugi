@@ -1230,7 +1230,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-88: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-89: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2036,6 +2036,33 @@ def _check_meta_integrity() -> None:
           # 旧 3 重定義（CI/CONTRIBUTING/RELEASING）はいずれも呼ぶだけ・再列挙しない
           and all("python check.py" in d for d in (_ci88, _contrib88, _rel88))
           and not any("ruff check python/" in d for d in (_ci88, _rel88)))
+
+    # 89. このプロダクトの楔は **フレームワーク層（torch.compile）** なのに、ゲート付き判定
+    #     （exit_code/to_text）は tile-DSL 経路だけが持ち、想定ユーザーである PyTorch 開発者は
+    #     `audit_fx` の素の dict しか得られず出荷判断に使えなかった。`audit_torch`
+    #     （`tsugi.verify(gm)` から到達）が両経路の契約を揃える。
+    #     fail-safe: 静的 FX は等価性を認証できない（第2ベンダー出力が無い）ので発散量に閾値を
+    #     発明して BLOCK にしない——BLOCK は利用者が与えた flip_budget 超過のときだけ。
+    import tsugi as _tsugi89
+    from tsugi_torch.fxbridge import audit_torch as _at89
+
+    _gm89 = _GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default", (8, 512)),
+        _Node58("call_function", "aten._softmax.default"),
+        _Node58("output", "output"),
+    ])
+    _ad89 = _at89(_gm89)
+    _nt89 = np.random.default_rng(0).standard_normal((500, 32)) * 0.05   # near-tie 多め
+    _blk89 = _at89(_gm89, ref_logits=_nt89, flip_budget=0.001)
+    _ok89 = _at89(_gm89, ref_logits=_nt89, flip_budget=1.0)
+    check("torch/FX path yields a gated Audit; BLOCK only from the user's flip_budget",
+          isinstance(_ad89, _tsugi89.Audit)
+          and _ad89.exit_code in (0, 1) and _ad89.portable      # 閾値を発明しない
+          and any(p.when == "pending" for p in _ad89.phases)    # 実機照合が要ると明示
+          and _blk89.exit_code == 2                             # 予算超過なら BLOCK
+          and _ok89.exit_code < 2                               # 予算が緩ければ通す
+          and _tsugi89.verify(_gm89).exit_code == _ad89.exit_code)  # verify() から到達
 
 
 def main() -> int:
