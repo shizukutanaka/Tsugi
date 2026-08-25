@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-95: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-97: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2191,6 +2191,43 @@ def _check_meta_integrity() -> None:
                   _good94.replace(".amdhsa_accum_offset",
                                   ".amdhsa_accum_offset 999 ;", 1),
                   target="amd_cdna").ok is False))
+
+    # 96. ここまでの検査は「私が書いた命令」を前提にしていた。命令選択**そのもの**の
+    #     妥当性は ISA 文書の読み取り（人手の判断）に依存したままだった。LLVM の
+    #     AMDGPU/NVPTX バックエンドは同じ問題を解いている**独立実装**であり、Tsugi を
+    #     知らない——ゆえに循環しない裏づけになる。この突き合わせで実際に欠陥が出た:
+    #     修飾なしの `add.f32`/`mul.f32` は ptxas が `fma.rn.f32` へ contraction しうる
+    #     （中間丸めが消えて数値が変わる）。ビット等価を検証する道具が contraction
+    #     可能な形を出すのは自己矛盾で、LLVM に倣い `.rn` 明示へ直した。
+    _xc96 = {t: _cg90.cross_check_lowering(target=t) for t in _cg90.TARGETS}
+    _ptx96 = {op: _cg90.emit(_cg90._probe_module(op), target="nvidia").text
+              for op in ("add", "sub", "mul", "div")}
+    check("LLVM's own backends agree with our instruction selection (independent oracle)",
+          all(r.ok is True for xs in _xc96.values() for r in xs.values()
+              if r.available)
+          # 回帰固定: PTX の算術は丸めモードを明示し contraction を許さない
+          and all(f"{op}.rn.f32" in t and f"{op}.f32 " not in t
+                  for op, t in _ptx96.items()))
+
+    # 97. 「AMD 側だけ精緻化を要する」⟺「ビット同一でない」——分類を LLVM の出力で裏づける。
+    #     NVIDIA が単一の正確丸め命令で済ませる演算を AMD が精緻化列で実装するなら、
+    #     AMD の単独命令は正確丸めでない。**例外は rsqrt**（分類 False だが片側精緻化は
+    #     起きない）——両社とも近似命令で LLVM もその近似をそのまま使うため。両者が
+    #     近似という点で対称でも実装が違うのでビット同一にはならない。理由が違う。
+    _asym97 = {k for k in _cg90.CODEGEN_OPS - _cg90.NO_LLVM_REFERENCE
+               if _xc96["amd_cdna"][k].available and _xc96["nvidia"][k].available
+               and _xc96["amd_cdna"][k].llvm_refines
+               and not _xc96["nvidia"][k].llvm_refines}
+    _sym97 = (_cg90.CODEGEN_OPS - _cg90.NO_LLVM_REFERENCE) - _asym97
+    _have97 = all(r.available for xs in (_xc96["nvidia"], _xc96["amd_cdna"])
+                  for r in xs.values())
+    check("one-sided refinement in LLVM corroborates the bit-exactness classification",
+          not _have97 or (
+              _asym97 == {"div", "exp", "sqrt"}
+              and all(not _cg90.BIT_EXACT_ACROSS_VENDORS[k] for k in _asym97)
+              and all(_cg90.BIT_EXACT_ACROSS_VENDORS[k]
+                      for k in _sym97 - {"rsqrt"})
+              and not _cg90.BIT_EXACT_ACROSS_VENDORS["rsqrt"]))
 
 
 def main() -> int:

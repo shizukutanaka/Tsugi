@@ -391,6 +391,8 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
         approximate_ops,
         codegen_coverage,
         uncodegenned_ops,
+        cross_check_lowering,
+        reference_lowering,
         verify_codegen,
         verify_encoding,
         verify_loadable,
@@ -445,12 +447,33 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
             cg.lines.append(f"  {n}")
     cov, total = codegen_coverage("nvidia")
     cg.lines.append(f"命令列を持つ op: {cov}/{total}（DSL の語彙に対して）")
+    # 命令選択そのものの妥当性を独立実装（LLVM のバックエンド）と突き合わせた要約。
+    xc = cross_check_lowering(target="nvidia")
+    asked = [r for r in xc.values() if r.available]
+    if asked:
+        agree = sum(1 for r in asked if r.ok)
+        cg.lines.append(f"LLVM の命令選択との一致: {agree}/{len(asked)} op"
+                        f"（残る {len(xc) - len(asked)} op は単一の LLVM IR 演算に"
+                        "対応せず対象外）")
     # codegen → numerics の橋: 「生成した命令自体がベンダー間でビット同一か」。
     # equivalence 層が発散の *大きさ* を扱うのに対し、ここは発散の *出所* を名指す。
     approx = sorted(used & approximate_ops())
     if approx:
         cg.lines.append(f"ビット同一を期待できない命令を含む op: {approx}"
                         "（近似命令・累積順序の差が発散源——equivalence 層が量を扱う）")
+        # 上の分類は ISA 文書の読み取りに由来する。**独立した実装**（LLVM の
+        # AMDGPU/NVPTX バックエンド）に同じ演算を落とさせ、片側だけが精緻化列を
+        # 要するかで裏を取る（第三者による裏づけ・循環しない）。
+        for k in approx:
+            nv = reference_lowering(k, target="nvidia")
+            am = reference_lowering(k, target="amd_cdna")
+            if not (nv.available and am.available):
+                continue
+            if am.llvm_refines and not nv.llvm_refines:
+                cg.lines.append(
+                    f"  {k}: LLVM も AMD 側にだけ精緻化列を要する"
+                    f"（{len(am.llvm)} 命令 vs NVIDIA {len(nv.llvm)}）"
+                    "→ 単独命令は正確丸めでない（独立実装による裏づけ）")
     cg.lines.append("L2 が保証するのは命令の存在・構文・arch 可用性まで。"
                     "レイアウト接合と実行の正しさは L3（実機）——常に空")
     return cg

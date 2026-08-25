@@ -33,6 +33,11 @@ from tsugi.codegen import (  # noqa: E402
     verify_encoding,
     verify_loadable,
 )
+from tsugi.codegen import (  # noqa: E402
+    NO_LLVM_REFERENCE,
+    cross_check_lowering,
+    reference_lowering,
+)
 from tsugi.tracer import EMITTABLE_OPS  # noqa: E402
 
 
@@ -280,6 +285,65 @@ def test_assembler_validates_the_kernel_descriptor():
     assert (v, a, sg) == (12, 4, 6), (v, a, sg)
 
 
+def test_llvm_backends_agree_with_our_instruction_selection():
+    """命令選択の妥当性を**独立した実装**（LLVM）に問う。
+
+    ここまでの検査は「私が書いた命令」を前提にしていた。命令選択そのものの妥当性は
+    ISA 文書の読み取り（人手の判断）に依存したまま。LLVM の AMDGPU/NVPTX バックエンドは
+    同じ問題を解いている第三者の実装で、Tsugi を知らない——ゆえに循環しない裏づけになる。
+    """
+    for t in TARGETS:
+        for kind, r in cross_check_lowering(target=t).items():
+            if not r.available:
+                assert r.ok is None
+                continue
+            assert r.ok is True, (
+                f"{kind}@{t}: Tsugi={r.tsugi} が LLVM={r.llvm} に現れない")
+
+
+def test_llvm_independently_corroborates_the_bit_exactness_classification():
+    """「AMD 側だけ精緻化を要する」⟺「ビット同一でない」を LLVM の出力で確かめる。
+
+    NVIDIA が単一の正確丸め命令で済ませる演算を AMD が精緻化列で実装するなら、
+    AMD の単独命令は正確丸めではない——ゆえに両社でビット同一を期待できない。
+    この対応が `BIT_EXACT_ACROSS_VENDORS` と一致することを固定する。
+
+    **例外は rsqrt**（分類は False だが片側精緻化は起きない）。理由が違うため:
+    rsqrt は*両社とも近似命令*で、LLVM もその近似をそのまま使う。両者が近似という
+    点で対称でも、近似の実装が違うのでビット同一にはならない。
+    """
+    asymmetric = set()
+    for kind in sorted(CODEGEN_OPS - NO_LLVM_REFERENCE):
+        nv = reference_lowering(kind, target="nvidia")
+        am = reference_lowering(kind, target="amd_cdna")
+        if not (nv.available and am.available):
+            return          # llc 無し: 主張しない
+        if am.llvm_refines and not nv.llvm_refines:
+            asymmetric.add(kind)
+    assert asymmetric == {"div", "exp", "sqrt"}, asymmetric
+    # 片側精緻化 ⟹ ビット同一でない
+    assert all(not BIT_EXACT_ACROSS_VENDORS[k] for k in asymmetric)
+    # 逆向き: 精緻化なし ⟹ ビット同一（rsqrt を唯一の明示的例外として除く）
+    symmetric = (CODEGEN_OPS - NO_LLVM_REFERENCE) - asymmetric
+    assert all(BIT_EXACT_ACROSS_VENDORS[k] for k in symmetric - {"rsqrt"}), symmetric
+    assert not BIT_EXACT_ACROSS_VENDORS["rsqrt"]     # 別の理由で False
+
+
+def test_ptx_arithmetic_pins_the_rounding_mode_against_fma_contraction():
+    """`add.f32` は ptxas が `fma.rn.f32` へ contraction しうる（中間丸めが消える）。
+
+    ビット等価を検証する道具が contraction 可能な形を出すのは自己矛盾だった。
+    LLVM との突き合わせでこの不一致が見つかり `.rn` 明示へ直した件の回帰固定。
+    """
+    from tsugi.codegen import _probe_module
+    for op in ("add", "sub", "mul", "div"):
+        ptx = emit(_probe_module(op), target="nvidia").text
+        assert f"{op}.rn.f32" in ptx, f"{op}: .rn 明示が無い"
+        assert f"{op}.f32 " not in ptx, f"contraction 可能な {op}.f32 が残っている"
+    # exp の log2e 乗算も同じ理由で .rn 明示
+    assert "mul.rn.f32" in emit(_probe_module("exp"), target="nvidia").text
+
+
 def test_L3_is_never_claimed():
     """実機実行検証（L3）はこの環境で到達不能。どの経路も L3 を返さない。"""
     mod = _ir()
@@ -349,6 +413,9 @@ def main() -> int:
               test_encoding_check_detects_a_mnemonic_that_never_reaches_machine_code,
               test_generated_objects_have_the_structure_a_loader_requires,
               test_assembler_validates_the_kernel_descriptor,
+              test_llvm_backends_agree_with_our_instruction_selection,
+              test_llvm_independently_corroborates_the_bit_exactness_classification,
+              test_ptx_arithmetic_pins_the_rounding_mode_against_fma_contraction,
               test_L3_is_never_claimed,
               test_broken_assembly_is_rejected_not_waved_through,
               test_compile_emits_machine_code_and_reports_its_level,

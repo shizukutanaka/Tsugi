@@ -98,7 +98,12 @@ def approximate_ops() -> set[str]:
 _LOG2E = "0f3FB8AA3B"      # log2(e) を f32 hex で（PTX リテラル形式）
 _LOG2E_HEX = "0x3fb8aa3b"  # 同じ値の AMD リテラル形式
 
-_PTX_BIN = {"add": "add.f32", "sub": "sub.f32", "mul": "mul.f32",
+#: PTX の算術。**丸めモードを明示する**（.rn）のが要点で、修飾なしの `add.f32` /
+#: `mul.f32` は ptxas が `fma.rn.f32` へ contraction しうる——積和が融合されると
+#: 中間丸めが消えて数値が変わる。ビット等価を検証する道具が contraction 可能な形を
+#: 出すのは自己矛盾だった。LLVM の NVPTX バックエンドも `.rn` を明示する
+#: （`reference_lowering` との突き合わせでこの不一致が見つかった）。
+_PTX_BIN = {"add": "add.rn.f32", "sub": "sub.rn.f32", "mul": "mul.rn.f32",
             "max": "max.f32", "div": "div.rn.f32"}
 _GCN_BIN = {"add": "v_add_f32", "sub": "v_sub_f32", "mul": "v_mul_f32",
             "max": "v_max_f32"}
@@ -194,7 +199,7 @@ def emit_ptx(module: ir.Module, *, arch: str = "sm_80") -> EmitResult:
                 reg[op.result.name] = d
             elif k == "exp":
                 t, d = newf(), newf()
-                body.append(f"    mul.f32 {t}, {src(op.operands[0])}, {_LOG2E};")
+                body.append(f"    mul.rn.f32 {t}, {src(op.operands[0])}, {_LOG2E};")
                 body.append(f"    ex2.approx.f32 {d}, {t};")
                 reg[op.result.name] = d
             elif k in ("sqrt", "rsqrt"):
@@ -761,7 +766,7 @@ def _mnemonics(text: str, target: str) -> list[str]:
         if target == "nvidia" and ln.startswith(("ld.param", "cvta", "ret")):
             continue
         head = ln.split()[0].rstrip(",")
-        if head.startswith("%") or "=" in head:
+        if head.startswith("%") or "=" in head or head.endswith(":"):
             continue
         out.append(head)
     return out
@@ -1001,3 +1006,174 @@ def uncodegenned_ops(target: str) -> set[str]:
     """DSL が emit しうるのに codegen が命令列を持たない op（嘘をつかない）。"""
     from .tracer import EMITTABLE_OPS
     return set(EMITTABLE_OPS) - set(CODEGEN_OPS)
+
+
+# --------------------------------------------------------------------------
+# 独立オラクル: LLVM 自身の命令選択と突き合わせる（関連ソフトウェアによる検証）
+# --------------------------------------------------------------------------
+#
+# ここまでの検査は「ベンダーのアセンブラが受理するか」「符号化されたか」「ロード構造が
+# あるか」——どれも *私が書いた命令* を前提にしている。命令選択そのものが妥当かは、
+# ISA ドキュメントの読み取り（＝人手の判断）に依存したままだった。
+#
+# LLVM の AMDGPU / NVPTX バックエンドは同じ問題を解いている**独立した実装**である。
+# 同じ演算を LLVM IR で書いて `llc` に落とさせ、Tsugi の選択と突き合わせれば、
+# 選択の妥当性が第三者の実装で裏づけられる。これは循環しない——LLVM は Tsugi を
+# 知らないし、Tsugi の表を参照していない。
+
+#: op → LLVM IR（1 演算だけ行う関数）。target ごとに別 IR が要るものは dict で分ける。
+#: `afn`（approximate function）フラグは近似実装を許す指定。
+_LLVM_IR: dict[str, str | dict[str, str]] = {
+    "add": "define float @f(float %x, float %y){ %a=fadd float %x,%y\nret float %a }",
+    "sub": "define float @f(float %x, float %y){ %a=fsub float %x,%y\nret float %a }",
+    "mul": "define float @f(float %x, float %y){ %a=fmul float %x,%y\nret float %a }",
+    "div": "define float @f(float %x, float %y){ %a=fdiv float %x,%y\nret float %a }",
+    "max": ("declare float @llvm.maxnum.f32(float,float)\n"
+            "define float @f(float %x,float %y){ "
+            "%a=call float @llvm.maxnum.f32(float %x,float %y)\nret float %a }"),
+    "sqrt": ("declare float @llvm.sqrt.f32(float)\n"
+             "define float @f(float %x){ %a=call float @llvm.sqrt.f32(float %x)\n"
+             "ret float %a }"),
+    "cast": "define half @f(float %x){ %a=fptrunc float %x to half\nret half %a }",
+    # exp / rsqrt は「近似命令をそのまま使う」意図なので、各社の近似イントリンシックで
+    # 問う（汎用 llvm.exp2 は NVPTX で libcall へ落ちて llc が失敗する・実測）。
+    "exp": {
+        "amd": ("declare float @llvm.exp2.f32(float)\n"
+                "define float @f(float %x){ "
+                "%a=call afn float @llvm.exp2.f32(float %x)\nret float %a }"),
+        "nvidia": ("declare float @llvm.nvvm.ex2.approx.f(float)\n"
+                   "define float @f(float %x){ "
+                   "%a=call float @llvm.nvvm.ex2.approx.f(float %x)\nret float %a }"),
+    },
+    "rsqrt": {
+        "amd": ("declare float @llvm.amdgcn.rsq.f32(float)\n"
+                "define float @f(float %x){ "
+                "%a=call float @llvm.amdgcn.rsq.f32(float %x)\nret float %a }"),
+        "nvidia": ("declare float @llvm.nvvm.rsqrt.approx.f(float)\n"
+                   "define float @f(float %x){ "
+                   "%a=call float @llvm.nvvm.rsqrt.approx.f(float %x)\nret float %a }"),
+    },
+}
+
+#: LLVM に問えない op。dot（行列コア）と reduce（クロスレーン）は単一の LLVM IR 演算に
+#: 対応せず、load/store/zeros はメモリ・定数で命令選択の論点が無い。**問えないことを
+#: 黙らず持つ**（表から漏れているのではなく、意図的に対象外だと言えるようにする）。
+NO_LLVM_REFERENCE: frozenset[str] = frozenset({
+    "dot", "reduce", "load", "store", "zeros",
+})
+
+
+@dataclass
+class ReferenceLowering:
+    """Tsugi の命令選択を LLVM の命令選択と突き合わせた結果。"""
+
+    kind: str
+    target: str
+    arch: str
+    available: bool
+    ok: bool | None                 # Tsugi の中核命令が LLVM 側にも現れるか
+    tsugi: list[str] = field(default_factory=list)
+    llvm: list[str] = field(default_factory=list)
+    llvm_refines: bool = False      # LLVM は単独命令で済ませず精緻化を足すか
+    note: str = ""
+
+
+def _strip_enc(m: str) -> str:
+    """符号化・パッキングの飾りを落として本体名にする。
+
+    AMD の `_e32`/`_e64`/`_dpp`/`_sdwa` は同じ演算の符号化違い、RDNA の `v_dual_*`
+    は 2 命令を 1 スロットに詰める VOPD 形式で、いずれも**演算そのものは同じ**。
+    命令選択を比べるときにこれらを別物として数えると差が出たように見えてしまう。
+    """
+    if m.startswith("v_dual_"):
+        m = "v_" + m[len("v_dual_"):]
+    for suf in ("_e32", "_e64", "_dpp", "_sdwa"):
+        if m.endswith(suf):
+            return m[: -len(suf)]
+    return m
+
+
+def _llc() -> str | None:
+    return (os.environ.get("TSUGI_LLC") if os.environ.get("TSUGI_LLC")
+            else shutil.which("llc") or shutil.which("llc-18"))
+
+
+def _core_instructions(kind: str, target: str, arch: str) -> list[str]:
+    """その op が Tsugi の出力に**足す**命令（zeros だけの基準との差分）。
+
+    別表を持たず emitter 自身から導く（表と実装がずれない）。
+    """
+    base = set(_mnemonics(emit(_probe_module("zeros"), target=target,
+                               arch=arch).text, target))
+    got = _mnemonics(emit(_probe_module(kind), target=target, arch=arch).text,
+                     target)
+    return sorted({_strip_enc(m) for m in got} - {_strip_enc(m) for m in base})
+
+
+def reference_lowering(kind: str, *, target: str = "nvidia",
+                       arch: str | None = None) -> ReferenceLowering:
+    """同じ演算を LLVM のバックエンドに落とさせ、Tsugi の命令選択と突き合わせる。
+
+    `ok=True` は「Tsugi が選んだ中核命令が LLVM の出力にも現れる」こと。
+    `llvm_refines=True` は「LLVM は単独命令で済ませず精緻化列を足す」こと——つまり
+    その単独命令は正確丸めではない、という**独立した裏づけ**になる
+    （`BIT_EXACT_ACROSS_VENDORS` の分類が ISA 文書の読み取りだけに依らなくなる）。
+    """
+    if target not in TARGETS:
+        raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+    arch = arch or DEFAULT_ARCH[target]
+    if kind in NO_LLVM_REFERENCE or kind not in _LLVM_IR:
+        return ReferenceLowering(kind, target, arch, available=False, ok=None,
+                                 note="単一の LLVM IR 演算に対応しない（対象外）")
+    return _cached(("refl", kind, target, arch),
+                   lambda: _reference_lowering(kind, target, arch))
+
+
+def _reference_lowering(kind: str, target: str, arch: str) -> ReferenceLowering:
+    tool = _llc()
+    tsugi = _core_instructions(kind, target, arch)
+    if tool is None:
+        return ReferenceLowering(kind, target, arch, available=False, ok=None,
+                                 tsugi=tsugi, note="llc not found (apt install llvm)")
+    src = _LLVM_IR[kind]
+    if isinstance(src, dict):
+        src = src["nvidia" if target == "nvidia" else "amd"]
+    triple = ("nvptx64-nvidia-cuda" if target == "nvidia"
+              else "amdgcn-amd-amdhsa")
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "o.ll"
+        f.write_text(src, encoding="utf-8")
+        p = _run([tool, f"-mtriple={triple}", f"-mcpu={arch}", str(f), "-o", "-"])
+    if p is None or p.returncode != 0:
+        return ReferenceLowering(kind, target, arch, available=False, ok=None,
+                                 tsugi=tsugi,
+                                 note="llc がこの op を落とせない（libcall 等）")
+    llvm_ins = sorted({_strip_enc(m) for m in _mnemonics(p.stdout, target)})
+    # ABI/レジスタ移動などの雑音を除く（比較対象は算術・変換・特殊関数）。
+    # ABI・レジスタ移動・スケジューリングハザード指示は命令選択の論点でない。
+    # RDNA の s_delay_alu / s_waitcnt_depctr は依存待ちの指示であって演算ではない。
+    noise = {"s_waitcnt", "s_setpc_b64", "s_endpgm", "v_mov_b32", "s_mov_b32",
+             "s_delay_alu", "s_waitcnt_depctr", "s_nop",
+             "mov.u32", "mov.b32", "mov.f32", "ld.param.f32", "ld.param.u64",
+             "st.param.f32", "st.param.b16", "ret", "cvta.to.global.u64"}
+    llvm_core = [m for m in llvm_ins if m not in noise]
+    hit = [t for t in tsugi if any(t == m for m in llvm_core)]
+    ok = bool(hit)
+    refines = ok and len(llvm_core) > len(hit)
+    note = ""
+    if refines:
+        note = ("LLVM は単独命令で済ませず精緻化列を足す "
+                f"({[m for m in llvm_core if m not in hit]}) "
+                "→ その単独命令は正確丸めではない")
+    elif not ok:
+        note = f"Tsugi={tsugi} と LLVM={llvm_core} が一致しない（要検討）"
+    return ReferenceLowering(kind, target, arch, available=True, ok=ok,
+                             tsugi=tsugi, llvm=llvm_core, llvm_refines=refines,
+                             note=note)
+
+
+def cross_check_lowering(*, target: str = "nvidia",
+                         arch: str | None = None) -> dict[str, ReferenceLowering]:
+    """LLVM に問える全 op について命令選択を突き合わせる。"""
+    return {k: reference_lowering(k, target=target, arch=arch)
+            for k in sorted(CODEGEN_OPS - NO_LLVM_REFERENCE)}

@@ -110,6 +110,41 @@ codegen.probe_op("dot", target="amd_cdna", arch="gfx1100", isa="amd_cdna").stder
 `lowering.VENDOR_LOWERING` が「どの命令に落ちるか」を*主張*する層、
 `codegen` がその主張を**確かめる**層、という役割分担になっている。
 
+## 独立オラクル — LLVM 自身の命令選択と突き合わせる
+
+ここまでの検査（受理・符号化・ロード構造）は、どれも**私が書いた命令**を前提にしている。
+命令選択そのものが妥当かは、ISA 文書の読み取り＝人手の判断に依存したままだった。
+
+LLVM の AMDGPU / NVPTX バックエンドは同じ問題を解いている**独立した実装**である。
+同じ演算を LLVM IR で書いて `llc` に落とさせ、Tsugi の選択と突き合わせる
+（`reference_lowering` / `cross_check_lowering`）。LLVM は Tsugi を知らないし Tsugi の
+表も参照しないので、この裏づけは循環しない。
+
+**この検査は実際に欠陥を見つけた**。LLVM の NVPTX は `add.rn.f32` / `mul.rn.f32` と
+丸めモードを**明示**する。修飾なしの `add.f32` / `mul.f32` は ptxas が `fma.rn.f32` へ
+contraction しうる——積和が融合されると中間丸めが消えて数値が変わる。
+**ビット等価を検証する道具が contraction 可能な形を出すのは自己矛盾**だった。
+LLVM に倣って `.rn` 明示へ直した（不変条件 96）。
+
+さらに、片側だけが精緻化列を要するかが `BIT_EXACT_ACROSS_VENDORS` の裏づけになる:
+
+| op | NVIDIA（LLVM） | AMD（LLVM） | ビット同一 |
+|---|---|---|---|
+| add / sub / mul / max / cast | 単一命令 | 単一命令 | ✅ |
+| **div** | `div.rn.f32` 単一 | `v_rcp` + `v_div_scale/fmas/fixup` **7 命令** | ❌ |
+| **sqrt** | `sqrt.rn.f32` 単一 | `v_sqrt` + 比較・FMA の精緻化 **9 命令** | ❌ |
+| **exp** | `ex2.approx.f32` 単一 | `v_exp` + 非正規域のスケーリング **5 命令** | ❌ |
+| rsqrt | `rsqrt.approx.f32` | `v_rsq_f32` | ❌（**理由が違う**） |
+
+NVIDIA が単一の正確丸め命令で済ませる演算を AMD が精緻化列で実装する——これは
+「AMD の単独命令は正確丸めでない」という独立した証拠になる。`rsqrt` だけは例外で、
+両社とも近似命令であり LLVM もその近似をそのまま使う。**対称だがビット同一ではない**
+（近似の実装が違う）。不変条件 97 がこの対応と唯一の例外を固定する。
+
+問えない op も黙らず持つ（`NO_LLVM_REFERENCE`）: `dot`（行列コア）と `reduce`
+（クロスレーン）は単一の LLVM IR 演算に対応せず、`load`/`store`/`zeros` は命令選択の
+論点が無い。
+
 ## アセンブラの入れ方（任意・本体の依存ではない）
 
 無くても codegen は動く（L1-生成のみに落ちる）。L2 を得たいときだけ入れる。
@@ -118,10 +153,11 @@ codegen.probe_op("dot", target="amd_cdna", arch="gfx1100", isa="amd_cdna").stder
 |---|---|---|---|
 | nvidia | `ptxas` | `pip install nvidia-cuda-nvcc-cu12` | **NVIDIA CUDA EULA（proprietary）** |
 | amd_cdna / amd_rdna | `llvm-mc` | `apt install llvm`（LLVM 同梱） | Apache-2.0 with LLVM exception |
+| 独立オラクル（両者） | `llc` | `apt install llvm`（LLVM 同梱） | Apache-2.0 with LLVM exception |
 
 `ptxas` は proprietary ゆえ **Apache-2.0 配布物の依存として宣言していない**
 （`pyproject.toml` に入れない）。開発者が自分の判断で入れる任意ツールとして扱う。
-場所は `TSUGI_PTXAS` / `TSUGI_LLVM_MC` 環境変数でも指定できる。
+場所は `TSUGI_PTXAS` / `TSUGI_LLVM_MC` / `TSUGI_LLC` 環境変数でも指定できる。
 
 いずれも **GPU は不要**（アセンブラは CPU で走る）。
 
@@ -156,4 +192,4 @@ ULP 数は持たない。ISA ドキュメント由来の**構造的分類**の�
 
 関連: [`python/tsugi/codegen.py`](../python/tsugi/codegen.py)（実装）・
 [`tests/correctness/test_codegen.py`](../tests/correctness/test_codegen.py)（真値はベンダーのツール）・
-不変条件 90-95（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
+不変条件 90-97（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
