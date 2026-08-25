@@ -18,6 +18,7 @@ from . import (
     attribution,
     blame,
     calibration,
+    codegen,
     decision,
     envelope,
     equivalence,
@@ -44,6 +45,7 @@ from .tracer import trace
 __all__ = [
     "tile",
     "ir",
+    "codegen",
     "portability",
     "equivalence",
     "occupancy",

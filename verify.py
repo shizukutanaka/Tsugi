@@ -224,13 +224,15 @@ def _check_prohibited_and_suites() -> None:
     check("lowering covers every emittable DSL op (nvidia/amd, no drift)",
           all(not unlowered_ops(t) for t in ("nvidia", "amd_cdna", "amd_rdna")))
 
-    # 7. machine-code emission は正直に未実装
+    # 7. machine-code emission は実装済み（不変条件 90-92 が中身を固定）。ここでは
+    #    *正直さ* だけを見る: 未対応ターゲット（SPIR-V）は黙って空を返さず明示的に
+    #    NotImplementedError を投げ、既定の dry-run は生成物を持たない。
     import tsugi
     try:
-        tsugi.compile(lambda: None, (), emit_machine_code=True)
-        check("machine-code honestly unimplemented", False)
+        tsugi.compile(lambda: None, (), target="spirv", emit_machine_code=True)
+        check("machine-code emission is honest about unsupported targets", False)
     except NotImplementedError:
-        check("machine-code honestly unimplemented", True)
+        check("machine-code emission is honest about unsupported targets", True)
 
 
 def _check_core_pillars() -> None:
@@ -1230,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-89: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-92: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2063,6 +2065,81 @@ def _check_meta_integrity() -> None:
           and _blk89.exit_code == 2                             # 予算超過なら BLOCK
           and _ok89.exit_code < 2                               # 予算が緩ければ通す
           and _tsugi89.verify(_gm89).exit_code == _ad89.exit_code)  # verify() から到達
+
+    # 90. 「codegen は LLVM/MLIR + 実機が要るので不可能」は **要件の誤り**だった。
+    #     生成（純関数）とアセンブル（CPU ツール）と実行（要 GPU）は別物で、前二者は
+    #     この環境で可能。単一の IR から 3 ターゲットの実アセンブリが出ること、そして
+    #     **ベンダー自身のアセンブラ**（ptxas / llvm-mc）が受理することを固定する。
+    #     ツールが無い環境では ok=None（L1）に落ち、**未検証を合格に丸めない**。
+    from tsugi import codegen as _cg90
+    from tsugi import tile as _tile90
+    from tsugi.tracer import EMITTABLE_OPS as _EMITTABLE90
+
+    @_tsugi89.jit
+    def _KMM90(a, b, c, M, N, K, BM, BN, BK):
+        pm, pn = _tsugi89.program_id(0), _tsugi89.program_id(1)
+        acc = _tile90.zeros((BM, BN), _tsugi89.float32)
+        for k in range(0, K, BK):
+            acc = _tile90.dot(_tile90.load(a, (pm * BM, k), (BM, BK)),
+                              _tile90.load(b, (k, pn * BN), (BK, BN)), acc)
+        _tile90.store(c, (pm * BM, pn * BN), acc.to(_tsugi89.float16))
+
+    _ARGS90 = (np.zeros((32, 32), np.float16), np.zeros((32, 32), np.float16),
+               np.zeros((32, 32), np.float32), 32, 32, 32, 16, 16, 16)
+    _mod90 = _tsugi89.trace(_KMM90, _ARGS90, {}, program_ids=(0, 0))
+    _res90 = {t: _cg90.verify_codegen(_mod90, target=t) for t in _cg90.TARGETS}
+    check("one IR emits real PTX/AMDGCN that the vendors' own assemblers accept (or L1)",
+          all(em.text.strip() and not em.uncovered for em, _ in _res90.values())
+          and ".visible .entry" in _res90["nvidia"][0].text
+          and all(".amdgcn_target" in _res90[t][0].text
+                  for t in ("amd_cdna", "amd_rdna"))
+          and all((a.ok is True and a.obj_bytes > 0) if _cg90.toolchain(t) is not None
+                  else (a.ok is None and a.available is False)
+                  for t, (_, a) in _res90.items())
+          # L3（実機実行検証）は到達不能。どの経路もそれを主張しない。
+          and all(a.level != _cg90.VERIFY_LEVELS[3] for _, a in _res90.values()))
+
+    # 91. codegen の価値は「テキストが出る」ことでなく、**arch 条件付きの可用性を
+    #     ツールチェインが事実として返す**こと。手書きの対応表では作り込めない
+    #     移植ブロッカー（WMMA は sm_70+ / MFMA は CDNA 専用）をアセンブラに問う。
+    #     さらに壊れたアセンブリが弾かれることで、この検査自体の有効性を担保する。
+    _probe91 = _cg90.probe_op
+    check("the assembler is the oracle: arch-conditional gaps are found, junk is rejected",
+          (_cg90.toolchain("nvidia") is None or (
+              _probe91("dot", target="nvidia", arch="sm_80").ok is True
+              and _probe91("dot", target="nvidia", arch="sm_60").ok is False
+              and _probe91("add", target="nvidia", arch="sm_60").ok is True
+              and _cg90.assemble(".version 7.0\n.target sm_80\nbogus_ins;\n",
+                                 target="nvidia").ok is False))
+          and (_cg90.toolchain("amd_cdna") is None or (
+              _probe91("dot", target="amd_cdna", arch="gfx90a").ok is True
+              and _probe91("dot", target="amd_rdna", arch="gfx1100").ok is True
+              # CDNA の MFMA を RDNA の arch へ → 成立しない（単一命令では移植不可）
+              and _probe91("dot", target="amd_cdna", arch="gfx1100",
+                           isa="amd_cdna").ok is False
+              and _cg90.assemble("\tv_no_such_instruction v0, v1\n",
+                                 target="amd_cdna").ok is False)))
+
+    # 92. 生成が facade（audit / compile）から到達し、**保証しないもの**を黙らない。
+    #     L2 が言えるのは命令の存在・構文・arch 可用性まで。レイアウト接合と実行の
+    #     正しさは L3（実機）で、そこは常に空だとレポート自身が述べること。
+    _ad92 = _tsugi89.audit(_mod90, block_dims=(32,))
+    _cgp92 = [p for p in _ad92.phases if p.name.startswith("codegen")]
+    _art92 = _tsugi89.compile(_KMM90, _ARGS90, target="nvidia", emit_machine_code=True)
+    check("codegen is reachable from the facades and declares what it does NOT verify",
+          len(_cgp92) == 1                                        # audit に載る
+          and "L3" in _cgp92[0].to_text() and "常に空" in _cgp92[0].to_text()
+          and any(n.startswith("layout-unstitched")               # 未接合を黙らない
+                  for n in _cg90.emit(_mod90, target="nvidia").unstitched)
+          and _art92.asm is not None                              # compile から到達
+          and _art92.level == (_cg90.VERIFY_LEVELS[2]
+                               if _cg90.toolchain("nvidia") is not None
+                               else _cg90.VERIFY_LEVELS[1])
+          and _tsugi89.compile(_KMM90, _ARGS90, target="nvidia").asm is None
+          # ビット同一でないと分類した op が実際に近似命令を出している（分類が腐らない）
+          and set(_cg90.BIT_EXACT_ACROSS_VENDORS) == set(_cg90.CODEGEN_OPS)
+          and _cg90.CODEGEN_OPS <= _EMITTABLE90
+          and not _cg90.uncodegenned_ops("nvidia"))
 
 
 def main() -> int:

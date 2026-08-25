@@ -14,6 +14,12 @@ dependencies = ["numpy>=1.22"]
 
 [project.optional-dependencies]
 torch = ["torch>=2.1"]
+# codegen の L2（アセンブル検証）に使うアセンブラは **依存として宣言しない**:
+#   - `ptxas` は NVIDIA CUDA Toolkit EULA（proprietary）で Apache-2.0 配布物に
+#     引き込むべきでない。開発者が自分の判断で入れる任意ツールとして扱う。
+#   - `llvm-mc` は LLVM 同梱の外部バイナリで pip 依存ではない。
+# どちらも無ければ codegen は L1-生成のみに落ち、「検証済み」とは言わない。
+# 入れ方は docs/CODEGEN.md 参照。
 
 [tool.setuptools.packages.find]
 where = ["."]

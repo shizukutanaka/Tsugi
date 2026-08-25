@@ -48,10 +48,21 @@ def test_invalid_target_raises():
         pass
 
 
-def test_machine_code_honestly_unimplemented():
+def test_machine_code_emission_is_honest_about_unsupported_targets():
+    """PTX/AMDGCN は生成する（codegen 層）。SPIR-V は未対応と明示的に告げる。
+
+    かつてここは「emit_machine_code は常に NotImplementedError」を固定していた。
+    それは *要件の誤り*（生成とアセンブルに実機は要らない）を検査に凍らせたもので、
+    codegen 層の実装に伴い「未対応ターゲットを黙って空返ししない」へ置き換えた。
+    中身の検証は test_codegen.py と不変条件 90-92 が持つ。
+    """
+    art = tsugi.compile(matmul_kernel, _args(), target="nvidia",
+                        emit_machine_code=True)
+    assert art.asm is not None and ".visible .entry" in art.asm
     try:
-        tsugi.compile(matmul_kernel, _args(), emit_machine_code=True)
-        raise AssertionError("should raise NotImplementedError")
+        tsugi.compile(matmul_kernel, _args(), target="spirv",
+                      emit_machine_code=True)
+        raise AssertionError("spirv should raise NotImplementedError")
     except NotImplementedError:
         pass
 
@@ -59,7 +70,7 @@ def test_machine_code_honestly_unimplemented():
 def main() -> int:
     ok = True
     for t in (test_compile_nvidia_and_amd, test_invalid_target_raises,
-              test_machine_code_honestly_unimplemented):
+              test_machine_code_emission_is_honest_about_unsupported_targets):
         try:
             t()
             print(f"[PASS] {t.__name__}")

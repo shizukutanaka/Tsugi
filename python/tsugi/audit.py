@@ -16,6 +16,7 @@ oracle を渡すと correctness 層が動き、shared-mode 検出に加え blame
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import ir
 from .report import Risk
@@ -372,6 +373,63 @@ def verify(target, *, block_dims=None, cfg=None, **audit_kwargs) -> "Audit":
     return audit(module, cfg, block_dims=block_dims, **audit_kwargs)
 
 
+def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
+    """IR から各社の実アセンブリを生成し、ベンダーのアセンブラに受理させる層。
+
+    `lowering` の対応表が「どの命令に落ちるか」を*主張*するのに対し、ここは
+    その主張を ptxas / llvm-mc に**確かめさせる**。判定の付け方（fail-safe）:
+
+    - アセンブラが**不受理** → BLOCK。その arch にその命令列は成立しない
+      ＝単一ソース約束が命令レベルで破れている（`feasibility` の起動不能と同класс）。
+    - 命令列を持たない op（L0）が IR にある → WARN。カーネル全体は生成できない。
+    - アセンブラが**無い** → INFO で「L1-生成のみ」。**検証済みとは言わない**。
+
+    L2 が保証しないもの（黙らない）: レイアウト接合と実行時の意味論。
+    """
+    from .codegen import TARGETS as CG_TARGETS
+    from .codegen import (
+        approximate_ops,
+        codegen_coverage,
+        uncodegenned_ops,
+        verify_codegen,
+    )
+
+    cg = AuditPhase("codegen 生成物（アセンブル検証）", "decided", Risk.INFO)
+    used = set(module.op_kinds())
+    for t in [x for x in targets if x in CG_TARGETS]:
+        missing = sorted(used & uncodegenned_ops(t))
+        if missing:
+            cg.max_risk = max(cg.max_risk, Risk.WARN)
+            cg.lines.append(f"{t}: 命令列を持たない op {missing} が IR にある（L0）"
+                            "→ カーネル全体は生成できない")
+            continue
+        em, asm = verify_codegen(module, target=t)
+        if asm.available and asm.ok:
+            cg.lines.append(f"{t}/{em.arch}: {asm.level}"
+                            f"（{asm.obj_bytes} B・{Path(asm.tool).name}）")
+        elif not asm.available:
+            cg.lines.append(f"{t}/{em.arch}: {asm.level}"
+                            f"（{len(em.text.splitlines())} 行）— {asm.stderr}")
+        else:
+            cg.max_risk = Risk.BLOCK
+            head = (asm.stderr or "").splitlines()[:1]
+            cg.lines.append(f"{t}/{em.arch}: アセンブラが不受理 → 単一ソース約束の破綻"
+                            + (f": {head[0]}" if head else ""))
+        for n in em.unstitched:
+            cg.lines.append(f"  {n}")
+    cov, total = codegen_coverage("nvidia")
+    cg.lines.append(f"命令列を持つ op: {cov}/{total}（DSL の語彙に対して）")
+    # codegen → numerics の橋: 「生成した命令自体がベンダー間でビット同一か」。
+    # equivalence 層が発散の *大きさ* を扱うのに対し、ここは発散の *出所* を名指す。
+    approx = sorted(used & approximate_ops())
+    if approx:
+        cg.lines.append(f"ビット同一を期待できない命令を含む op: {approx}"
+                        "（近似命令・累積順序の差が発散源——equivalence 層が量を扱う）")
+    cg.lines.append("L2 が保証するのは命令の存在・構文・arch 可用性まで。"
+                    "レイアウト接合と実行の正しさは L3（実機）——常に空")
+    return cg
+
+
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
           block_dims=None, ref_logits=None, sample=None, provenance=None,
           temperature: float = 1.0) -> Audit:
@@ -547,6 +605,9 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
                    "audit_runtime(task='sampling') の実測 TV を見よ）"
                    if tvb > 0.5 else ""))
         a.phases.append(prop)
+
+    # --- 静的: codegen 生成物（ベンダーのアセンブラが真値） ---
+    a.phases.append(_codegen_phase(module, targets))
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---
     rt = AuditPhase("runtime 実行時チェックリスト", "pending", Risk.INFO)

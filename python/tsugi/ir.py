@@ -1,9 +1,10 @@
 """Tsugi IR — tsugi.tile dialect の in-memory 表現と MLIR 風テキスト出力。
 
 SPEC.md §2.1 / src/tsugi/ir/TsugiTileOps.td と対応。tracer がこれを生成し、
-GPU バックエンド（Phase1+・要 LLVM/MLIR + 実機）がこれを各社へ lowering する。
+`tsugi.codegen` がこれを各社の実アセンブリ（PTX/AMDGCN）へ落とす。
 
-ここは構造のみ（CPU で動作・検証可能）。実 codegen は別（未検証と明記）。
+ここは構造のみ（CPU で動作・検証可能）。生成物がベンダーのアセンブラに通ることまでは
+codegen 層が機械検証するが、**実機での実行は依然として未検証**（codegen の L3）。
 """
 from __future__ import annotations
 
