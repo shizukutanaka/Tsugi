@@ -57,6 +57,13 @@ torch 無しでも動き、その場合は実 FX 経路を未検証と正直に�
 
 torch は依然として任意依存（`[torch]` extra）。
 
+**追補（実機を手にした次の一手）**: `audit_runtime` は「両ベンダーの実機出力を突き合わせる」
+入口なのに、渡されるテンソルが **GPU 上にある**場合を想定していなかった。`np.asarray` は
+CUDA/HIP テンソルに生の TypeError を投げるため、実機を手にしたユーザーの最初のコマンドが
+製品の説明でなく torch のエラーで止まる。`to_array` を入れて `.detach().cpu().numpy()` を
+通すようにした。`layers_*`/`fn_*` は *呼び出し可能* で配列ではないため変換しない
+（一律変換して既存テストが検出した）。不変条件 **103**（204/204）。
+
 文書: `docs/CODEGEN.md`（想定ユーザーの経路・降下の正直さ・意味論照合の節）・
 QUICKSTART §5・FEATURE-AUDIT A-3（大部分解消＋偽OK の記録）・ASSESSMENT・
 `tsugi_torch/fxbridge.py` の「実 FX に対しては未検証」という但し書きを解消。

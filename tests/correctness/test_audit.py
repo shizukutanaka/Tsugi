@@ -857,6 +857,54 @@ def test_verify_one_call_facade_accepts_path_and_module():
     assert ad_mod.exit_code == audit(mod, cfg, block_dims=block).exit_code
 
 
+class _DeviceTensor:
+    """GPU 上のテンソルの挙動を CPU で再現する stand-in。
+
+    実 CUDA/HIP テンソルは `np.asarray` で TypeError を投げ、`.detach().cpu().numpy()`
+    でのみ NumPy 化できる。実機を持たない環境でその経路を固定するための擬似物。
+    """
+
+    def __init__(self, arr):
+        self._a = np.asarray(arr)
+
+    def __array__(self, *a, **k):
+        raise TypeError("can't convert cuda:0 device type tensor to numpy. "
+                        "Use Tensor.cpu()")
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self._a
+
+
+def test_audit_runtime_accepts_device_tensors():
+    """`audit_runtime` は **GPU 上のテンソル**をそのまま受け取れること。
+
+    この関数は「両ベンダーの実機出力を突き合わせる」ための入口であり、渡される
+    テンソルは当然 GPU 上にある。`np.asarray` を直接呼んでいた頃は、実機を手にした
+    ユーザーの最初のコマンドが製品の説明ではなく torch の生の TypeError で止まった。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 16))
+    b = a + rng.standard_normal((8, 16)) * 1e-4
+    la = rng.standard_normal((50, 8))
+    lb = la + rng.standard_normal((50, 8)) * 1e-4
+    ad = audit_runtime(_DeviceTensor(a), _DeviceTensor(b), K=256, dtype="float16",
+                       logits_a=_DeviceTensor(la), logits_b=_DeviceTensor(lb))
+    assert ad.exit_code in (0, 1, 2)
+    assert any("equivalence" in p.name for p in ad.phases)
+    # stand-in が実際に numpy 変換を拒む（＝この検査が有効）ことも固定
+    try:
+        np.asarray(_DeviceTensor(a))
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("stand-in が numpy 変換を拒んでいない（検査が無効）")
+    # 素の ndarray 経路が壊れていないこと
+    assert audit_runtime(a, b, K=256, dtype="float16").exit_code in (0, 1, 2)
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -897,6 +945,7 @@ def main() -> int:
         test_audit_cross_vendor_calibrates_safety_from_the_same_runs,
         test_verify_one_call_facade_accepts_path_and_module,
         test_audit_demo_runs_end_to_end,
+        test_audit_runtime_accepts_device_tensors,
     ]
     for t in tests:
         try:

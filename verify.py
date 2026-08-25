@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-102: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-103: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2414,6 +2414,45 @@ def _check_meta_integrity() -> None:
           and _dotmm102 and not _dotmm102[0].attrs.get("rhs_transposed")
           and _raises102                               # 足りなければ落ちる
           and (_torch102 is None or _torch102 is True))
+
+    # 103. `audit_runtime` は「両ベンダーの実機出力を突き合わせる」入口であり、渡される
+    #      テンソルは当然 **GPU 上にある**。`np.asarray` を直接呼んでいた頃は、実機を
+    #      手にしたユーザーの最初のコマンドが製品の説明でなく torch の生の TypeError で
+    #      止まった。`to_array` が `.detach().cpu().numpy()` を通す。
+    #      同時に `layers_*`/`fn_*` は *呼び出し可能* であって配列ではないので変換しない。
+    from tsugi.audit import audit_runtime as _audit_runtime
+    from tsugi.audit import to_array as _ta103
+
+    class _Dev103:                     # GPU テンソルの挙動（numpy 変換で TypeError）
+        def __init__(self, arr):
+            self._a = np.asarray(arr)
+
+        def __array__(self, *a, **k):
+            raise TypeError("can't convert cuda:0 device type tensor to numpy")
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self._a
+
+    _rng103 = np.random.default_rng(0)
+    _a103 = _rng103.standard_normal((8, 16))
+    _b103 = _a103 + _rng103.standard_normal((8, 16)) * 1e-4
+    _plain103 = False
+    try:                               # stand-in が実際に numpy 変換を拒む（検査の有効性）
+        np.asarray(_Dev103(_a103))
+        _plain103 = True
+    except TypeError:
+        _plain103 = False
+    _ad103 = _audit_runtime(_Dev103(_a103), _Dev103(_b103), K=256, dtype="float16")
+    check("audit_runtime accepts device (GPU) tensors, and does not mangle callables",
+          not _plain103                                  # 検査が有効
+          and isinstance(_ta103(_Dev103(_a103)), np.ndarray)
+          and _ta103(None) is None
+          and _ad103.exit_code in (0, 1, 2)
+          and _audit_runtime(_a103, _b103, K=256,
+                             dtype="float16").exit_code in (0, 1, 2))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない

@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from . import ir
 from .report import Risk
 
@@ -673,6 +675,31 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
     return a
 
 
+def to_array(x):
+    """GPU テンソルを含む配列様オブジェクトを NumPy 配列にする（None は素通し）。
+
+    **なぜ要るか**: `audit_runtime` は「両ベンダーの実機出力を突き合わせる」ための入口
+    であり、渡されるテンソルは当然 **GPU 上にある**。`np.asarray` は CUDA/HIP テンソルに
+    対して素の TypeError（"can't convert cuda:0 device type tensor to numpy"）を投げる
+    ——実機を手にしたユーザーが最初に打つコマンドが、製品の説明ではなく torch の
+    エラーで止まる。`.detach().cpu().numpy()` を持つなら使う。
+    """
+    if x is None:
+        return None
+    for step in ("detach", "cpu"):
+        if hasattr(x, step):
+            try:
+                x = getattr(x, step)()
+            except Exception:  # noqa: BLE001 — 変換できなければ次の手段へ
+                break
+    if hasattr(x, "numpy"):
+        try:
+            return np.asarray(x.numpy())
+        except Exception:  # noqa: BLE001
+            pass
+    return np.asarray(x)
+
+
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
                   logits_oracle=None,
@@ -686,6 +713,8 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   worst_steps: int = 400, worst_seed: int = 0, worst_bounds=None,
                   worst_tol: float | None = None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
+
+    テンソルは GPU 上にあってよい（`to_array` が `.detach().cpu().numpy()` を通す）。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
       - env があれば envelope.check_tensor（本番入力が認証前提内か）
@@ -717,6 +746,15 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     oracle 無しでは a≈b（portability）しか言えず correctness は未確定 —— shared-mode は
     原理的に検出不能（SPEC-verification §4.1）。oracle があって初めて正しさを問える。
     """
+    # 実機テンソル（GPU 上）をそのまま受け取れるようにする。ここを通さないと、
+    # 実機を手にしたユーザーの最初のコマンドが torch の生の TypeError で止まる。
+    # テンソル引数のみ変換する。`layers_*` は *層関数の列*、`fn_a`/`fn_b` は呼び出し可能
+    # であって配列ではない——ここを一律変換すると呼び出せなくなる（既存テストが検出）。
+    a_out, b_out = to_array(a_out), to_array(b_out)
+    logits_a, logits_b = to_array(logits_a), to_array(logits_b)
+    logits_oracle, oracle = to_array(logits_oracle), to_array(oracle)
+    x0 = to_array(x0)
+
     import numpy as np
 
     from .calibration import check_systematic
