@@ -315,7 +315,7 @@ max-min は ~4 万倍に膨張するが robust 床は不変（偽BLOCK 化を防
 **P1（近く）**
 - ✅ Q8（修正済）: 相対増幅 op の是正＋ empirical_cond（data-driven）＋ 静的下界の WARN。
 - ✅ Q23/Q25/Q26（修正済）: torch backend が FX→GraphOp 写像で静的 audit を走らせ warn
-  （検証だけ先に届ける）。実 torch.fx 結線は torch 環境が要る（stand-in で検証）。
+  （検証だけ先に届ける）。実 torch.fx 結線も検証済み（第 60 回・torch 不在時は skip）。
 - ✅ Q18/Q20（修正済）: 橋を系統/乱雑成分に分け残差ベース bound に（前イテレーション）。
 - ✅ Q44/Q47（修正済）: equivalence に共通 risk/max_risk/ok インターフェースを付与。
 - ✅ Q35/Q36（修正済）: property test 10×200・calibration を roc_sweep で ROC 化。

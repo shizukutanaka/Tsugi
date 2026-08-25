@@ -3,9 +3,14 @@
 GPU codegen 完成前でも、torch.compile(model, backend="tsugi") の FX グラフに対し
 静的検証（propagation/増幅 op の可視化）を走らせて警告を出せる —— これが楔の早期価値。
 
-torch を import せずに動く（FX ノードは duck-typed で読む）。aten op 名 → 論理 op の
-写像は stand-in グラフで検証済み。**実 torch.fx との結線は torch 環境が要る（本環境では
-実 FX に対しては未検証）**＝主張と実装の一致。
+torch を import せずに動く（FX ノードは duck-typed で読む）。写像は stand-in グラフに加え
+**実 `torch.fx.symbolic_trace` の出力でも検証済み**（`tests/correctness/test_fxlower.py`・
+torch が無い環境ではその部分だけ正直に skip する）。
+
+実 FX で検証して初めて判った欠陥（第 60 回）: `call_module` の target は "0"/"1" という
+経路名で op の種類を表さない。`resolved_target` で解決しないと `_kind_of` が全ノードで
+None を返し、**実モデルが必ず「0 numeric ops・発散 0」＝無害判定になる**。stand-in は
+aten 名を使うため露見しなかった。duck-typed 検証の限界を示す実例として記録する。
 """
 from __future__ import annotations
 

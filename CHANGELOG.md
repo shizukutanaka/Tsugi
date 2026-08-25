@@ -3,6 +3,64 @@
 Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加・互換変更ありうる）。
 
 
+
+## 第60回 — 楔ユーザーを機械語まで届かせる: FX → IR 降下と意味論の照合（A-3 大部分解消）
+
+**問題（要件を測る視点が間違っていた）**: 第 59 回で「残るは L3（実機）だけ」と結論したが、
+それは*実装者の視点*での完成判定だった。**想定ユーザーの視点**で測ると別の穴がある——
+codegen の恩恵に与れるのは tile-DSL を書く人だけで、このプロダクトの楔である PyTorch
+開発者の経路は論理 op 列（発散予測用）を作るだけで `ir.Module` を一度も作らなかった。
+「単一ソースで両ベンダー」という看板の約束が、看板の想定客に一切届いていなかった。
+
+**修正**:
+
+- `python/tsugi_torch/fxlower.py`（新規）— FX グラフ → Tsugi IR の降下。PyTorch 開発者が
+  tile-DSL 経路と同じ codegen 検証（アセンブル・符号化照合・ロード構造・LLVM 突き合わせ）を
+  受け取る。`audit_torch` に codegen phase を追加。
+- `python/tsugi/interp.py`（新規）— IR の CPU リファレンス意味論（NumPy 解釈器）。降下が
+  *意味* を保つかはアセンブラにも LLVM にも問えない——実行して比べるしかない。
+
+正直さの契約（黙って落とさない）: `unsupported`（→ module は partial・判定に WARN）/
+`decomposed`（恒等式で分解・浮動小数点では丸めが変わる＝発散源）/ `shape_only`
+（データ移動を未モデル化と言える）/ `assumptions`（eps 等・黙って数値を選ばない）。
+
+**実 torch を入れて初めて見つかった欠陥（3 件）**:
+
+1. **実 FX に対する全面的な偽OK**（最重要）。`call_module` の target は "0"/"1" という
+   経路名で op の種類を表さない。解決していなかったため `_kind_of` が全ノードで None を
+   返し、`audit_fx` は実モデルに対し **「0 numeric ops・発散 0・正規化なし」** を報告して
+   いた——**想定ユーザーのモデルが必ず無害判定になる**。stand-in グラフは aten 名を使う
+   ため露見しなかった。`resolved_target` で解決し、照合をアンダースコア非依存にした
+   （`LayerNorm` は `layer_norm` を含まない）。実測: 0 ops → 4 ops・発散 0 → 5.0e-2。
+   **duck-typed stand-in だけの検証には限界がある**という実例（不変条件 99）。
+2. **layer_norm の eps 欠落**（意味論照合で検出・max|Δ|≈1.9e-5）。
+3. **erf 版 gelu の無断置換**（同・max|Δ|≈4.6e-4）。tanh 近似は別の関数であり、等価性を
+   検証する道具が検証対象を差し替えるのは偽OK そのもの。tanh 版と明示されたときだけ
+   分解し、erf 版は「表せない」と言うようにした。
+
+`codegen` 側も 1 件: `zeros` の `fill` 属性を無視しており、分解で使う 1.0/0.5 等がすべて
+0 になっていた（**アセンブルは通るのに意味が違う**静かな偽OK）。
+
+**実証** — 意味論照合（torch eager 対 IR 評価・float64・8 経路すべて max|Δ| < 1e-9）:
+
+| 経路 | max\|Δ\| | 経路 | max\|Δ\| |
+|---|---|---|---|
+| Softmax | 2.8e-17 | SiLU | 4.4e-16 |
+| LayerNorm | 2.2e-16 | Tanh | 2.2e-16 |
+| RMSNorm | 4.4e-16 | Sigmoid | 5.6e-17 |
+| GELU(tanh) | 9.1e-13 | ReLU | 0.0 |
+
+実 `nn.Sequential(Linear, LayerNorm, GELU, Softmax)` → `tsugi.verify(gm)` が 3 ターゲット
+とも L2＋符号化照合＋ロード構造まで到達。不変条件 **98/99/100**（201/201 PASS）。
+`tests/correctness/test_fxlower.py`（新規・8 テスト）を run.py に登録（25 スイート）。
+torch 無しでも動き、その場合は実 FX 経路を未検証と正直に告げる。
+
+torch は依然として任意依存（`[torch]` extra）。
+
+文書: `docs/CODEGEN.md`（想定ユーザーの経路・降下の正直さ・意味論照合の節）・
+QUICKSTART §5・FEATURE-AUDIT A-3（大部分解消＋偽OK の記録）・ASSESSMENT・
+`tsugi_torch/fxbridge.py` の「実 FX に対しては未検証」という但し書きを解消。
+
 ## 第59回 — codegen 凍結解除: 実 PTX/AMDGCN 生成とベンダーアセンブラによる機械検証（A-4・L2）
 
 **問題**: 「codegen は LLVM/MLIR + 実機が要るので不可能」を 50 回以上のラウンドで前提と

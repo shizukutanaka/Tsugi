@@ -85,8 +85,21 @@ print(ad.to_text()); raise SystemExit(ad.exit_code)   # CI ゲート契約
 dynamic shape は WARN として判定に載り、実機クロスベンダー照合が要ることは
 pending phase で明示される。
 
-`torch.compile(model, backend="tsugi")` を使えば codegen 前でも同じ静的検証が警告として届く
-（実行は eager に素通し・嘘をつかない）。
+**codegen もこの経路に届く**（第 60 回）。FX グラフは Tsugi IR へ降下し、tile-DSL 経路と
+同じ検証（アセンブル・符号化照合・ロード構造・LLVM との命令選択照合）を受ける:
+
+```
+[INFO ] codegen 生成物（FX → IR → 実機械語）
+    FX 6 ノード中 4 を IR へ降下
+      分解: layer_norm を mean → 中心化 → 分散 → rsqrt → scale へ分解
+    nvidia/sm_80: L2-アセンブル検証済み（6568 B・ptxas）
+    amd_cdna/gfx90a: L2-アセンブル検証済み（1880 B・llvm-mc）
+```
+
+表せない op があれば **partial** と告げ判定に WARN として載る（黙って落とさない）。
+降下が意味を保つことは `tsugi.interp` で torch eager と照合済み（[CODEGEN.md](CODEGEN.md)）。
+
+`torch.compile(model, backend="tsugi")` の**実行**は依然 eager 素通し（嘘をつかない）。
 
 ## 6. Python から 1 行で（CLI と同じ判定）
 
@@ -141,6 +154,7 @@ print(asm.level)      # L2-アセンブル検証済み（アセンブラが無�
 | 移植性・起動可能性・数値等価性・タスク影響の**検証**（CPU） | ✅ 動く（このページ） |
 | codegen（単一 IR → 実 PTX/実 AMDGCN → **アセンブル検証**） | ✅ 動く（[CODEGEN.md](CODEGEN.md)・GPU 不要） |
 | 実機 GPU でのクロスベンダー検証 | 手順は完成・実機待ち（[GPU-BRINGUP.md](GPU-BRINGUP.md)） |
+| PyTorch モデル → IR → 実機械語（**楔ユーザーの経路**） | ✅ 動く（[CODEGEN.md](CODEGEN.md)・GPU 不要） |
 | 生成物の**実行**・レイアウト接合・torch.compile 実実行 | 要 GPU（codegen の L3） |
 
 reading path は [README](../README.md#ドキュメント) 参照。

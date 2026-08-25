@@ -34,10 +34,13 @@ PASS・ruff clean）に基づき、観測した事実のみを根拠にする。
    シミュレーション内の経験値。ただし「実機の run が手に入った瞬間に機械的に校正する
    手続き」は完成し実機入口に接続済み（`calibration.calibrate_safety`・
    `docs/GPU-BRINGUP.md`）。残るのは実機そのもので、検証器側の設計課題ではなくなった。
-3. **想定入口（torch.compile）— ゲートは通ったが実行時層は codegen 後**: PyTorch 開発者も
-   `tsugi.verify(fx_graph)` で **ゲート付き判定**（exit_code/to_text）を得られるようになった
-   （`audit_torch`・不変条件 89）。残るのは worstcase/attribution/タスク別 decision で、
-   これらは実行時出力が要るため codegen 後（A-3 残）。
+3. **想定入口（torch.compile）— 機械語まで届いた。残りは実行時層のみ**: PyTorch 開発者は
+   `tsugi.verify(fx_graph)` でゲート付き判定（不変条件 89）に加え、**codegen 検証**まで
+   受け取る（FX → IR 降下・不変条件 98）。降下の意味論は torch eager と照合済み。
+   残るのは worstcase/attribution/タスク別 decision で、これらは**実行時出力**が要るため
+   L3（実機）待ち——検証器側の設計課題ではなくなった（A-3 残）。
+   なお第 60 回はこの経路で **実 FX に対する全面的な偽OK**（実モデルが必ず「発散 0」と
+   報告される）を発見・修正した。duck-typed stand-in だけの検証には限界がある。
 4. **リポジトリ運用の未成熟（ゲート側は整備済み）**: main ブランチ無し・タグ/Release ゼロ・
    Actions 実質無効（権限制約）。ただしゲート自体は `python check.py` の **単一定義** に畳まれ、
    ローカル/CI/リリースが同じものを呼ぶ（不変条件 88 がゲートの再列挙を禁じドリフトを構造的に
@@ -121,6 +124,7 @@ tf32x3 緩和）はクロスベンダーの主要発散源を網羅し、これ�
 | 開発ゲートが 1 コマンド・単一定義 | `python check.py`（17〜18s・不変条件 88） |
 | 主張が実装と一致（過大広告なし） | README が ✅ 今日動く / 🔜 Phase 4 を分離 |
 | **想定ユーザー（PyTorch 開発者）が同じ 1 コールで使える** | `tsugi.verify(fx_graph)` → ゲート付き `Audit`（不変条件 89） |
+| **想定ユーザーのモデルが実機械語まで到達する** | FX → IR → PTX/AMDGCN（不変条件 98）・意味論は torch eager と照合（不変条件 100） |
 | **単一ソースが両ベンダーの実機械語まで到達する** | 1 IR → PTX/AMDGCN → アセンブル・符号化照合・ロード構造・LLVM との命令選択照合（不変条件 90-97） |
 
 > 完成の一言: **検証器プロダクトは完成し、codegen も CPU で到達しうる限界（L2＋①〜④）

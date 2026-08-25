@@ -112,7 +112,7 @@
 
 ### P1（P0 の次）
 
-3. **[A-3] 一部解消(commit efdc027)** `python/tsugi_torch/__init__.py` `_tsugi_compile()`
+3. **[A-3] 大部分解消(efdc027 → 9513851)** `python/tsugi_torch/__init__.py` `_tsugi_compile()`
    が `audit_fx` しか呼ばない
    - 何が無いか: torch.compile バックエンド経路は FX グラフの静的監査
      （`fxbridge.audit_fx`: 増幅 op・モデル発散・非決定 op・dynamic shape 検出）のみ。
@@ -127,9 +127,17 @@
    - なぜ危険か（残る部分）: 製品の想定入口は `torch.compile(model, backend="tsugi")`。
      そこから使えない機能（worstcase・attribution・LAYOUT 判別・タスク別 decision）は
      依然として大半のユーザーに存在しないのと同じ。
-   - 推奨アクション: example_inputs から実行時検証に必要なデータ（代表テンソル・logits）を
-     best-effort で取り出し、`audit()` の `sample=` / `ref_logits=` に相当する情報を
-     警告メッセージに追加する段階的接続。フル接続は実行時出力が要るため codegen 後。
+   - **第 60 回でさらに前進**: FX → Tsugi IR の降下（`tsugi_torch/fxlower.py`）を入れ、
+     楔ユーザーが tile-DSL 経路と同じ **codegen 検証**（アセンブル・符号化照合・
+     ロード構造・LLVM 突き合わせ）を受け取れるようにした。表せない op は partial として
+     判定に載る。降下の意味論は `tsugi.interp` で torch eager と照合済み（8 経路 <1e-9）。
+   - **その過程で実 FX に対する全面的な偽OK を発見・修正**: `call_module` の target は
+     "0"/"1" という経路名で op の種類を表さず、解決していなかったため `audit_fx` は
+     実モデルに対し「0 numeric ops・発散 0・正規化なし」を報告していた（＝想定ユーザーの
+     モデルが必ず無害判定）。stand-in グラフは aten 名を使うため露見せず、実 torch を
+     入れて初めて判明した。**duck-typed 検証の限界を示す実例**（不変条件 99）。
+   - 残り: worstcase・attribution・LAYOUT 判別・タスク別 decision。いずれも**実行時
+     出力**が要るため L3（実機）待ちで、これは検証器側の設計課題ではない。
 
 4. **[A-4] ✅ 解消済み・L2 まで(commit dab5d4f)** GPU codegen 未実装
    ——**「不可能」という前提そのものが誤りだった事例**

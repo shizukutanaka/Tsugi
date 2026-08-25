@@ -193,3 +193,50 @@ ULP 数は持たない。ISA ドキュメント由来の**構造的分類**の�
 関連: [`python/tsugi/codegen.py`](../python/tsugi/codegen.py)（実装）・
 [`tests/correctness/test_codegen.py`](../tests/correctness/test_codegen.py)（真値はベンダーのツール）・
 不変条件 90-97（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
+
+## 想定ユーザー（PyTorch 開発者）の経路
+
+codegen は長らく **tile-DSL を書く人にしか届いていなかった**。このプロダクトの楔は
+`torch.compile` であり、想定ユーザーは PyTorch 開発者である。彼らの経路は論理 op 列
+（発散予測用）を作るだけで `ir.Module` を一度も作らず、「単一ソースで両ベンダー」という
+看板の約束が看板の想定客に届いていなかった。`tsugi_torch.fxlower.fx_to_ir` がそこを繋ぐ。
+
+```python
+import torch, tsugi
+gm = torch.fx.symbolic_trace(model)
+ad = tsugi.verify(gm)        # 静的監査 + codegen（FX → IR → 実機械語）
+print(ad.to_text())
+```
+
+### 降下の正直さ（黙って落とさない）
+
+| 記録先 | 何を意味するか |
+|---|---|
+| `unsupported` | 表せない op。module は **partial** ＝生成物はモデル全体ではない（判定に WARN） |
+| `decomposed` | 恒等式で分解した（実数では厳密でも浮動小数点では丸めが変わる＝発散源） |
+| `shape_only` | view/permute 等。データ移動を**未モデル化**と言える |
+| `assumptions` | 静的に決まらず仮定した値（eps 等）。黙って数値を選ばない |
+
+**erf 版 gelu は「表せない」**とする。tanh 近似での置換は実測で max|Δ|≈4.6e-4 ずれ、
+等価性を検証する道具が検証対象を別の関数に差し替えるのは偽OK そのものだから。
+`approximate='tanh'` と明示されているときだけ分解する。
+
+### 意味論の照合（アセンブラにも LLVM にも問えない層）
+
+降下が *意味* を保つかは、命令の存在でも符号化でもロード構造でもない。
+`tsugi.interp.evaluate` が IR に CPU リファレンス意味論を与え、torch があれば
+**eager と突き合わせる**。float64 での実測（`test_fxlower.py`）:
+
+| 経路 | max\|Δ\| |
+|---|---|
+| Softmax | 2.8e-17 |
+| LayerNorm | 2.2e-16 |
+| RMSNorm | 4.4e-16 |
+| GELU(tanh) | 9.1e-13 |
+| SiLU / Tanh / Sigmoid / ReLU | ≤ 4.4e-16 |
+
+この照合で 2 件の欠陥が出た——layer_norm の eps 欠落（1.9e-5）と erf 版 gelu の
+無断置換（4.6e-4）。**どちらもアセンブルは通る**。意味論は別の層で見るしかない。
+
+なお `interp` が示すのは *IR の意味* であって *生成した機械語の意味* ではない。
+レーン割当・行列コアのレイアウト・実機の丸めはここに現れない（L3・要実機）。
