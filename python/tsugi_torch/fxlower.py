@@ -39,9 +39,16 @@ _CALL_OPS = ("call_function", "call_method", "call_module")
 _SHAPE_ONLY = ("view", "reshape", "permute", "transpose", "expand", "contiguous",
                "flatten", "unsqueeze", "squeeze", "detach", "clone", "t.default")
 
-#: 部分テンソルを選ぶ／並べ替える op。本 IR には**サブテンソル選択の概念が無い**ため、
+#: 部分テンソルを選ぶ／結合する op。本 IR には**サブテンソル選択の概念が無い**ため、
 #: これらを「値をそのまま通す」で済ませると q/k/v が同一値の別名になり、生成物はモデルを
 #: **まったく計算しない**。よって shape_only ではなく「表せない」に分類する（fail-safe）。
+#:
+#: これは実装漏れでなく **設計上の境界**である。本 IR は *数値データフロー* を表す IR で
+#: あって *テンソルプログラム* の IR ではない。計算済みの値をスライスするには、レーンと
+#: 要素の対応（どのレーンがどの要素を持つか）を IR が知っている必要があり、それは
+#: レイアウトの問題——`layout-unstitched` として実機照合に回している当のものである。
+#: 実機なしにレイアウトを決め打てば、アセンブルは通るのに意味の違う生成物ができる
+#: （偽OK）。**表せないと言う方が正しい**。
 _STRUCTURAL = ("getitem", "chunk", "split", "cat", "stack", "slice", "select",
                "index", "gather", "narrow", "unbind", "where", "masked_fill")
 
