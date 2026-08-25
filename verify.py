@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-101: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-102: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2365,6 +2365,56 @@ def _check_meta_integrity() -> None:
                     and "0 numeric ops" not in _msgs101[0])
     except Exception:                                  # noqa: BLE001
         _warn101 = None                                # torch 無し: 主張しない
+    # 102. 生成カーネルの引数が何のテンソルなのかを IR 自身が持つ（`load` の binding）。
+    #      これが無いと重みを含むモデルの意味論を照合できず、実際に 2 件の欠陥が
+    #      隠れていた: `linear(x,W,b) = x·Wᵀ + b` の転置落ちと、`call_function` 経路で
+    #      bias が落ちる件（max|Δ|≈3.8e-01）。**どちらもアセンブルは通る**。
+    #      束縛が足りなければ黙って別のテンソルを使わず落ちること（偽OK 防止）も固定。
+    _lin102 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.linear.default"),
+        _Node58("output", "output"),
+    ]))
+    _dot102 = [o for o in _lin102.module.kernels[0].body if o.kind == "dot"]
+    _mm102 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.mm.default"),
+        _Node58("output", "output"),
+    ]))
+    _dotmm102 = [o for o in _mm102.module.kernels[0].body if o.kind == "dot"]
+    try:
+        _ev100(_lin102.module, {"nope": np.zeros((2, 2))})
+        _raises102 = False
+    except KeyError:
+        _raises102 = True
+    except Exception:                                  # noqa: BLE001
+        _raises102 = False
+    _torch102 = True
+    try:
+        import torch as _t102
+        import torch.nn as _tn102
+        _x102 = _t102.randn(3, 6, dtype=_t102.float64)
+        for _m102 in (_tn102.Linear(6, 4), _tn102.Linear(6, 4, bias=False),
+                      _tn102.Sequential(_tn102.Linear(6, 8), _tn102.Tanh(),
+                                        _tn102.Linear(8, 4))):
+            _m102 = _m102.double()
+            _l102 = _f2ir(_t102.fx.symbolic_trace(_m102))
+            _p102 = dict(_m102.named_parameters())
+            _b102 = {d: (_x102.numpy() if d.startswith("input:")
+                         else _p102[d.split(":", 1)[1]].detach().numpy())
+                     for d in _l102.report.bindings}
+            _e102 = float(np.max(np.abs(_ev100(_l102.module, _b102)[-1]
+                                        - _m102(_x102).detach().numpy())))
+            _torch102 = _torch102 and _e102 < 1e-9
+    except Exception:                                  # noqa: BLE001
+        _torch102 = None
+    check("IR records what each load binds, so weighted models can be checked for meaning",
+          _lin102.report.bindings                      # 束縛が記録される
+          and _dot102 and _dot102[0].attrs.get("rhs_transposed") is True
+          and _dotmm102 and not _dotmm102[0].attrs.get("rhs_transposed")
+          and _raises102                               # 足りなければ落ちる
+          and (_torch102 is None or _torch102 is True))
+
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない
           and "実行は eager に素通し" in _src101        # 実行の未検証は言い続ける

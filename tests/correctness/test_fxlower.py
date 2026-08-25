@@ -179,6 +179,61 @@ def test_lowered_ir_means_the_same_thing_as_the_model():
         assert err < 1e-9, f"{name}: 意味論が一致しない max|Δ|={err:.3e}"
 
 
+def _bind(m, lm, x):
+    """束縛記述子から実テンソルを引く（生成カーネルの引数の意味に従う）。"""
+    params = dict(m.named_parameters())
+    return {d: (x.numpy() if d.startswith("input:")
+                else params[d.split(":", 1)[1]].detach().numpy())
+            for d in lm.report.bindings}
+
+
+def test_matmul_paths_with_real_weights_match_eager():
+    """**最重要 op（matmul）を重み込みで意味論照合する**。
+
+    降下した IR は `load` に束縛記述子（`input:x` / `param:0.weight`）を持つので、
+    重みがグラフ外にあるモデルでも評価できる。束縛を明示して初めて 2 件の欠陥が出た:
+      - `linear(x,W,b) = x·Wᵀ + b` の転置落ち（`x·W` になっていた）
+      - `call_function` 経路で bias が落ちていた（max|Δ|≈3.8e-01）
+    どちらもアセンブルは通る。意味論でしか捕まらない。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 重み込みの意味論照合は未実施（正直に skip）")
+        return
+    torch.manual_seed(0)
+    x = torch.randn(3, 6, dtype=torch.float64)
+    cases = {
+        "Linear": nn.Linear(6, 4),
+        "Linear(no bias)": nn.Linear(6, 4, bias=False),
+        "MLP": nn.Sequential(nn.Linear(6, 8), nn.Tanh(), nn.Linear(8, 4)),
+        "MLP+LN+SiLU": nn.Sequential(
+            nn.Linear(6, 8), nn.LayerNorm(8, elementwise_affine=False),
+            nn.SiLU(), nn.Linear(8, 4)),
+        "MLP+GELU+Softmax": nn.Sequential(
+            nn.Linear(6, 8), nn.GELU(approximate="tanh"),
+            nn.Linear(8, 4), nn.Softmax(-1)),
+    }
+    for name, mod in cases.items():
+        mod = mod.double()
+        lm = fx_to_ir(torch.fx.symbolic_trace(mod))
+        assert not lm.report.partial, f"{name}: {lm.report.unsupported}"
+        assert lm.report.bindings, f"{name}: 束縛が記録されていない"
+        got = evaluate(lm.module, _bind(mod, lm, x))[-1]
+        ref = mod(x).detach().numpy()
+        err = float(np.max(np.abs(got - ref)))
+        assert err < 1e-9, f"{name}: 意味論が一致しない max|Δ|={err:.3e}"
+
+
+def test_missing_binding_raises_rather_than_silently_reusing_a_tensor():
+    """束縛が足りなければ **落ちる**（黙って別のテンソルを使わない）。"""
+    lm = fx_to_ir(_standin("aten.native_layer_norm.default"))
+    try:
+        evaluate(lm.module, {"input:nonexistent": np.zeros((2, 2))})
+    except KeyError as e:
+        assert "束縛" in str(e)
+    else:
+        raise AssertionError("束縛が無いのに評価が通ってしまった")
+
+
 def test_real_model_reaches_machine_code_through_the_product_facade():
     """`tsugi.verify(gm)` が実 nn.Module から実機械語の検証まで一気に届く。"""
     if not HAVE_TORCH:
@@ -285,6 +340,8 @@ def main() -> int:
               test_unspecified_eps_is_declared_as_an_assumption,
               test_call_module_targets_resolve_or_the_whole_audit_is_a_false_ok,
               test_lowered_ir_means_the_same_thing_as_the_model,
+              test_matmul_paths_with_real_weights_match_eager,
+              test_missing_binding_raises_rather_than_silently_reusing_a_tensor,
               test_real_model_reaches_machine_code_through_the_product_facade,
               test_a_realistic_transformer_block_is_handled_honestly,
               test_the_documented_product_entry_point_works_with_real_torch):

@@ -68,6 +68,7 @@ class LoweringReport:
     decomposed: list[str] = field(default_factory=list)    # 恒等式で分解した注記
     shape_only: list[str] = field(default_factory=list)    # 形状のみ（データ移動未モデル）
     assumptions: list[str] = field(default_factory=list)   # 静的に決まらず仮定した値
+    bindings: list[str] = field(default_factory=list)      # 各 load が読むもの（出現順）
 
     @property
     def partial(self) -> bool:
@@ -90,6 +91,8 @@ class LoweringReport:
             out.append(f"  形状のみ（データ移動は未モデル化）: "
                        f"{sorted(set(self.shape_only))}")
         out += [f"  仮定: {a}" for a in sorted(set(self.assumptions))]
+        if self.bindings:
+            out.append(f"  入力束縛（生成カーネルの引数の意味）: {self.bindings}")
         return out
 
 
@@ -104,6 +107,7 @@ class _Builder:
 
     def __init__(self, dtype: str = "f32", shape: str = "16x16"):
         self.body: list[ir.Op] = []
+        self.bindings: list[str] = []   # load が何を読むか（出現順）
         self._n = 0
         self._t = f"tensor<{shape}x{dtype}>"
 
@@ -117,6 +121,15 @@ class _Builder:
         r = self._v()
         self.body.append(ir.Op(kind, list(operands or []), dict(attrs or {}), r))
         return r
+
+    def load(self, desc: str) -> ir.Value:
+        """入力を読む。**何を読むかを記録する**（生成カーネルの引数の意味になる）。
+
+        記録しないと、生成物のパラメタが何のテンソルなのか誰にも判らず、意味論の
+        照合もできない（`interp.evaluate` が束縛できない）。
+        """
+        self.bindings.append(desc)
+        return self.op("load", [], {"offset": [0, 0], "binding": desc})
 
     def store(self, v: ir.Value) -> None:
         self.body.append(ir.Op("store", [v], {"offset": [0, 0]}, None))
@@ -173,6 +186,16 @@ class _Builder:
                      {"axis": 1, "kind": "mean"})
         e = self.op("zeros", [], {"shape": [16, 16], "fill": eps})
         return self.op("mul", [x, self.op("rsqrt", [self.op("add", [ms, e])])])
+
+
+def _has_bias(node: Any, gm: Any = None) -> bool:
+    """`call_module` の Linear が bias を持つか（無いモデルで偽の加算を入れない）。"""
+    if getattr(node, "op", None) != "call_module" or gm is None:
+        return False
+    try:
+        return getattr(gm.get_submodule(str(node.target)), "bias", None) is not None
+    except (AttributeError, KeyError, TypeError):
+        return False
 
 
 def _matches_any(t: str, pats: tuple[str, ...]) -> bool:
@@ -322,7 +345,8 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
         op = getattr(node, "op", None)
         rep.n_nodes += 1
         if op in ("placeholder", "get_attr"):
-            env[id(node)] = b.op("load", [], {"offset": [0, 0]})
+            kindtag = "input" if op == "placeholder" else "param"
+            env[id(node)] = b.load(f"{kindtag}:{getattr(node, 'target', '?')}")
             last = env[id(node)]
             continue
         if op == "output":
@@ -334,11 +358,14 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
         rep.n_calls += 1
 
         t = _target_name(node, gm)
+        # 束縛名にはクラス名でなく **モジュール経路**（node.target）を使う。
+        # `named_parameters()` のキーがそれなので、経路でないと重みを引けない。
+        path = str(getattr(node, "target", ""))
         kind = _classify(t)
         args = [env[id(a)] for a in getattr(node, "args", ())
                 if id(a) in env]
         x = args[0] if args else (last if last is not None
-                                  else b.op("load", [], {"offset": [0, 0]}))
+                                  else b.load("input:implicit"))
 
         if kind is None:
             if _matches_any(t, _STRUCTURAL):
@@ -364,11 +391,33 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
             continue
 
         if kind == "dot":
-            other = args[1] if len(args) > 1 else b.op("load", [], {"offset": [0, 0]})
+            # nn.Linear は y = x @ Wᵀ + b。重み/バイアスはグラフのノードでなく
+            # モジュールの属性なので、束縛記述子で「何を読むか」を明示する。
+            if len(args) > 1:
+                other = args[1]
+            else:
+                # 重みがグラフのノードでない（call_module）ときは束縛名で明示する。
+                # 転置は名前でなく op の属性で表す（名前に ^T を入れると束縛名として
+                # 引けなくなる）。
+                other = b.load(f"param:{path}.weight"
+                               if op == "call_module" else "param:rhs")
             acc = b.op("zeros", [], {"shape": [16, 16]})
-            r = b.op("dot", [x, other, acc])
-            if "addmm" in t.lower():                 # bias 加算を落とさない
-                r = b.op("add", [r, args[2] if len(args) > 2 else acc])
+            # linear(x, W, b) は x @ Wᵀ + b であって x @ W ではない。落とすと生成物も
+            # 意味論照合も静かに間違う（束縛を明示して初めて気づけた）。
+            # aten の addmm/mm/matmul/bmm は転置しない。
+            rhs_t = _matches_any(t, ("linear",))
+            r = b.op("dot", [x, other, acc],
+                     {"rhs_transposed": True} if rhs_t else None)
+            if rhs_t:
+                rep.decomposed.append(
+                    "linear(x,W,b) = x·Wᵀ + b（右辺を転置して dot に落とす）")
+            # bias を落とすと出力が丸ごとずれる（実測 max|Δ|≈3.8e-01 で検出）。
+            # 経路が 3 通りあるので全部拾う: call_module の属性 / linear の第3引数 /
+            # aten.addmm の第1引数。
+            if len(args) > 2:                        # linear(x, W, b) / addmm(...)
+                r = b.op("add", [r, args[2]])
+            elif op == "call_module" and _has_bias(node, gm):
+                r = b.op("add", [r, b.load(f"param:{path}.bias")])
         elif kind in ("layer_norm", "rms_norm"):
             eps, assumed = _node_eps(node, gm)
             r = getattr(b, kind)(x, eps)
@@ -403,4 +452,5 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
 
     if last is not None and not any(o.kind == "store" for o in b.body):
         b.store(last)
+    rep.bindings = list(b.bindings)
     return LoweredModule(ir.Module([ir.Kernel(name, [], b.body)]), rep)

@@ -216,6 +216,7 @@ print(ad.to_text())
 | `decomposed` | 恒等式で分解した（実数では厳密でも浮動小数点では丸めが変わる＝発散源） |
 | `shape_only` | view/permute 等。データ移動を**未モデル化**と言える |
 | `assumptions` | 静的に決まらず仮定した値（eps 等）。黙って数値を選ばない |
+| `bindings` | 各 `load` が何を読むか（`input:x` / `param:0.weight`）＝**生成カーネルの引数の意味** |
 
 `chunk`/`getitem`/`cat` のような**構造 op** も「表せない」に倒す。本 IR にサブテンソル
 選択の概念が無く、値をそのまま通せば q/k/v が同一値の別名になり、生成物はモデルを
@@ -234,13 +235,29 @@ print(ad.to_text())
 | 経路 | max\|Δ\| |
 |---|---|
 | Softmax | 2.8e-17 |
+| Linear（重み・bias 込み） | 2.2e-16 |
+| MLP / MLP+LN+SiLU | ≤ 3.3e-16 |
+| MLP+GELU+Softmax | 5.1e-14 |
 | LayerNorm | 2.2e-16 |
 | RMSNorm | 4.4e-16 |
 | GELU(tanh) | 9.1e-13 |
 | SiLU / Tanh / Sigmoid / ReLU | ≤ 4.4e-16 |
 
-この照合で 2 件の欠陥が出た——layer_norm の eps 欠落（1.9e-5）と erf 版 gelu の
-無断置換（4.6e-4）。**どちらもアセンブルは通る**。意味論は別の層で見るしかない。
+この照合で 4 件の欠陥が出た:
+
+| 欠陥 | ずれ |
+|---|---|
+| layer_norm の eps 欠落 | 1.9e-5 |
+| erf 版 gelu の無断置換 | 4.6e-4 |
+| `linear(x,W,b)` の転置落ち（`x·W` になっていた） | — |
+| `call_function` 経路で bias が落ちる | 3.8e-1 |
+
+**どれもアセンブルは通る**。意味論は別の層で見るしかない。
+
+重みを含むモデルを照合できるのは、IR が `load` に**束縛記述子**を持つから
+（`input:x` / `param:0.weight`）。これは生成カーネルの引数が何のテンソルかという情報
+そのものでもある。束縛が足りなければ `evaluate` は**落ちる**（黙って別のテンソルを
+使い回さない）。
 
 ### 実モデルでの実測（アテンションブロック）
 

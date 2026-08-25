@@ -34,8 +34,12 @@ def _reduce(x: np.ndarray, axis: int, kind: str) -> np.ndarray:
     return np.sum(x, axis=axis, keepdims=True)
 
 
-def evaluate(module: ir.Module, inputs: list[np.ndarray]) -> list[np.ndarray]:
-    """IR を NumPy で評価する。`load` は inputs を順に消費する。
+def evaluate(module: ir.Module, inputs) -> list[np.ndarray]:
+    """IR を NumPy で評価する。
+
+    `inputs` が dict なら `load` の `binding` 属性（`"input:x"` / `"param:weight"`）で
+    束縛する——生成カーネルの引数が何のテンソルかを IR 自身が持っているので、
+    重みを含むグラフでも意味論を照合できる。list なら出現順に消費する。
 
     `store` された値を出力として返す（複数なら順に）。`load` が inputs を使い切ったら
     最後の入力を再利用する（重みを持たない単入力グラフの評価を想定）。
@@ -53,13 +57,22 @@ def evaluate(module: ir.Module, inputs: list[np.ndarray]) -> list[np.ndarray]:
         for op in kernel.body:
             k, a = op.kind, op.attrs
             if k == "load":
-                x = inputs[min(n_load, len(inputs) - 1)]
+                desc = a.get("binding")
+                if isinstance(inputs, dict):
+                    if desc not in inputs:
+                        raise KeyError(
+                            f"interp: 束縛 {desc!r} が inputs に無い "
+                            f"（利用可能: {sorted(inputs)}）")
+                    x = inputs[desc]
+                else:
+                    x = inputs[min(n_load, len(inputs) - 1)]
                 n_load += 1
                 r = np.asarray(x, dtype=np.float64)
             elif k == "zeros":
-                base = next(iter(env.values()), None)
-                shape = base.shape if base is not None else (1,)
-                r = np.full(shape, float(a.get("fill", 0.0)), dtype=np.float64)
+                # スカラーで返しブロードキャストに任せる。IR の zeros は「定数」と
+                # 「dot のアキュムレータ」にしか使われず、どちらも被演算子の形に従う。
+                # 形を推測すると（例: 直前の値の shape）dot の結果形と食い違う。
+                r = np.float64(a.get("fill", 0.0))
             elif k in ("add", "sub", "mul", "div", "max"):
                 x, y = val(op.operands[0]), val(op.operands[1])
                 r = {"add": np.add, "sub": np.subtract, "mul": np.multiply,
@@ -77,6 +90,8 @@ def evaluate(module: ir.Module, inputs: list[np.ndarray]) -> list[np.ndarray]:
                 r = val(op.operands[0]).astype(np.float16).astype(np.float64)
             elif k == "dot":
                 x, y = val(op.operands[0]), val(op.operands[1])
+                if a.get("rhs_transposed"):
+                    y = y.T          # linear(x,W,b) = x·Wᵀ + b
                 acc = val(op.operands[2]) if len(op.operands) > 2 else 0.0
                 r = x @ y + acc
             elif k == "store":
