@@ -1,8 +1,9 @@
 # QUICKSTART — 60 秒で移植性検証
 
 Tsugi の**今日届く価値**は「1 つのカーネルが NVIDIA と AMD で*同じ数値を出すか・
-そもそも両方で起動するか*を、実機前に CPU だけで告げる検証」。codegen（PTX/AMDGCN 生成）は
-Phase 4（要 LLVM/MLIR + 実機）だが、**検証は今すぐ動く**。
+そもそも両方で起動するか*を、実機前に CPU だけで告げる検証」。codegen（PTX/AMDGCN 生成）も
+**GPU 無しで動く**——生成物はベンダーのアセンブラが受理するところまで機械検証される
+（[CODEGEN.md](CODEGEN.md)）。実機が要るのは生成物の**実行**だけ。
 
 ## 1. 入れる
 
@@ -112,6 +113,25 @@ print(ad.exit_code)         # 同じ CI ゲート契約
 
 実機での使い方（GPU 入手後）は [GPU-BRINGUP.md](GPU-BRINGUP.md)。
 
+## 8. 実アセンブリを出す（GPU 不要）
+
+同じ IR から NVIDIA と AMD の実機械語テキストが出る。生成物はベンダー自身の
+アセンブラに通す:
+
+```python
+import tsugi
+from tsugi import codegen
+
+mod = tsugi.trace(kernel, args, {}, program_ids=(0, 0))
+em, asm = codegen.verify_codegen(mod, target="amd_cdna")
+print(em.text)        # 実 AMDGCN
+print(asm.level)      # L2-アセンブル検証済み（アセンブラが無ければ L1-生成のみ）
+```
+
+アセンブラ（`ptxas` / `llvm-mc`）は任意。無ければ L1 に落ち、**検証済みとは言わない**。
+`python -m tsugi` の判定にも codegen phase として載る。**実行は未検証**（L3）——
+何が保証されて何が保証されないかは [CODEGEN.md](CODEGEN.md)。
+
 ---
 
 **何が「今」動いて、何が「これから」か**（正直な線引き）:
@@ -119,7 +139,8 @@ print(ad.exit_code)         # 同じ CI ゲート契約
 | | 状態 |
 |---|---|
 | 移植性・起動可能性・数値等価性・タスク影響の**検証**（CPU） | ✅ 動く（このページ） |
+| codegen（単一 IR → 実 PTX/実 AMDGCN → **アセンブル検証**） | ✅ 動く（[CODEGEN.md](CODEGEN.md)・GPU 不要） |
 | 実機 GPU でのクロスベンダー検証 | 手順は完成・実機待ち（[GPU-BRINGUP.md](GPU-BRINGUP.md)） |
-| codegen（PTX/AMDGCN 生成・torch.compile 実行） | Phase 4・要 LLVM/MLIR + 実機 |
+| 生成物の**実行**・レイアウト接合・torch.compile 実実行 | 要 GPU（codegen の L3） |
 
 reading path は [README](../README.md#ドキュメント) 参照。

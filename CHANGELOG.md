@@ -2,6 +2,82 @@
 
 Keep a Changelog 形式。SemVer。0.x は API 未凍結（MINOR で機能追加・互換変更ありうる）。
 
+
+## 第59回 — codegen 凍結解除: 実 PTX/AMDGCN 生成とベンダーアセンブラによる機械検証（A-4・L2）
+
+**問題**: 「codegen は LLVM/MLIR + 実機が要るので不可能」を 50 回以上のラウンドで前提と
+して書き続けたが、これは**要件の誤り**だった。工程を分解すると:
+
+| 工程 | 必要なもの | 実機が要るか |
+|---|---|---|
+| IR → アセンブリテキスト生成 | 純関数（文字列） | 不要 |
+| アセンブリ → 機械語（アセンブル） | `ptxas` / `llvm-mc` | 不要（**CPU ツール**） |
+| 機械語の実行 | GPU | **要る** |
+
+必要なのは実機ではなくアセンブラであり、それは CPU プログラムである。`llvm-mc` は環境に
+存在し、`ptxas` は pip 一つで入る（どちらも GPU 不要）。この誤った前提が、検証可能だった
+プロダクトの半分（「単一ソースで両ベンダー」の生成側）を凍結させていた。しかも前提は
+不変条件 7 と `test_compile.py` にも凍結され、**検査が実装を阻む**状態になっていた。
+
+**修正**: `python/tsugi/codegen.py`（新規）。真値は Tsugi の内部ではなくベンダーの
+ツールチェイン。
+
+- `emit` / `emit_ptx` / `emit_amdgcn` — 単一 IR から 3 ターゲット（nvidia / amd_cdna /
+  amd_rdna）の実アセンブリ。DSL の全 14 op に実命令列（elementwise・超越関数・
+  クロスレーン縮約・行列コア WMMA/MFMA）。
+- `assemble` — ptxas / llvm-mc を呼ぶ。ツール不在なら `ok=None`（**未検証を合格に
+  丸めない**）。llvm-mc が構文エラーでも rc=0 を返す実測挙動に合わせ、stderr と
+  オブジェクト生成の両方で判定する。
+- `probe_op` — 「この op の命令列はこの arch に存在するか」をアセンブラに問う。
+- 検証レベル `VERIFY_LEVELS`: L0 未対応 / L1 生成のみ / L2 アセンブル検証済み /
+  **L3 実機実行検証済み（常に空）**。L2 が保証しないもの（レイアウト接合・実行の
+  意味論・AMD の `.amdhsa_kernel` 未出力ゆえロード不可）は `layout-unstitched`
+  注記とレポート本文で明示する。
+- `BIT_EXACT_ACROSS_VENDORS` — 生成命令がベンダー間でビット同一かの構造的分類。
+  `equivalence` が発散の*量*を扱うのに対し、ここは発散の*出所*を名指す。ULP 数は
+  持たない（測定していない数値係数を導入しないというガードレール）。
+
+facade: `audit` に codegen phase（不受理→BLOCK＝単一ソース約束の破綻・L0 op あり→WARN・
+ツール不在→INFO で L1）。`compile(..., emit_machine_code=True)` は NotImplementedError を
+やめ実アセンブリを返す（SPIR-V のみ未対応と明示）。
+
+**実証**:
+
+- 実測（`examples/user_kernel.py` の IR より、1 つの IR から）:
+
+  | target/arch | レベル | オブジェクト | ツール |
+  |---|---|---|---|
+  | nvidia/sm_80 | L2-アセンブル検証済み | 2728 B | ptxas |
+  | amd_cdna/gfx90a | L2-アセンブル検証済み | 760 B | llvm-mc |
+  | amd_rdna/gfx1100 | L2-アセンブル検証済み | 704 B | llvm-mc |
+
+- **アセンブラが真値である**ことの実証——手書きの表では作り込めない移植ブロッカーが
+  事実として返る:
+
+  ```
+  WMMA を sm_60 へ  → ptxas: Feature 'WMMA with floating point types'
+                             requires .target sm_70 or higher
+  MFMA を gfx1100 へ → llvm-mc: instruction not supported on this GPU
+  ```
+
+- 不変条件 **90 / 91 / 92**（193/193 PASS）— 生成と受理、arch 条件付き可用性＋壊れた
+  アセンブリの棄却（検査自体の有効性）、facade 到達性と「保証しないもの」の明示。
+- `tests/correctness/test_codegen.py`（新規・12 テスト）を `run.py` に登録（24 スイート）。
+- 不変条件 7 と `test_compile` の「machine-code honestly unimplemented」を差し替え。
+  誤った要件を凍らせた検査は、放置すれば実装を永久に阻む。
+
+**ライセンス判断**: `ptxas` は NVIDIA CUDA EULA（proprietary）ゆえ Apache-2.0 配布物の
+依存として**宣言しない**。任意の開発者ツールとして扱い、無ければ L1 に落ちる。
+不変条件 60（依存ライセンス監査）がこの判断を強制した——最初 `[codegen]` extra として
+追加したところゲートが落ちた。
+
+**残り（L3・実機待ち）**: `.amdhsa_kernel` 記述子と PTX の ABI 整合（ロード可能化）・
+レイアウト接合の解消・リファレンスとの数値照合。詳細は `docs/CODEGEN.md`。
+
+文書: `docs/CODEGEN.md`（新規）・README（Phase 4 の区分を L2/L3 で引き直し）・
+FEATURE-AUDIT A-4（解消・**前提が誤りだった事例**として記録）・ASSESSMENT（完成の
+線引きを訂正）・QUICKSTART §8・SOURCES（ベンダー ISA 節）。
+
 ## [Unreleased]
 
 ### Changed

@@ -601,3 +601,23 @@ k/n 比率の不確実性」を織り込むが、**その集合が本番を代�
 > 出典の確度: 1/√k の n 非依存性は二項分布の初等的事実で、本リポジトリの数値実験と
 > verify.py 不変条件 82 で機械検証済み。極値理論の「≥30〜50 超過」は確立した経験則で
 > 出典を明示。**閾値 30 はハードコードだが WARN でなく透明化にのみ使い**、判定は変えない。
+
+## ベンダー ISA と命令選択（codegen・A-4）
+
+`python/tsugi/codegen.py` が単一 IR から実 PTX / 実 AMDGCN を生成する際の命令選択の
+出典。**数値（ULP 等）はハードコードせず**、「IEEE が結果を一意に定めるか否か」という
+構造的分類（`BIT_EXACT_ACROSS_VENDORS`）の裏づけとしてのみ使う。
+
+| 出典 | 使いどころ |
+|---|---|
+| NVIDIA *Parallel Thread Execution ISA*（PTX ISA） | `add.f32`/`div.rn.f32`/`sqrt.rn.f32` の正確丸め指定、`ex2.approx.f32`/`rsqrt.approx.f32` が近似であること、`wmma.load/mma/store.sync.aligned.m16n16k16` の形、`shfl.sync.bfly.b32` のクロスレーン縮約、`.target sm_70` 以上という WMMA の世代要件 |
+| AMD *"AMD Instinct MI200" / CDNA2 ISA Reference* | `v_mfma_f32_16x16x16f16` と AccVGPR（`v_accvgpr_write/read_b32`）、MFMA 後の `s_nop` 待ち、`v_rcp_f32`/`v_sqrt_f32`/`v_rsq_f32`/`v_exp_f32` が近似命令であること |
+| AMD *"RDNA3 Instruction Set Architecture Reference"* | `v_wmma_f32_16x16x16_f16`（RDNA3 の行列コア）、MFMA が **存在しない**こと、wave32/wave64 |
+| AMD GCN/CDNA の DPP（Data-Parallel Primitives） | `v_add_f32_dpp ... row_shr:N` による行内木縮約 |
+| IEEE 754-2019 | 加減乗算・f32→f16 の RNE 変換が一意に定まる（＝ベンダー間でビット同一を期待できる）根拠 |
+
+**重要**: 上の表は*設計の宣言*であり、真値ではない。真値はベンダー自身のアセンブラ
+（`ptxas` / `llvm-mc`）で、`codegen.probe_op` がそれに問い合わせる。実際この経路は
+表からは得られない事実を返した——「WMMA は sm_70 以上」「MFMA は gfx1100 に無い」が
+ドキュメントの読み取りでなく**ツールの出力**として得られる。詳細は
+[CODEGEN.md](CODEGEN.md)。

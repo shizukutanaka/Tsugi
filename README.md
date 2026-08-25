@@ -27,12 +27,15 @@ Tsugi は **PyTorch 開発者が GPU ベンダーロックイン（CUDA 依存�
 - **占有率推定** — `tsugi.occupancy` が同一構成のベンダー別占有率差を計算
 - **タスク影響・実行時検証** — `tsugi.audit_runtime` が数値発散を判断フリップ率/サンプリング分布差へ翻訳
 - **CI ゲート** — 判定が終了コード契約（OK/INFO=0・WARN=1・BLOCK=2）——そのまま CI 合否に
+- **1ソース・2ベンダー codegen（L2）** — `tsugi.codegen` が単一 IR から実 PTX / 実 AMDGCN を生成し、
+  **ベンダー自身のアセンブラ**（ptxas / llvm-mc・どちらも GPU 不要）が受理するまでを機械検証
+  （[CODEGEN.md](docs/CODEGEN.md)）
 
-**🔜 Phase 4（要 LLVM/MLIR + 実機・未実装）**
+**🔜 実機を要する部分（L3・未検証）**
 
-- **1ソース・2ベンダー codegen** — 同じタイルカーネルを NVIDIA(PTX) / AMD(AMDGCN) へ lowering
-- **torch.compile バックエンド** — `torch.compile(model, backend="tsugi")`（codegen 前でも FX 静的検証は届く）
-- **Tensorコア抽象**（`tile.dot`→WMMA/MFMA）・**autotuning**・**escape-hatch**（cuBLAS/rocBLAS 委譲）
+- **生成物の実行** — 数値の正しさ・レイアウト接合（フラグメント↔タイル軸）・性能
+- **torch.compile の実実行** — `torch.compile(model, backend="tsugi")`（今は静的検証だけ届き eager 素通し）
+- **autotuning**・**escape-hatch**（cuBLAS/rocBLAS 委譲）
 
 > 完成の線引きは [ASSESSMENT.md](docs/ASSESSMENT.md#プロダクト完成の線引きfirst-principles完成をless-dumbに定義) 参照——
 > **検証器プロダクトは完成（使える・正しい・境界明確）**、codegen は実機を要する別軸。
@@ -127,10 +130,12 @@ docs/ は 29 本あるため、**目的から入口を選ぶ**。
 **使う人**（今すぐ試したい）
 [QUICKSTART.md](docs/QUICKSTART.md)（60 秒・`python -m tsugi`）→
 [SPEC-verification.md](docs/SPEC-verification.md)（検証 API の仕様）→
+[CODEGEN.md](docs/CODEGEN.md)（実 PTX/AMDGCN 生成と検証レベル L0-L3）→
 [FAQ.md](docs/FAQ.md) → [BENCHMARK.md](docs/BENCHMARK.md)
 
 **仕組みを知る人**（なぜこの設計か）
 [ARCHITECTURE.md](docs/ARCHITECTURE.md) → [SPEC.md](docs/SPEC.md)（DSL/コンパイラ）→
+[CODEGEN.md](docs/CODEGEN.md)（生成側・アセンブラを真値に使う）→
 [VERIFICATION.md](docs/VERIFICATION.md)（検証層の全体マップ）→
 `docs/PERSPECTIVE-*.md`（15 本・各検証層が「なぜ必要か」をソクラテス式問答で導いた記録）→
 `docs/adr/`（設計判断の記録）
@@ -173,11 +178,13 @@ docs/ は 29 本あるため、**目的から入口を選ぶ**。
 | portcheck CLI（ユーザーカーネル対応） | ✅ 完了 | `python -m tsugi.portcheck k.py` |
 | 発散帰属（attribution・新視点12） | ✅ 完了 | onset/spike で O(L)→O(log L)・propagation 理論と実測の照合 |
 | ベンダー責帰（blame・新視点13） | ✅ 完了 | dist_a/dist_b 比較で修正方向を特定・attribution と完全診断チェーンを完成 |
-| GPU codegen本体（MLIR→PTX/AMDGCN・実コンパイル） | ⬜ 未実装 | **要 LLVM/MLIR + 実機** |
+| GPU codegen（IR→PTX/AMDGCN 生成＋アセンブル） | ✅ 完了(L2) | ベンダーのアセンブラが受理・**実行は未検証**（codegen.py） |
+| 生成物の実行・レイアウト接合（L3） | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
 | 両ベンダーGPU correctness/性能 | ⬜ 未検証 | **要 NVIDIA/AMD GPU** |
 
-CPU で検証可能な範囲（frontend→IR→各社写像→数値真値）は完成・検証済み。
-機械語生成と GPU 実行は実機が必要で未着手。`lowering.py` がその実装仕様。
+CPU で検証可能な範囲（frontend→IR→各社写像→**実アセンブリ生成→アセンブル**→数値真値）は
+完成・検証済み。残るのは機械語の**実行**で、それだけが実機を要する
+（[CODEGEN.md](docs/CODEGEN.md) の検証レベル L0-L3 を参照）。
 
 ## ZLUDA と何が違う？
 

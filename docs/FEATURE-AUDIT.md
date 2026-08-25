@@ -38,7 +38,7 @@
 | A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU)・手続きは完了 | 実機 GPU での end-to-end 検証がゼロ。**実機入手日に実行できる手順（`docs/GPU-BRINGUP.md`）と SAFETY 校正の機械的手続き（`calibration.calibrate_safety`・実機入口に接続済み）は完成**——残るのは実機そのもの |
 | A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出に加え、**`audit_torch` が FX グラフをゲート付き `Audit`（exit_code/to_text）で返す**——想定ユーザーが `tsugi.verify(gm)` 1 コールで出荷判断できる（不変条件 89）。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
-| A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
+| A-4 | ✅解消(L2) | — | `codegen.py` ／GPU codegen | dab5d4f | 実 PTX/AMDGCN を生成しベンダーのアセンブラが受理。**実行のみ実機待ち(L3)** |
 | A-5 | 不足 | — | `propagation.py` / `fxbridge._kind_of` | 解消済み(3a29b94) | **数値実験で前提が反転**: 正規化は「増幅しない」のでなく LayerNorm は平均優勢入力で amp≈RMS/σ に増幅。専用 kind(`layer_norm`増幅/`rms_norm`非増幅)を導入し旧警告の偽OK 主張を撤回。残: cond は入力 sample 実測で深部活性の分布シフト未追跡 |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
@@ -131,13 +131,23 @@
      best-effort で取り出し、`audit()` の `sample=` / `ref_logits=` に相当する情報を
      警告メッセージに追加する段階的接続。フル接続は実行時出力が要るため codegen 後。
 
-4. **[A-4] GPU codegen 未実装**
-   - 何が無いか: `python/tsugi/lowering.py` は tile op → NVVM/ROCDL/SPIRV の対応表
-     （データ）のみで、実際の PTX/AMDGCN 生成は無い。バックエンドは eager 素通し
-     （その旨を明示的に warn する誠実な実装にはなっている）。
-   - なぜ危険か: 「単一ソースで両ベンダー対応」という製品価値の中核が未達。
-   - 推奨アクション: LLVM/MLIR 環境が要る Phase 4 作業。ロードマップは
-     `python/tsugi_torch/__init__.py` の docstring に 5 段階で記載済み。
+4. **[A-4] ✅ 解消済み・L2 まで(commit dab5d4f)** GPU codegen 未実装
+   ——**「不可能」という前提そのものが誤りだった事例**
+   - 何が無かったか: `lowering.py` は tile op → NVVM/ROCDL/SPIRV の対応表（データ）
+     のみで、実際の PTX/AMDGCN 生成が無かった。
+   - **なぜ 50 回以上放置されたか**: 「codegen は LLVM/MLIR + 実機が要る」を前提として
+     書き続けていた。工程を分解すると誤りだと分かる——生成は純関数（文字列）、
+     アセンブルは CPU ツール（`ptxas` / `llvm-mc`）、実機が要るのは**実行だけ**。
+     `llvm-mc` は環境にあり `ptxas` は pip 一つで入る（どちらも GPU 不要）。
+     この誤った前提は不変条件 7 とテストにも凍結されており、検査が実装を阻んでいた。
+   - どう解消したか: `python/tsugi/codegen.py` が単一 IR から 3 ターゲット
+     （nvidia/amd_cdna/amd_rdna）の実アセンブリを生成し、**ベンダー自身のアセンブラ**に
+     受理させる。検証レベル L0-L3 を明示し、**L3（実機実行）は常に空**。
+     副産物として、アセンブラが arch 条件付き可用性を事実として返す
+     （WMMA は sm_70+ / MFMA は CDNA 専用）——手書きの表では作り込めない移植ブロッカー。
+   - 残り（L3・実機待ち）: `.amdhsa_kernel` 記述子と PTX の ABI 整合（ロード可能化）・
+     レイアウト接合（`layout-unstitched` 注記の解消）・リファレンスとの数値照合。
+     詳細は `docs/CODEGEN.md`。
 
 5. **[A-5] ✅ 解消済み(commit 3a29b94)** 正規化層の相対発散増幅をモデル化していなかった
    問題（Q11）——**数値実験で当初の前提が反転した事例**
