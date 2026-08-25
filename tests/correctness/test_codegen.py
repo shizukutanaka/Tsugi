@@ -31,6 +31,7 @@ from tsugi.codegen import (  # noqa: E402
     uncodegenned_ops,
     verify_codegen,
     verify_encoding,
+    verify_loadable,
 )
 from tsugi.tracer import EMITTABLE_OPS  # noqa: E402
 
@@ -231,6 +232,54 @@ def test_encoding_check_detects_a_mnemonic_that_never_reaches_machine_code():
     assert _mnemonics("\t.text\nk:\n// c\n\ts_endpgm\n", "amd_cdna") == ["s_endpgm"]
 
 
+def test_generated_objects_have_the_structure_a_loader_requires():
+    """「アセンブルできる」と「ローダが受け付ける形」は別。ELF から部品を確かめる。
+
+    AMD: `.text` だけのオブジェクトには起動情報（kernarg サイズ・レジスタ数・
+    ワークグループ上限）が無くローダが拒否する。記述子 `<k>.kd` と
+    `NT_AMDGPU_METADATA` ノートを出して構造を揃える。
+    NVIDIA: ptxas の cubin は元よりロード可能な形（`.nv.info.<k>` を持つ）。
+    **どちらもロードして走らせた証明ではない**（それは L3）。
+    """
+    mod = _ir()
+    for t in TARGETS:
+        ld = verify_loadable(mod, target=t)
+        if not ld.available:
+            assert ld.ok is None
+            continue
+        assert ld.ok is True, f"{t}/{ld.arch}: 欠けている部品 {ld.missing}"
+        assert ld.has_metadata
+        for k in mod.kernels:
+            assert k.name in ld.symbols
+            if t != "nvidia":
+                assert f"{k.name}.kd" in ld.symbols, ld.symbols
+                assert ".note" in ld.sections and ".rodata" in ld.sections
+            else:
+                assert f".nv.info.{k.name}" in ld.sections, ld.sections
+
+
+def test_assembler_validates_the_kernel_descriptor():
+    """記述子は飾りでなく検査対象——llvm-mc が内部整合を見る（検査の有効性）。
+
+    メタデータの `.symbol` と記述子シンボルの一致は llvm-mc が見ない（実測: 不一致
+    でも rc=0）。そこは verify_loadable が ELF から確かめる、という役割分担。
+    """
+    if toolchain("amd_cdna") is None:
+        return
+    good = emit(_ir(), target="amd_cdna").text
+    assert ".amdhsa_kernel" in good and ".amdgpu_metadata" in good
+    assert assemble(good, target="amd_cdna").ok is True
+    # accum_offset が VGPR 総数を超える記述子はアセンブラが弾く
+    bad = good.replace(".amdhsa_accum_offset", ".amdhsa_accum_offset 999 ;", 1)
+    assert assemble(bad, target="amd_cdna").ok is False
+    # レジスタ数は出力本文から数えるので、記述子と本文が食い違わない
+    from tsugi.codegen import _amd_reg_usage
+    v, a, sg = _amd_reg_usage(["\tv_mfma_f32_16x16x16f16 a[0:3], v[4:5], v[6:7], a[0:3]",
+                               "\ts_load_dwordx4 s[0:3], s[4:5], 0x0",
+                               "\tv_mov_b32 v11, 0"])
+    assert (v, a, sg) == (12, 4, 6), (v, a, sg)
+
+
 def test_L3_is_never_claimed():
     """実機実行検証（L3）はこの環境で到達不能。どの経路も L3 を返さない。"""
     mod = _ir()
@@ -298,6 +347,8 @@ def main() -> int:
               test_encoding_roundtrip_confirms_intended_instructions_were_encoded,
               test_rdna_uses_its_own_memory_mnemonics_not_the_cdna_aliases,
               test_encoding_check_detects_a_mnemonic_that_never_reaches_machine_code,
+              test_generated_objects_have_the_structure_a_loader_requires,
+              test_assembler_validates_the_kernel_descriptor,
               test_L3_is_never_claimed,
               test_broken_assembly_is_rejected_not_waved_through,
               test_compile_emits_machine_code_and_reports_its_level,

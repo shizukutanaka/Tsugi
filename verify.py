@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-93: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-95: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2166,6 +2166,31 @@ def _check_meta_integrity() -> None:
           and "global_load_b32" in _rdna93 and "s_load_b128" in _rdna93
           and "global_load_dword" not in _rdna93
           and "global_load_dword" in _cdna93)
+
+    # 94. 「アセンブルできる」と「ローダが受け付ける形になっている」も別。`.text` だけの
+    #     オブジェクトには起動情報（kernarg サイズ・レジスタ数・ワークグループ上限）が
+    #     無く ROCm ローダが拒否する。HSA カーネル記述子（.amdhsa_kernel）と AMDGPU
+    #     メタデータノートを出し、**ELF から部品の実在を確かめる**。
+    #     記述子の内部整合は llvm-mc が検査するが（accum_offset 超過は error）、
+    #     メタデータの .symbol と記述子シンボルの一致は見ない（実測 rc=0）ので ELF で見る。
+    #     これはロードして走らせた証明ではない（それは L3）。
+    _ld94 = {t: _cg90.verify_loadable(_mod90, target=t) for t in _cg90.TARGETS}
+    _names94 = [k.name for k in _mod90.kernels]
+    _good94 = _cg90.emit(_mod90, target="amd_cdna").text
+    check("generated objects carry the structure a loader requires (not just .text)",
+          all((e.ok is True and e.has_metadata) if e.available else e.ok is None
+              for e in _ld94.values())
+          and all(n in _ld94["amd_cdna"].symbols and f"{n}.kd" in _ld94["amd_cdna"].symbols
+                  for n in _names94) if _ld94["amd_cdna"].available else True)
+    check("the assembler validates the kernel descriptor (it is checked, not decoration)",
+          _cg90.toolchain("amd_cdna") is None or (
+              ".amdhsa_kernel" in _good94 and ".amdgpu_metadata" in _good94
+              and _cg90.assemble(_good94, target="amd_cdna").ok is True
+              # accum_offset が VGPR 総数を超える記述子は error になる
+              and _cg90.assemble(
+                  _good94.replace(".amdhsa_accum_offset",
+                                  ".amdhsa_accum_offset 999 ;", 1),
+                  target="amd_cdna").ok is False))
 
 
 def main() -> int:

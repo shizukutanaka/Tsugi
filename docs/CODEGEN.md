@@ -25,12 +25,13 @@ Tsugi の「単一ソースで両ベンダー」という約束の**生成側**�
 | **L1 生成のみ** | テキストは出るがアセンブラが無く未確認 | 誰も（**合格と言わない**） |
 | **L2 アセンブル検証済み** | 命令の存在・構文・arch 可用性 | **ベンダーのアセンブラ** |
 | L2＋符号化照合 | 意図した命令が*実際にその機械語になった*こと | **ベンダーの逆アセンブラ／リンカ** |
+| L2＋ロード構造 | ローダが要求する部品（記述子・メタデータ・起動情報）が実在すること | **ELF（llvm-nm / llvm-readelf / objdump）** |
 | **L3 実機実行検証済み** | 数値・レイアウト・性能 | 実機（**このリポジトリでは常に空**） |
 
 **L2 が保証しないもの**（黙らない）: データレイアウト——どのレーンがどの要素を持つか。
 行列コア命令（WMMA/MFMA）とスカラーレーンのレイアウト接合は実機照合が要り、
-該当 op には `layout-unstitched` 注記が付く。AMD 側は `.amdhsa_kernel` 記述子を
-出力しないため、生成物は**アセンブル可能だがロード不可**である。
+該当 op には `layout-unstitched` 注記が付く。**そして「ロードできる形」であることは
+「走らせて正しい」ことを何ら意味しない**——L3 に到達しない限り数値は未検証のままである。
 
 ## 使う
 
@@ -74,6 +75,25 @@ llvm-mc は CDNA の綴りを**別名として黙って受理**しており、�
 enc = codegen.verify_encoding(mod, target="amd_rdna")
 print(enc.ok, enc.method, enc.missing, enc.symbols)
 ```
+
+## ロード構造の検査 — 「アセンブルできる」と「ローダが受け付ける」も別
+
+`.text` だけのオブジェクトには起動情報（kernarg サイズ・レジスタ数・ワークグループ
+上限）が無く、ROCm ローダは拒否する。そこで HSA カーネル記述子（`.amdhsa_kernel`）と
+AMDGPU メタデータノートも出し、**ELF から部品の実在を確かめる**（`verify_loadable`）。
+
+| target | 確かめる部品 |
+|---|---|
+| amd_cdna / amd_rdna | `<kernel>`（.text の関数）・`<kernel>.kd`（記述子）・`NT_AMDGPU_METADATA` ノート |
+| nvidia | `<kernel>` シンボル・`.nv.info.<kernel>`（起動パラメタ情報）。ptxas の cubin は元よりロード可能な形 |
+
+記述子は飾りではない: llvm-mc が**内部整合を検査する**（`.amdhsa_accum_offset` が
+VGPR 総数を超えれば error、レジスタ数が範囲外なら error）。レジスタ数は追跡変数でなく
+**出力テキストそのものから数える**ので、記述子と本文が食い違わない。
+一方でメタデータの `.symbol` と記述子シンボルの一致は llvm-mc が見ない（実測: 不一致
+でも rc=0）ため、そこは ELF シンボル表で確かめる。不変条件 94/95。
+
+**繰り返す**: これはロードして走らせた証明ではない。構造の検査に留まる（L3 は空のまま）。
 
 ## アセンブラを真値に使う（本層の存在理由）
 
@@ -126,7 +146,7 @@ ULP 数は持たない。ISA ドキュメント由来の**構造的分類**の�
 
 実機が手に入ったときの順序は [GPU-BRINGUP.md](GPU-BRINGUP.md) と同じ枠に入る:
 
-1. `.amdhsa_kernel` 記述子と PTX のパラメータ ABI を実ランタイムに合わせる（ロード可能化）
+1. 実ランタイム（HIP/CUDA Driver API）で実際にモジュールをロードし起動する
 2. レイアウト接合（フラグメント ↔ タイル軸）を実機出力で照合し `layout-unstitched` を潰す
 3. リファレンス（CPU/NumPy）と数値照合し、`equivalence` の予測と突き合わせる
 
@@ -136,4 +156,4 @@ ULP 数は持たない。ISA ドキュメント由来の**構造的分類**の�
 
 関連: [`python/tsugi/codegen.py`](../python/tsugi/codegen.py)（実装）・
 [`tests/correctness/test_codegen.py`](../tests/correctness/test_codegen.py)（真値はベンダーのツール）・
-不変条件 90-93（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
+不変条件 90-95（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）

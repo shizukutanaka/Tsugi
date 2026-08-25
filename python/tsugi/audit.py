@@ -393,6 +393,7 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
         uncodegenned_ops,
         verify_codegen,
         verify_encoding,
+        verify_loadable,
     )
 
     cg = AuditPhase("codegen 生成物（アセンブル検証）", "decided", Risk.INFO)
@@ -422,6 +423,16 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
                                 f"{enc.missing or enc.detail[:120]}")
             else:
                 cg.lines.append(f"  符号化照合は未実施（{enc.detail[:100]}）")
+            # 「アセンブルできる」と「ローダが受け付ける形になっている」も別。
+            ld = verify_loadable(module, target=t, arch=em.arch)
+            if ld.available and ld.ok:
+                cg.lines.append("  ロード構造 OK（カーネルシンボル"
+                                + ("・記述子 .kd・AMDGPU メタデータノート"
+                                   if t != "nvidia" else "・.nv.info 起動情報")
+                                + "）——ただしロードして走らせてはいない（L3）")
+            elif ld.available:
+                cg.max_risk = max(cg.max_risk, Risk.WARN)
+                cg.lines.append(f"  ロード構造 NG: 欠けている部品 {ld.missing}")
         elif not asm.available:
             cg.lines.append(f"{t}/{em.arch}: {asm.level}"
                             f"（{len(em.text.splitlines())} 行）— {asm.stderr}")

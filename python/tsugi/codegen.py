@@ -295,6 +295,101 @@ def emit_ptx(module: ir.Module, *, arch: str = "sm_80") -> EmitResult:
 # AMDGCN
 # --------------------------------------------------------------------------
 
+#: カーネル引数は 3 本のグローバルポインタ（a/b/c）— IR の load/store が参照する
+#: バッファ。64bit ポインタ ×3 = 24 バイト。
+_KERNARG = [("a", 0), ("b", 8), ("c", 16)]
+_KERNARG_SIZE = 24
+
+
+def _amd_reg_usage(body: list[str]) -> tuple[int, int, int]:
+    """出力テキストから実際に使った (arch VGPR 数, AccVGPR 数, SGPR 数) を数える。
+
+    追跡変数を別に持つと本文と食い違いうるので、**出力そのもの**から数える
+    （記述子が本文と一致していることが llvm-mc の検証対象になる）。
+    """
+    import re
+    vmax = amax = smax = -1
+    for ln in body:
+        for m in re.finditer(r"\bv\[(\d+):(\d+)\]", ln):
+            vmax = max(vmax, int(m.group(2)))
+        for m in re.finditer(r"\bv(\d+)\b", ln):
+            vmax = max(vmax, int(m.group(1)))
+        for m in re.finditer(r"\ba\[(\d+):(\d+)\]", ln):
+            amax = max(amax, int(m.group(2)))
+        for m in re.finditer(r"\ba(\d+)\b", ln):
+            amax = max(amax, int(m.group(1)))
+        for m in re.finditer(r"\bs\[(\d+):(\d+)\]", ln):
+            smax = max(smax, int(m.group(2)))
+    return vmax + 1, amax + 1, smax + 1
+
+
+def _amdhsa_kernel(name: str, body: list[str], arch: str,
+                   target: str) -> list[str]:  # noqa: ARG001
+    """HSA カーネル記述子（`.amdhsa_kernel`）と AMDGPU メタデータノートを出す。
+
+    これが無いオブジェクトは ROCm ローダが受け付けない（`.text` だけでは
+    起動情報——kernarg サイズ・レジスタ数・ワークグループ上限——が無い）。
+    記述子の整合性は **llvm-mc 自身が検査する**（accum_offset が VGPR 総数を超える、
+    レジスタ数が範囲外、等は error になることを実測で確認済み）。
+
+    ただしメタデータの `.symbol` と実際の記述子シンボルの一致は llvm-mc が
+    見ない（実測: 不一致でも rc=0）。そこは `verify_loadable` が ELF から確かめる。
+    """
+    arch_v, acc_v, sgpr = _amd_reg_usage(body)
+    # 記述子の形式は **arch** の属性（`isa` で命令選択を強制しても変わらない）。
+    # gfx90a+ でしか使えない .amdhsa_accum_offset を RDNA へ出すとアセンブラが弾く。
+    rdna = arch.startswith(("gfx11", "gfx12"))
+    # gfx90a 系は arch VGPR と AccVGPR が単一ファイルを共有する。accum_offset は
+    # arch 側の割当（4 の倍数へ切り上げ）を指し、next_free_vgpr は合計。
+    accum = max(4, (arch_v + 3) // 4 * 4)
+    total_v = accum + max(0, acc_v)
+    out = [
+        "\t.rodata",
+        "\t.p2align 6",
+        f"\t.amdhsa_kernel {name}",
+        "\t\t.amdhsa_group_segment_fixed_size 0",
+        "\t\t.amdhsa_private_segment_fixed_size 0",
+        f"\t\t.amdhsa_kernarg_size {_KERNARG_SIZE}",
+        "\t\t.amdhsa_user_sgpr_kernarg_segment_ptr 1",
+        "\t\t.amdhsa_system_vgpr_workitem_id 0",
+        f"\t\t.amdhsa_next_free_vgpr {total_v if not rdna else max(arch_v, 4)}",
+        f"\t\t.amdhsa_next_free_sgpr {max(sgpr, 6)}",
+    ]
+    if rdna:
+        out.append("\t\t.amdhsa_wavefront_size32 1")
+    else:
+        out.append(f"\t\t.amdhsa_accum_offset {accum}")
+    out += [
+        "\t\t.amdhsa_float_denorm_mode_32 3",
+        "\t\t.amdhsa_float_denorm_mode_16_64 3",
+        "\t.end_amdhsa_kernel",
+        "",
+        "\t.amdgpu_metadata",
+        "---",
+        "amdhsa.version: [1, 1]",
+        "amdhsa.kernels:",
+        f"  - .name: {name}",
+        f"    .symbol: {name}.kd",
+        f"    .kernarg_segment_size: {_KERNARG_SIZE}",
+        "    .kernarg_segment_align: 8",
+        "    .group_segment_fixed_size: 0",
+        "    .private_segment_fixed_size: 0",
+        f"    .wavefront_size: {32 if rdna else 64}",
+        f"    .sgpr_count: {max(sgpr, 6)}",
+        f"    .vgpr_count: {total_v if not rdna else max(arch_v, 4)}",
+        "    .max_flat_workgroup_size: 256",
+        "    .args:",
+    ]
+    for argname, off in _KERNARG:
+        out += [f"      - .name: {argname}",
+                "        .size: 8",
+                f"        .offset: {off}",
+                "        .value_kind: global_buffer",
+                "        .address_space: global"]
+    out += ["...", "\t.end_amdgpu_metadata"]
+    return out
+
+
 def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
                 isa: str | None = None) -> EmitResult:
     """IR → AMDGCN テキスト。CDNA(MFMA) と RDNA(WMMA) を arch で切り替える。
@@ -303,9 +398,9 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
     これは**わざと不整合な組み合わせ**（CDNA の MFMA を RDNA の arch へ）を作って
     アセンブラに可否を問うための穴で、`probe_op` が移植ブロッカーの検出に使う。
 
-    HSA カーネルディスクリプタ（`.amdhsa_kernel`）は出力しない。よって生成物は
-    **アセンブル可能だがそのままではロード不可**。ローダブル化は実機ランタイムの
-    ABI に依存し、実機検証と同じ枠（L3）に属する。
+    HSA カーネル記述子（`.amdhsa_kernel`）と AMDGPU メタデータノートも出力するので、
+    生成物は ROCm ローダが要求する構造を備える（`verify_loadable` が ELF から確認）。
+    **ただし実際にロードして走らせたわけではない**——それは L3（要実機）。
     """
     target = isa or ("amd_rdna" if arch.startswith(("gfx11", "gfx12"))
                      else "amd_cdna")
@@ -313,7 +408,6 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
         "//",
         "// Tsugi codegen — 生成物。アセンブル検証は可能・実機実行は未検証。",
         f"// target={target} arch={arch}",
-        "// note: .amdhsa_kernel 記述子は未出力（ロード不可・実機 ABI 依存）",
         "//",
         "\t.text",
         f'\t.amdgcn_target "amdgcn-amd-amdhsa--{arch}"',
@@ -321,8 +415,7 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
     ]
     covered: list[str] = []
     uncovered: list[str] = []
-    notes: list[str] = ["load/store の記述子未出力: このアセンブリは検証用であり"
-                        "ロード可能なオブジェクトではない。"]
+    notes: list[str] = []
 
     # RDNA3 は同じ機械語命令を別ニーモニックで綴る（CDNA の *_dword 系は別名として
     # 受理されるが、逆アセンブルすると RDNA3 の綴りで返る）。往復検証（verify_encoding）
@@ -420,17 +513,21 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
                 continue
             covered.append(k)
 
+        prologue = [f"\t{mem['sload']} s[0:3], s[4:5], 0x0",
+                    "\ts_waitcnt lgkmcnt(0)",
+                    "\tv_lshlrev_b32 v0, 2, v0"]
+        lines.append("\t.text")
         lines.append(f"\t.globl\t{kernel.name}")
         lines.append("\t.p2align\t8")
         lines.append(f"\t.type\t{kernel.name},@function")
         lines.append(f"{kernel.name}:")
-        lines.append(f"\t{mem['sload']} s[0:3], s[4:5], 0x0")
-        lines.append("\ts_waitcnt lgkmcnt(0)")
-        lines.append("\tv_lshlrev_b32 v0, 2, v0")
+        lines += prologue
         lines += body
         lines.append("\ts_endpgm")
         lines.append(f".Lfunc_end_{kernel.name}:")
         lines.append(f"\t.size\t{kernel.name}, .Lfunc_end_{kernel.name}-{kernel.name}")
+        lines.append("")
+        lines += _amdhsa_kernel(kernel.name, prologue + body, arch, target)
         lines.append("")
 
     return EmitResult(target, arch, "\n".join(lines), covered, uncovered,
@@ -525,6 +622,19 @@ class AssembleResult:
         return VERIFY_LEVELS[2] if self.ok else VERIFY_LEVELS[0]
 
 
+#: 外部ツール呼び出しの結果キャッシュ。アセンブル・逆アセンブルは
+#: (テキスト, target, arch) の純関数であり、同じ入力に何度もプロセスを起こす理由がない
+#: （検証ゲートは同じ IR を層ごとに何度も通す）。プロセス内のみ・ツールの入れ替えは
+#: 想定しない（したければ `_TOOL_CACHE.clear()`）。
+_TOOL_CACHE: dict[tuple, object] = {}
+
+
+def _cached(key: tuple, compute):
+    if key not in _TOOL_CACHE:
+        _TOOL_CACHE[key] = compute()
+    return _TOOL_CACHE[key]
+
+
 def _which_ptxas() -> str | None:
     """`ptxas` を探す。PATH → 環境変数 → pip の nvidia-cuda-nvcc-cu12 同梱物。"""
     env = os.environ.get("TSUGI_PTXAS")
@@ -566,6 +676,12 @@ def assemble(text: str, *, target: str, arch: str | None = None,
     if target not in TARGETS:
         raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
     arch = arch or DEFAULT_ARCH[target]
+    return _cached(("asm", text, target, arch),
+                   lambda: _assemble(text, target, arch, timeout))
+
+
+def _assemble(text: str, target: str, arch: str,
+              timeout: float) -> AssembleResult:
     tool = toolchain(target)
     if tool is None:
         # どちらも本体の依存としては宣言しない（ptxas は CUDA EULA・proprietary で
@@ -627,8 +743,18 @@ class EncodingCheck:
 def _mnemonics(text: str, target: str) -> list[str]:
     """生成テキストから *意図した* 命令ニーモニックを拾う（順序つき）。"""
     out: list[str] = []
+    in_text = True   # 断片を渡されても走査できるよう既定は本文扱い
     for raw in text.splitlines():
         ln = raw.strip()
+        if target != "nvidia":
+            # .rodata（カーネル記述子）とメタデータ YAML は命令ではない
+            if ln.startswith(".text"):
+                in_text = True
+                continue
+            if ln.startswith((".rodata", ".amdgpu_metadata", ".amdhsa_kernel")):
+                in_text = False
+            if not in_text:
+                continue
         if (not ln or ln.startswith(("//", ";", ".", "{", "}", "@", ")", "("))
                 or ln.endswith(":")):
             continue
@@ -666,6 +792,11 @@ def verify_encoding(module: ir.Module, *, target: str = "nvidia",
     if target not in TARGETS:
         raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
     arch = arch or DEFAULT_ARCH[target]
+    return _cached(("verify_encoding", module.to_mlir(), target, arch),
+                   lambda: _verify_encoding(module, target, arch))
+
+
+def _verify_encoding(module: ir.Module, target: str, arch: str) -> EncodingCheck:
     tool = toolchain(target)
     em = emit(module, target=target, arch=arch)
     intended = sorted(set(_mnemonics(em.text, target)))
@@ -736,6 +867,109 @@ def verify_encoding(module: ir.Module, *, target: str = "nvidia",
                              method="disasm-roundtrip", intended=intended,
                              decoded=decoded, missing=missing, symbols=syms,
                              detail=f"{len(decoded)} 種の命令を復号")
+
+
+@dataclass
+class LoadableCheck:
+    """機械語オブジェクトがローダの要求する構造を備えているか。
+
+    「アセンブルできる」と「ローダが受け付ける形になっている」は別である。
+    `.text` だけのオブジェクトには起動情報（kernarg サイズ・レジスタ数・
+    ワークグループ上限）が無く、ROCm ローダは拒否する。ここは ELF を読んで
+    **必要な部品が実在するか**を確かめる。
+
+    **これはロードして走らせた証明ではない**（それは L3）。構造の検査に留まる。
+    """
+
+    target: str
+    arch: str
+    available: bool
+    ok: bool | None
+    symbols: list[str] = field(default_factory=list)
+    sections: list[str] = field(default_factory=list)
+    has_metadata: bool = False
+    missing: list[str] = field(default_factory=list)
+    detail: str = ""
+
+
+def verify_loadable(module: ir.Module, *, target: str = "nvidia",
+                    arch: str | None = None) -> LoadableCheck:
+    """生成オブジェクトがローダの要求する構造を持つかを ELF から確かめる。
+
+    - AMD: `<kernel>`（.text の関数）・`<kernel>.kd`（HSA カーネル記述子）・
+      `NT_AMDGPU_METADATA` ノートの 3 点。llvm-mc は記述子の内部整合
+      （accum_offset / レジスタ範囲）を検査するが、メタデータの `.symbol` と
+      記述子シンボルの一致は**見ない**（実測: 不一致でも rc=0）ので、ここで見る。
+    - NVIDIA: ptxas の cubin は元よりロード可能な形。カーネルシンボルと
+      `.nv.info.<kernel>`（起動パラメタ情報）の実在を確かめる。
+    """
+    if target not in TARGETS:
+        raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+    arch = arch or DEFAULT_ARCH[target]
+    return _cached(("verify_loadable", module.to_mlir(), target, arch),
+                   lambda: _verify_loadable(module, target, arch))
+
+
+def _verify_loadable(module: ir.Module, target: str, arch: str) -> LoadableCheck:
+    tool = toolchain(target)
+    em = emit(module, target=target, arch=arch)
+    if tool is None:
+        return LoadableCheck(target, arch, available=False, ok=None,
+                             detail="assembler not found")
+    names = [k.name for k in module.kernels]
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        if target == "nvidia":
+            src, obj = d / "k.ptx", d / "k.cubin"
+            src.write_text(em.text, encoding="utf-8")
+            cmd = [tool, f"-arch={arch}", str(src), "-o", str(obj)]
+            required = [n for n in names]
+        else:
+            src, obj = d / "k.s", d / "k.o"
+            src.write_text(em.text, encoding="utf-8")
+            cmd = [tool, "-triple=amdgcn-amd-amdhsa", f"-mcpu={arch}",
+                   "-filetype=obj", str(src), "-o", str(obj)]
+            required = [n for n in names] + [f"{n}.kd" for n in names]
+        p = _run(cmd)
+        if p is None or not obj.exists():
+            return LoadableCheck(target, arch, available=True, ok=False,
+                                 detail=(p.stderr if p else "assemble failed")[:400])
+        syms = _elf_symbols(obj)
+        secs = _elf_sections(obj)
+        missing = [r for r in required if r not in syms]
+        if target == "nvidia":
+            missing += [f".nv.info.{n}" for n in names
+                        if not any(s == f".nv.info.{n}" for s in secs)]
+            has_meta = any(s.startswith(".nv.info") for s in secs)
+        else:
+            notes = _run([shutil.which("llvm-readelf") or "llvm-readelf",
+                          "--notes", str(obj)])
+            note_txt = (notes.stdout if notes else "") or ""
+            has_meta = "AMDGPU_METADATA" in note_txt and all(
+                f".name:{' ' * 11}{n}" in note_txt or f".name: {n}" in note_txt
+                or n in note_txt for n in names)
+            if not has_meta:
+                missing.append("NT_AMDGPU_METADATA")
+    return LoadableCheck(target, arch, available=True, ok=not missing,
+                         symbols=syms, sections=secs, has_metadata=has_meta,
+                         missing=missing,
+                         detail=f"required={required}")
+
+
+def _elf_sections(path: Path) -> list[str]:
+    """オブジェクトのセクション名（llvm-objdump -h・無ければ空）。"""
+    tool = shutil.which("llvm-objdump") or shutil.which("llvm-objdump-18")
+    if tool is None:
+        return []
+    p = _run([tool, "-h", str(path)])
+    if p is None or p.returncode != 0:
+        return []
+    out = []
+    for ln in p.stdout.splitlines():
+        parts = ln.split()
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].startswith("."):
+            out.append(parts[1])
+    return out
 
 
 def _elf_symbols(path: Path) -> list[str]:
