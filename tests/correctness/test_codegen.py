@@ -30,6 +30,7 @@ from tsugi.codegen import (  # noqa: E402
     toolchain,
     uncodegenned_ops,
     verify_codegen,
+    verify_encoding,
 )
 from tsugi.tracer import EMITTABLE_OPS  # noqa: E402
 
@@ -187,6 +188,49 @@ def test_unstitched_layouts_are_declared_not_hidden():
     assert any("reduce" in n for n in em2.unstitched)
 
 
+def test_encoding_roundtrip_confirms_intended_instructions_were_encoded():
+    """受理と「意図どおり符号化された」は別。第二のツールで読み直して確かめる。
+
+    この検査は実際に欠陥を見つけた: RDNA3 は同じ機械語を別ニーモニックで綴り
+    （`global_load_dword` → `global_load_b32`）、llvm-mc は CDNA の綴りを *別名として
+    黙って受理*していた。アセンブル成功だけでは気づけない。
+    """
+    mod = _ir()
+    for t in TARGETS:
+        enc = verify_encoding(mod, target=t)
+        if not enc.available:
+            assert enc.ok is None, "未検証を合格に丸めてはならない"
+            continue
+        assert enc.ok is True, f"{t}/{enc.arch}: 機械語に現れない命令 {enc.missing}"
+        assert enc.intended, "意図した命令が拾えていない"
+        # カーネル名が機械語オブジェクトのシンボルとして実在する
+        assert any(k.name in enc.symbols for k in mod.kernels), enc.symbols
+        if t == "nvidia":
+            # SASS 逆アセンブラが無いので往復していない——それを自己申告する
+            assert "nvdisasm" in enc.method and not enc.decoded
+            assert enc.spill_bytes == 0, f"spill が出ている: {enc.spill_bytes} B"
+        else:
+            assert enc.method == "disasm-roundtrip" and enc.decoded
+
+
+def test_rdna_uses_its_own_memory_mnemonics_not_the_cdna_aliases():
+    """RDNA3 の綴りで出す（往復検証が silently-aliased を検出した件の回帰固定）。"""
+    rdna = emit(_ir(), target="amd_rdna").text
+    cdna = emit(_ir(), target="amd_cdna").text
+    assert "global_load_b32" in rdna and "s_load_b128" in rdna
+    assert "global_load_dword" not in rdna and "s_load_dwordx4" not in rdna
+    assert "global_load_dword" in cdna and "s_load_dwordx4" in cdna
+
+
+def test_encoding_check_detects_a_mnemonic_that_never_reaches_machine_code():
+    """検査の有効性: 復号結果に無い命令を intended に混ぜたら missing に出る。"""
+    from tsugi.codegen import _mnemonics
+    got = _mnemonics("\tv_add_f32 v1, v2, v3\n\ts_endpgm\n", "amd_cdna")
+    assert got == ["v_add_f32", "s_endpgm"], got
+    # ディレクティブ・ラベル・コメントは命令として拾わない
+    assert _mnemonics("\t.text\nk:\n// c\n\ts_endpgm\n", "amd_cdna") == ["s_endpgm"]
+
+
 def test_L3_is_never_claimed():
     """実機実行検証（L3）はこの環境で到達不能。どの経路も L3 を返さない。"""
     mod = _ir()
@@ -251,6 +295,9 @@ def main() -> int:
               test_every_codegen_op_assembles_on_both_vendors,
               test_approximate_ops_match_the_instructions_actually_emitted,
               test_unstitched_layouts_are_declared_not_hidden,
+              test_encoding_roundtrip_confirms_intended_instructions_were_encoded,
+              test_rdna_uses_its_own_memory_mnemonics_not_the_cdna_aliases,
+              test_encoding_check_detects_a_mnemonic_that_never_reaches_machine_code,
               test_L3_is_never_claimed,
               test_broken_assembly_is_rejected_not_waved_through,
               test_compile_emits_machine_code_and_reports_its_level,

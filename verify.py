@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-92: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-93: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2140,6 +2140,32 @@ def _check_meta_integrity() -> None:
           and set(_cg90.BIT_EXACT_ACROSS_VENDORS) == set(_cg90.CODEGEN_OPS)
           and _cg90.CODEGEN_OPS <= _EMITTABLE90
           and not _cg90.uncodegenned_ops("nvidia"))
+
+    # 93. アセンブラが**受理する**ことと、意図した命令に**符号化される**ことは別。
+    #     別名・別エンコーディングへ黙って解釈されうる。出来上がったオブジェクトを
+    #     第二のツール（逆アセンブラ／シンボルリーダ）で読み直して照合する。
+    #     この検査は実際に欠陥を見つけた: RDNA3 は同じ機械語を別ニーモニックで綴り
+    #     （global_load_dword → global_load_b32）、llvm-mc は CDNA の綴りを別名として
+    #     黙って受理していた。アセンブル成功だけでは気づけない種類の不整合。
+    _enc93 = {t: _cg90.verify_encoding(_mod90, target=t) for t in _cg90.TARGETS}
+    _rdna93 = _cg90.emit(_mod90, target="amd_rdna").text
+    _cdna93 = _cg90.emit(_mod90, target="amd_cdna").text
+    check("encoding round-trip: the intended instructions are the ones actually encoded",
+          all((e.ok is True and any(k.name in e.symbols for k in _mod90.kernels))
+              if e.available else e.ok is None                # 未検証を合格にしない
+              for e in _enc93.values())
+          # AMD は逆アセンブル往復・NVIDIA は往復していないことを自己申告する
+          and (not _enc93["amd_cdna"].available
+               or (_enc93["amd_cdna"].method == "disasm-roundtrip"
+                   and _enc93["amd_cdna"].decoded))
+          and (not _enc93["nvidia"].available
+               or ("nvdisasm" in _enc93["nvidia"].method
+                   and not _enc93["nvidia"].decoded
+                   and _enc93["nvidia"].spill_bytes == 0))
+          # 上の欠陥の回帰固定: arch ごとに正しい綴りを出す
+          and "global_load_b32" in _rdna93 and "s_load_b128" in _rdna93
+          and "global_load_dword" not in _rdna93
+          and "global_load_dword" in _cdna93)
 
 
 def main() -> int:

@@ -392,6 +392,7 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
         codegen_coverage,
         uncodegenned_ops,
         verify_codegen,
+        verify_encoding,
     )
 
     cg = AuditPhase("codegen 生成物（アセンブル検証）", "decided", Risk.INFO)
@@ -407,6 +408,20 @@ def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
         if asm.available and asm.ok:
             cg.lines.append(f"{t}/{em.arch}: {asm.level}"
                             f"（{asm.obj_bytes} B・{Path(asm.tool).name}）")
+            # 受理されたことと「意図した命令に符号化された」ことは別。第二のツール
+            # （逆アセンブラ／シンボルリーダ）で読み直す。
+            enc = verify_encoding(module, target=t, arch=em.arch)
+            if enc.available and enc.ok:
+                extra = (f"・レジスタ {enc.registers}・spill {enc.spill_bytes} B"
+                         if enc.registers is not None else
+                         f"・{len(enc.decoded)} 種の命令を復号")
+                cg.lines.append(f"  符号化照合 OK（{enc.method}{extra}）")
+            elif enc.available and enc.ok is False:
+                cg.max_risk = max(cg.max_risk, Risk.WARN)
+                cg.lines.append(f"  符号化照合 NG: 意図した命令が機械語に現れない "
+                                f"{enc.missing or enc.detail[:120]}")
+            else:
+                cg.lines.append(f"  符号化照合は未実施（{enc.detail[:100]}）")
         elif not asm.available:
             cg.lines.append(f"{t}/{em.arch}: {asm.level}"
                             f"（{len(em.text.splitlines())} 行）— {asm.stderr}")

@@ -324,6 +324,14 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
     notes: list[str] = ["load/store の記述子未出力: このアセンブリは検証用であり"
                         "ロード可能なオブジェクトではない。"]
 
+    # RDNA3 は同じ機械語命令を別ニーモニックで綴る（CDNA の *_dword 系は別名として
+    # 受理されるが、逆アセンブルすると RDNA3 の綴りで返る）。往復検証（verify_encoding）
+    # がこの silently-aliased を検出したので、arch ごとに正しい綴りを出す。
+    mem = ({"load": "global_load_b32", "store": "global_store_b32",
+            "sload": "s_load_b128"} if target == "amd_rdna" else
+           {"load": "global_load_dword", "store": "global_store_dword",
+            "sload": "s_load_dwordx4"})
+
     for kernel in module.kernels:
         body: list[str] = []
         reg: dict[str, str] = {}
@@ -358,11 +366,11 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
                 reg[op.result.name] = d
             elif k == "load":
                 d = newv()
-                body.append(f"\tglobal_load_dword {d}, v[0:1], off")
+                body.append(f"\t{mem['load']} {d}, v[0:1], off")
                 body.append("\ts_waitcnt vmcnt(0)")
                 reg[op.result.name] = d
             elif k == "store":
-                body.append(f"\tglobal_store_dword v[2:3], {src(op.operands[0])}, off")
+                body.append(f"\t{mem['store']} v[2:3], {src(op.operands[0])}, off")
             elif k == "cast":
                 t, d = newv(), newv()
                 body.append(f"\tv_cvt_f16_f32 {t}, {src(op.operands[0])}")
@@ -416,7 +424,7 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
         lines.append("\t.p2align\t8")
         lines.append(f"\t.type\t{kernel.name},@function")
         lines.append(f"{kernel.name}:")
-        lines.append("\ts_load_dwordx4 s[0:3], s[4:5], 0x0")
+        lines.append(f"\t{mem['sload']} s[0:3], s[4:5], 0x0")
         lines.append("\ts_waitcnt lgkmcnt(0)")
         lines.append("\tv_lshlrev_b32 v0, 2, v0")
         lines += body
@@ -590,6 +598,155 @@ def assemble(text: str, *, target: str, arch: str | None = None,
         size = out.stat().st_size if out.exists() else 0
     return AssembleResult(target, arch, available=True, ok=ok, tool=tool,
                           stderr=err, obj_bytes=size)
+
+
+@dataclass
+class EncodingCheck:
+    """「意図した命令が本当にその機械語になったか」を*第二のツール*で確かめた結果。
+
+    アセンブラが受理する（L2）ことと、意図どおりに符号化される
+    ことは別である。別名・別エンコーディングへ黙って解釈される可能性が残る。
+    そこで出来上がったオブジェクトを**逆アセンブラ／シンボルリーダに読ませ直す**。
+    真値が「自分で書いたテキスト」でなく「ツールが復号したもの」になるのが要点。
+    """
+
+    target: str
+    arch: str
+    available: bool
+    ok: bool | None
+    method: str = ""              # disasm-roundtrip | elf-symbols+resources
+    intended: list[str] = field(default_factory=list)
+    decoded: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    symbols: list[str] = field(default_factory=list)
+    spill_bytes: int | None = None       # NVIDIA のみ（ptxas -v）
+    registers: int | None = None         # NVIDIA のみ（ptxas -v）
+    detail: str = ""
+
+
+def _mnemonics(text: str, target: str) -> list[str]:
+    """生成テキストから *意図した* 命令ニーモニックを拾う（順序つき）。"""
+    out: list[str] = []
+    for raw in text.splitlines():
+        ln = raw.strip()
+        if (not ln or ln.startswith(("//", ";", ".", "{", "}", "@", ")", "("))
+                or ln.endswith(":")):
+            continue
+        if target == "nvidia" and ln.startswith(("ld.param", "cvta", "ret")):
+            continue
+        head = ln.split()[0].rstrip(",")
+        if head.startswith("%") or "=" in head:
+            continue
+        out.append(head)
+    return out
+
+
+def _run(cmd: list[str], timeout: float = 60.0):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def verify_encoding(module: ir.Module, *, target: str = "nvidia",
+                    arch: str | None = None) -> EncodingCheck:
+    """アセンブル済みオブジェクトを**読み直して**、意図した命令の実在を確かめる。
+
+    AMD: `llvm-objdump -d` で逆アセンブルし、意図したニーモニックが復号結果に
+    現れることを見る（`v_lshlrev_b32` → `v_lshlrev_b32_e32` のようにエンコーディング
+    接尾辞が付くので前方一致で照合する）。これは往復検証であり、テキストと機械語の
+    対応をツールが保証する。
+
+    NVIDIA: SASS 逆アセンブラ（nvdisasm）は本環境に入手手段が無いため往復はできない。
+    代わりに **cubin の ELF シンボル**（カーネル名が機械語オブジェクトに存在するか）と
+    `ptxas -v` の資源レポート（レジスタ数・spill バイト）を根拠にする。
+    **往復していないことは method フィールドで自己申告する**（同等と偽らない）。
+    """
+    if target not in TARGETS:
+        raise ValueError(f"target must be one of {TARGETS}, got {target!r}")
+    arch = arch or DEFAULT_ARCH[target]
+    tool = toolchain(target)
+    em = emit(module, target=target, arch=arch)
+    intended = sorted(set(_mnemonics(em.text, target)))
+    if tool is None:
+        return EncodingCheck(target, arch, available=False, ok=None,
+                             intended=intended, detail="assembler not found")
+
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        if target == "nvidia":
+            src, obj = d / "k.ptx", d / "k.cubin"
+            src.write_text(em.text, encoding="utf-8")
+            p = _run([tool, "-v", f"-arch={arch}", str(src), "-o", str(obj)])
+            if p is None or not obj.exists():
+                return EncodingCheck(target, arch, available=True, ok=False,
+                                     intended=intended,
+                                     detail=(p.stderr if p else "ptxas failed")[:400])
+            info = (p.stderr or "") + (p.stdout or "")
+            regs = spill = None
+            for ln in info.splitlines():
+                if "registers" in ln:
+                    for tok in ln.replace(",", " ").split():
+                        if tok.isdigit():
+                            regs = int(tok)
+                            break
+                if "spill stores" in ln:
+                    parts = ln.split()
+                    for i, tok in enumerate(parts):
+                        if tok == "bytes" and i + 1 < len(parts) \
+                                and parts[i + 1].startswith("spill"):
+                            spill = int(parts[i - 1])
+                            break
+            syms = _elf_symbols(obj)
+            names = {k.name for k in module.kernels}
+            ok = bool(names & set(syms)) and (spill is None or spill == 0)
+            return EncodingCheck(
+                target, arch, available=True, ok=ok,
+                method="elf-symbols+resources（SASS 往復は nvdisasm 不在ゆえ未実施）",
+                intended=intended, symbols=syms, registers=regs, spill_bytes=spill,
+                detail=f"kernels={sorted(names)} symbols={syms}")
+
+        src, obj = d / "k.s", d / "k.o"
+        src.write_text(em.text, encoding="utf-8")
+        p = _run([tool, "-triple=amdgcn-amd-amdhsa", f"-mcpu={arch}",
+                  "-filetype=obj", str(src), "-o", str(obj)])
+        if p is None or not obj.exists():
+            return EncodingCheck(target, arch, available=True, ok=False,
+                                 intended=intended,
+                                 detail=(p.stderr if p else "llvm-mc failed")[:400])
+        dis = shutil.which("llvm-objdump") or shutil.which("llvm-objdump-18")
+        if dis is None:
+            return EncodingCheck(target, arch, available=False, ok=None,
+                                 intended=intended,
+                                 detail="llvm-objdump not found — 往復検証は未実施")
+        q = _run([dis, "-d", f"--mcpu={arch}", str(obj)])
+        if q is None or q.returncode != 0:
+            return EncodingCheck(target, arch, available=True, ok=False,
+                                 intended=intended,
+                                 detail=(q.stderr if q else "objdump failed")[:400])
+        decoded = sorted({ln.strip().split()[0]
+                          for ln in q.stdout.splitlines()
+                          if ln.startswith("\t") and ln.strip()})
+        # 復号側は `_e32` 等のエンコーディング接尾辞が付くので前方一致で照合する。
+        missing = [m for m in intended
+                   if not any(dm.startswith(m) for dm in decoded)]
+        syms = _elf_symbols(obj)
+        return EncodingCheck(target, arch, available=True, ok=not missing,
+                             method="disasm-roundtrip", intended=intended,
+                             decoded=decoded, missing=missing, symbols=syms,
+                             detail=f"{len(decoded)} 種の命令を復号")
+
+
+def _elf_symbols(path: Path) -> list[str]:
+    """オブジェクトの定義済みシンボル名（llvm-nm・無ければ空）。"""
+    nm = shutil.which("llvm-nm") or shutil.which("llvm-nm-18") or shutil.which("nm")
+    if nm is None:
+        return []
+    p = _run([nm, "--defined-only", str(path)])
+    if p is None or p.returncode != 0:
+        return []
+    return [ln.split()[-1] for ln in p.stdout.splitlines() if ln.strip()]
 
 
 def verify_codegen(module: ir.Module, *, target: str = "nvidia",

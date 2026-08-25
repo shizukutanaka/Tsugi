@@ -24,6 +24,7 @@ Tsugi の「単一ソースで両ベンダー」という約束の**生成側**�
 | **L0 未対応** | その op / arch に命令列が無い（アセンブラが不受理を含む） | — |
 | **L1 生成のみ** | テキストは出るがアセンブラが無く未確認 | 誰も（**合格と言わない**） |
 | **L2 アセンブル検証済み** | 命令の存在・構文・arch 可用性 | **ベンダーのアセンブラ** |
+| L2＋符号化照合 | 意図した命令が*実際にその機械語になった*こと | **ベンダーの逆アセンブラ／リンカ** |
 | **L3 実機実行検証済み** | 数値・レイアウト・性能 | 実機（**このリポジトリでは常に空**） |
 
 **L2 が保証しないもの**（黙らない）: データレイアウト——どのレーンがどの要素を持つか。
@@ -52,6 +53,27 @@ print(art.asm, art.level)
 ```
 
 `tsugi.verify(...)` / `python -m tsugi` の判定にも codegen phase が載る。
+
+## 符号化照合 — 「受理された」と「意図どおり符号化された」は別
+
+アセンブラが受理しても、書いた綴りが別名として別の命令に解釈されている可能性が残る。
+そこで出来上がったオブジェクトを**第二のツールに読み直させる**（`verify_encoding`）。
+
+| target | 方法 | 根拠 |
+|---|---|---|
+| amd_cdna / amd_rdna | `llvm-objdump -d` で逆アセンブル → 意図したニーモニックの実在を照合 | **往復検証** |
+| nvidia | cubin の ELF シンボル（カーネル名の実在）＋ `ptxas -v` の資源レポート（レジスタ数・spill） | 往復では**ない**（SASS 逆アセンブラ nvdisasm は本環境で入手手段が無い。`method` フィールドがそう自己申告する） |
+
+**この検査は実際に欠陥を見つけた**。RDNA3 は同じ機械語を別ニーモニックで綴る
+（`global_load_dword` → `global_load_b32`、`s_load_dwordx4` → `s_load_b128`）。
+llvm-mc は CDNA の綴りを**別名として黙って受理**しており、アセンブル成功だけでは
+気づけなかった。対処は別名表を持つことではなく（それでは「自分の表を信じる」に逆戻り）
+**arch ごとに正しい綴りを出す**こと。不変条件 93 が回帰を固定する。
+
+```python
+enc = codegen.verify_encoding(mod, target="amd_rdna")
+print(enc.ok, enc.method, enc.missing, enc.symbols)
+```
 
 ## アセンブラを真値に使う（本層の存在理由）
 
@@ -114,4 +136,4 @@ ULP 数は持たない。ISA ドキュメント由来の**構造的分類**の�
 
 関連: [`python/tsugi/codegen.py`](../python/tsugi/codegen.py)（実装）・
 [`tests/correctness/test_codegen.py`](../tests/correctness/test_codegen.py)（真値はベンダーのツール）・
-不変条件 90-92（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
+不変条件 90-93（`verify.py`）・[SOURCES.md](SOURCES.md)（ISA 出典）
