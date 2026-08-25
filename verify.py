@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-97: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-100: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2228,6 +2228,114 @@ def _check_meta_integrity() -> None:
               and all(_cg90.BIT_EXACT_ACROSS_VENDORS[k]
                       for k in _sym97 - {"rsqrt"})
               and not _cg90.BIT_EXACT_ACROSS_VENDORS["rsqrt"]))
+
+    # 98. codegen が届いていたのは **tile-DSL を書く人だけ**だった。このプロダクトの楔は
+    #     torch.compile であり、想定ユーザーは PyTorch 開発者である。彼らの経路は
+    #     論理 op 列（発散予測用）を作るだけで `ir.Module` を一度も作らず、「単一ソースで
+    #     両ベンダー」という看板の約束が看板の想定客に一切届いていなかった。
+    #     `fx_to_ir` がそこを繋ぐ。**表せない op は黙って落とさず partial と言う**。
+    from tsugi_torch.fxlower import fx_to_ir as _f2ir
+
+    _lm98 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default"),
+        _Node58("call_function", "aten.native_layer_norm.default"),
+        _Node58("call_function", "aten._softmax.default"),
+        _Node58("output", "output"),
+    ]))
+    _bad98 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten._log_softmax.default"),   # log は DSL に無い
+        _Node58("call_function", "aten.gelu.default"),           # erf 版は表せない
+        _Node58("output", "output"),
+    ]))
+    _asm98 = {t: _cg90.verify_codegen(_lm98.module, target=t)[1]
+              for t in _cg90.TARGETS}
+    check("the PyTorch path reaches real machine code, and gaps are declared partial",
+          _lm98.module.op_kinds() and not _lm98.report.partial
+          and all((a.ok is True) if _cg90.toolchain(t) is not None else a.ok is None
+                  for t, a in _asm98.items())
+          # 表せない op（log_softmax・erf 版 gelu）は partial として載る
+          and _bad98.report.partial
+          and any("log_softmax" in u for u in _bad98.report.unsupported)
+          and any("erf" in u for u in _bad98.report.unsupported)
+          # eps を静的に決められないときは「仮定した」と言う
+          and any("eps" in a for a in _lm98.report.assumptions))
+
+    # 99. **実 `torch.fx` に対してだけ全滅していた偽OK の回帰固定**。`call_module` の
+    #     target は "0"/"1" という経路名で op の種類を表さない。解決しないと `_kind_of`
+    #     が全ノードで None を返し、`audit_fx` は「0 numeric ops・発散 0」を報告する
+    #     ——想定ユーザーのモデルが必ず無害判定になる。stand-in グラフは aten 名を
+    #     使っていたため露見せず、実 torch を入れて初めて判明した（第 60 回）。
+    from tsugi_torch.fxbridge import audit_fx as _afx99
+    from tsugi_torch.fxbridge import resolved_target as _rt99
+
+    class _Mod99:                      # get_submodule を持つ最小の stand-in
+        def __init__(self, mapping):
+            self._m = mapping
+            self.graph = None
+
+        def get_submodule(self, t):
+            return self._m[t]
+
+    class _LN99:
+        pass
+    _LN99.__name__ = "LayerNorm"
+
+    class _SM99:
+        pass
+    _SM99.__name__ = "Softmax"
+
+    class _LIN99:
+        pass
+    _LIN99.__name__ = "Linear"
+
+    _gm99 = _Mod99({"0": _LIN99(), "1": _LN99(), "2": _SM99()})
+    _gm99.graph = _Graph58([_Node58("placeholder", "x"),
+                            _Node58("call_module", "0"),
+                            _Node58("call_module", "1"),
+                            _Node58("call_module", "2"),
+                            _Node58("output", "output")])
+    _rep99 = _afx99(_gm99)
+    check("call_module targets resolve to op kinds (else every real model reads as harmless)",
+          _rt99(_Node58("call_module", "1"), _gm99) == "LayerNorm"
+          and _rep99["n_ops"] >= 3                     # 解決前は 0 だった
+          and _rep99["model_divergence"] > 0.0         # 解決前は 0.0 だった
+          and _rep99["has_normalization"] is True      # 解決前は False だった
+          and {"layer_norm", "softmax"} <= set(_rep99["amplifiers"]))
+
+    # 100. 降下が *意味* を保つかはアセンブラにも LLVM にも問えない——実行して比べる
+    #      しかない。`interp` が IR に CPU リファレンス意味論を与え、torch があれば
+    #      eager と突き合わせる。torch が無ければ **主張しない**（未検証を合格にしない）。
+    from tsugi.interp import evaluate as _ev100
+
+    _x100 = np.random.default_rng(0).standard_normal((4, 16))
+    _sm100 = _f2ir(_GM58([_Node58("placeholder", "x"),
+                          _Node58("call_function", "aten._softmax.default"),
+                          _Node58("output", "output")]))
+    _got100 = _ev100(_sm100.module, [_x100])[-1]
+    _ref100 = np.exp(_x100 - _x100.max(1, keepdims=True))
+    _ref100 = _ref100 / _ref100.sum(1, keepdims=True)
+    _torch100 = True
+    try:
+        import torch as _t100
+        import torch.nn as _tnn100
+        _mods100 = {"softmax": _tnn100.Softmax(-1),
+                    "layer_norm": _tnn100.LayerNorm(16, elementwise_affine=False),
+                    "silu": _tnn100.SiLU(), "tanh": _tnn100.Tanh()}
+        _xt100 = _t100.tensor(_x100, dtype=_t100.float64)
+        for _m100 in _mods100.values():
+            _m100 = _m100.double()
+            _lm100 = _f2ir(_t100.fx.symbolic_trace(_m100))
+            _e100 = float(np.max(np.abs(
+                _ev100(_lm100.module, [_x100])[-1]
+                - _m100(_xt100).detach().numpy())))
+            _torch100 = _torch100 and _e100 < 1e-9
+    except Exception:                                  # noqa: BLE001
+        _torch100 = None                               # torch 無し: 主張しない
+    check("lowered IR preserves meaning (NumPy interp vs closed form; vs torch eager if present)",
+          float(np.max(np.abs(_got100 - _ref100))) < 1e-12
+          and (_torch100 is None or _torch100 is True))
 
 
 def main() -> int:

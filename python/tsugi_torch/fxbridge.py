@@ -17,32 +17,62 @@ from tsugi.propagation import GraphOp, is_amplifier, propagate
 _CALL_OPS = ("call_function", "call_method", "call_module")
 
 
+def resolved_target(node: Any, gm: Any = None) -> str:
+    """ノードの op 種別を表す名前。`call_module` はサブモジュールのクラス名へ解決する。
+
+    **これが無いと実 `torch.fx.symbolic_trace` に対して全滅する**: Sequential の
+    子モジュールは target が "0"/"1"/"2" という経路名で、op の種類を一切表さない。
+    解決しないと `_kind_of` が全ノードで None を返し、`audit_fx` は
+    「0 numeric ops・発散 0」を報告する——**想定ユーザーのモデルが必ず無害判定になる
+    という最悪の偽OK**。stand-in グラフは aten 名を使っていたため露見しなかった
+    （実 torch を入れて初めて判明・第 60 回）。
+    """
+    t = str(getattr(node, "target", ""))
+    if getattr(node, "op", None) == "call_module" and gm is not None:
+        try:
+            return type(gm.get_submodule(t)).__name__
+        except (AttributeError, KeyError, TypeError):
+            return t
+    return t
+
+
+def _matches(t: str, *pats: str) -> bool:
+    """アンダースコアの有無を無視して照合する。
+
+    aten 名（`native_layer_norm`）とモジュールのクラス名（`LayerNorm`）で区切りが
+    違うため、素朴な部分文字列一致では実 FX のモジュール名を取りこぼす。
+    """
+    low = t.lower()
+    flat = low.replace("_", "")
+    return any(p in low or p.replace("_", "") in flat for p in pats)
+
+
 def _kind_of(target_name: str) -> str | None:
     """aten/torch op 名を Tsugi の論理 op 種別へ写す（None=数値発散に無関係）。"""
     t = target_name.lower()
-    if any(k in t for k in ("addmm", "mm", "matmul", "bmm", "linear", "einsum", "conv")):
+    if _matches(t, "addmm", "mm", "matmul", "bmm", "linear", "einsum", "conv"):
         return "matmul"
-    if "softmax" in t:
+    if _matches(t, "softmax"):
         return "softmax"
-    if "rsqrt" in t:
+    if _matches(t, "rsqrt"):
         return "rsqrt"
-    if "exp" in t:
+    if _matches(t, "exp"):
         return "exp"
     # 正規化層は専用 kind（従来は "reduce" に写していたが、reduce の cond 統計
     # Σ|x|/|Σx| は正規化に不適切で *両方向* に誤る——零平均 sample では相殺で爆発
     # （偽BLOCK）・平均優勢 sample では ≈1 なのに実 LayerNorm は RMS/σ 倍に増幅
     # （偽OK）。rms_norm 判定が先（rms_norm は "_norm" を含むため順序が本質）。
-    if "rms_norm" in t:
+    if _matches(t, "rms_norm"):
         return "rms_norm"
-    if "layer_norm" in t or "_norm" in t:
+    if _matches(t, "layer_norm", "_norm") or t.endswith("norm"):
         # group/batch/instance norm・linalg_vector_norm 等も平均減算や縮約を含むため
         # 保守的に layer_norm 扱い（cond は過大側に外れうるが偽BLOCK 方向・実験なしに
         # 特別扱いしない）。
         return "layer_norm"
-    if any(k in t for k in ("mean", "sum", "var")):
+    if _matches(t, "mean", "sum", "var"):
         return "reduce"
-    if any(k in t for k in ("add", "sub", "mul", "div", "tanh", "gelu",
-                            "relu", "sigmoid", "cast", "to_copy", "scale", "neg")):
+    if _matches(t, "add", "sub", "mul", "div", "tanh", "gelu", "relu",
+                "sigmoid", "silu", "cast", "to_copy", "scale", "neg"):
         return "scale"
     return None   # placeholder/output/get_attr/view 等は除外
 
@@ -91,7 +121,7 @@ def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
     for node in gm.graph.nodes:
         if getattr(node, "op", None) not in _CALL_OPS:
             continue
-        kind = _kind_of(str(getattr(node, "target", "")))
+        kind = _kind_of(resolved_target(node, gm))
         if kind is None:
             continue
         ops.append(GraphOp(kind, K=_node_K(node)) if kind == "matmul" else GraphOp(kind))
@@ -111,7 +141,7 @@ def _is_normalization(target_name: str) -> bool:
     （零平均で偽BLOCK・平均優勢で偽OK）。この述語は has_normalization の可視化用に残す。
     """
     t = target_name.lower()
-    return "layer_norm" in t or "rms_norm" in t or "_norm" in t
+    return _matches(t, "layer_norm", "rms_norm", "_norm") or t.endswith("norm")
 
 
 def fx_call_target_names(gm: Any) -> list[str]:
@@ -123,7 +153,7 @@ def fx_call_target_names(gm: Any) -> list[str]:
     names: list[str] = []
     for node in gm.graph.nodes:
         if getattr(node, "op", None) in _CALL_OPS:
-            names.append(str(getattr(node, "target", "")))
+            names.append(resolved_target(node, gm))
     return names
 
 
@@ -161,7 +191,7 @@ def audit_fx(gm: Any, ref_logits=None, sample=None) -> dict:
     # RMSNorm は amp=1（無条件安定・実測検証済み）、LayerNorm は平均優勢入力で
     # amp≈RMS/σ に増幅しうる（sample があれば empirical_cond で実測・A-5）。
     has_normalization = any(
-        _is_normalization(str(getattr(node, "target", "")))
+        _is_normalization(resolved_target(node, gm))
         for node in gm.graph.nodes
         if getattr(node, "op", None) in _CALL_OPS
     )
@@ -269,6 +299,27 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
         if over:
             dp.lines.append("  予算超過 → このモデルはベンダー間でユーザーに見える判断が変わりうる")
         ad.phases.append(dp)
+
+    # --- codegen: 楔ユーザーを機械語まで届かせる（第 60 回） ---
+    # ここが無い間、「単一ソースで両ベンダー」という看板の約束は tile-DSL を書く人に
+    # しか届いていなかった。FX を IR へ降下し、tile-DSL 経路と同じ codegen 検証にかける。
+    try:
+        from tsugi.audit import _codegen_phase
+
+        from .fxlower import fx_to_ir
+        lm = fx_to_ir(gm)
+        cgp = _codegen_phase(lm.module, ("nvidia", "amd_cdna", "amd_rdna"))
+        cgp.name = "codegen 生成物（FX → IR → 実機械語）"
+        cgp.lines = lm.report.to_lines() + cgp.lines
+        if lm.report.partial:
+            # 表せない op があるなら生成物はモデル全体ではない。「生成できた」を
+            # 「モデルを生成できた」と読ませないため判定に載せる（偽OK 防止）。
+            cgp.max_risk = max(cgp.max_risk, Risk.WARN)
+        ad.phases.append(cgp)
+    except Exception as exc:            # noqa: BLE001 - 降下失敗で監査全体を落とさない
+        p2 = AuditPhase("codegen 生成物（FX → IR → 実機械語）", "decided", Risk.WARN)
+        p2.lines.append(f"降下に失敗: {type(exc).__name__}: {exc}"[:200])
+        ad.phases.append(p2)
 
     rt = AuditPhase("runtime クロスベンダー照合", "pending", Risk.INFO)
     rt.lines += [

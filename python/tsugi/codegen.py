@@ -98,6 +98,12 @@ def approximate_ops() -> set[str]:
 _LOG2E = "0f3FB8AA3B"      # log2(e) を f32 hex で（PTX リテラル形式）
 _LOG2E_HEX = "0x3fb8aa3b"  # 同じ値の AMD リテラル形式
 
+def _f32_hex(x: float) -> str:
+    """f32 のビットパターンを 8 桁 hex にする（アセンブリの即値リテラル用）。"""
+    import struct
+    return f"{struct.unpack('<I', struct.pack('<f', float(x)))[0]:08X}"
+
+
 #: PTX の算術。**丸めモードを明示する**（.rn）のが要点で、修飾なしの `add.f32` /
 #: `mul.f32` は ptxas が `fma.rn.f32` へ contraction しうる——積和が融合されると
 #: 中間丸めが消えて数値が変わる。ビット等価を検証する道具が contraction 可能な形を
@@ -182,7 +188,10 @@ def emit_ptx(module: ir.Module, *, arch: str = "sm_80") -> EmitResult:
                 reg[op.result.name] = d
             elif k == "zeros":
                 d = newf()
-                body.append(f"    mov.f32 {d}, 0f00000000;")
+                # fill 属性があればその定数を出す。無視すると分解で使う 1.0/0.5 等が
+                # すべて 0 になり、**アセンブルは通るのに意味が違う**（静かな偽OK）。
+                body.append(f"    mov.f32 {d}, "
+                            f"0f{_f32_hex(op.attrs.get('fill', 0.0))};")
                 reg[op.result.name] = d
             elif k == "load":
                 d = newf()
@@ -460,7 +469,8 @@ def emit_amdgcn(module: ir.Module, *, arch: str = "gfx90a",
                 reg[op.result.name] = d
             elif k == "zeros":
                 d = newv()
-                body.append(f"\tv_mov_b32 {d}, 0")
+                body.append(f"\tv_mov_b32 {d}, "
+                            f"0x{_f32_hex(op.attrs.get('fill', 0.0)).lower()}")
                 reg[op.result.name] = d
             elif k == "load":
                 d = newv()

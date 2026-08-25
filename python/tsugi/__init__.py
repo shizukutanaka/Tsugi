@@ -23,6 +23,7 @@ from . import (
     envelope,
     equivalence,
     feasibility,
+    interp,
     ir,
     nondeterminism,
     occupancy,
@@ -45,6 +46,7 @@ from .tracer import trace
 __all__ = [
     "tile",
     "ir",
+    "interp",
     "codegen",
     "portability",
     "equivalence",
