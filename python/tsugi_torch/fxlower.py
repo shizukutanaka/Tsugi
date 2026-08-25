@@ -39,6 +39,12 @@ _CALL_OPS = ("call_function", "call_method", "call_module")
 _SHAPE_ONLY = ("view", "reshape", "permute", "transpose", "expand", "contiguous",
                "flatten", "unsqueeze", "squeeze", "detach", "clone", "t.default")
 
+#: 部分テンソルを選ぶ／並べ替える op。本 IR には**サブテンソル選択の概念が無い**ため、
+#: これらを「値をそのまま通す」で済ませると q/k/v が同一値の別名になり、生成物はモデルを
+#: **まったく計算しない**。よって shape_only ではなく「表せない」に分類する（fail-safe）。
+_STRUCTURAL = ("getitem", "chunk", "split", "cat", "stack", "slice", "select",
+               "index", "gather", "narrow", "unbind", "where", "masked_fill")
+
 #: 恒等式による分解。実数では厳密だが浮動小数点では丸めが変わる（発散源）。
 _DECOMPOSITION_NOTE = {
     "sigmoid": "sigmoid(x) = 1/(1+exp(-x)) へ分解（div/exp の丸めが入る）",
@@ -74,8 +80,10 @@ class LoweringReport:
         out = [f"FX 呼び出し {self.n_calls} 件中 {len(self.covered)} を IR へ降下"
                f"（グラフ全体 {self.n_nodes} ノード）"]
         if self.unsupported:
-            out.append(f"表せない op {sorted(set(self.unsupported))} → **partial**："
-                       "生成物はモデル全体ではない（発散予測もこのぶん過小評価）")
+            out.append(f"表せない op {sorted(set(self.unsupported))} → **partial**")
+            out.append("  → 生成物は**このモデルを計算しない**（欠けた op のぶん値が"
+                       "違う。『大部分は動く』ではない）。codegen の検証は生成した"
+                       "命令列についてのみ有効。")
         if self.decomposed:
             out += [f"  分解: {d}" for d in sorted(set(self.decomposed))]
         if self.shape_only:
@@ -165,6 +173,11 @@ class _Builder:
                      {"axis": 1, "kind": "mean"})
         e = self.op("zeros", [], {"shape": [16, 16], "fill": eps})
         return self.op("mul", [x, self.op("rsqrt", [self.op("add", [ms, e])])])
+
+
+def _matches_any(t: str, pats: tuple[str, ...]) -> bool:
+    low = t.lower()
+    return any(p in low for p in pats)
 
 
 def _target_name(node: Any, gm: Any = None) -> str:
@@ -328,7 +341,10 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
                                   else b.op("load", [], {"offset": [0, 0]}))
 
         if kind is None:
-            rep.unsupported.append(t)
+            if _matches_any(t, _STRUCTURAL):
+                rep.unsupported.append(f"{t}[構造: サブテンソル選択/結合]")
+            else:
+                rep.unsupported.append(f"{t}[未対応の演算]")
             continue
         if kind == "shape_only":
             rep.shape_only.append(t)

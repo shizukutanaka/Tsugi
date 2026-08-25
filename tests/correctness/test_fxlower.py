@@ -81,7 +81,8 @@ def test_unrepresentable_ops_make_the_module_partial_not_silently_dropped():
     assert any("log_softmax" in u for u in lm.report.unsupported)
     assert any("bessel" in u for u in lm.report.unsupported)
     txt = "\n".join(lm.report.to_lines())
-    assert "partial" in txt and "過小評価" in txt
+    assert "partial" in txt and "このモデルを計算しない" in txt
+    assert "未対応の演算" in txt          # 構造 op と区別して理由を言う
 
 
 def test_exact_gelu_is_refused_rather_than_approximated():
@@ -196,6 +197,54 @@ def test_real_model_reaches_machine_code_through_the_product_facade():
     assert ad.exit_code in (0, 1, 2)
 
 
+def test_a_realistic_transformer_block_is_handled_honestly():
+    """トイの Sequential でなく **実際のアテンションブロック**で確かめる。
+
+    `chunk`/`getitem` は本 IR に対応物が無い。値をそのまま通せば q/k/v が同一値の
+    別名になり、生成物はモデルを**まったく計算しない**——だから shape_only ではなく
+    「表せない」に倒す（fail-safe）。partial の文言も「大部分は動く」と読まれないよう
+    「このモデルを計算しない」と書く。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 実モデルでの降下は未検証（正直に skip）")
+        return
+
+    class Block(nn.Module):
+        def __init__(self, d=32):
+            super().__init__()
+            self.d = d
+            self.qkv = nn.Linear(d, 3 * d)
+            self.o = nn.Linear(d, d)
+            self.n1 = nn.LayerNorm(d)
+            self.n2 = nn.LayerNorm(d)
+            self.ff = nn.Sequential(nn.Linear(d, 4 * d),
+                                    nn.GELU(approximate="tanh"),
+                                    nn.Linear(4 * d, d))
+
+        def forward(self, x):
+            q, k, v = self.qkv(self.n1(x)).chunk(3, -1)
+            a = torch.softmax(q @ k.transpose(-2, -1) / (self.d ** 0.5), -1)
+            x = x + self.o(a @ v)
+            return x + self.ff(self.n2(x))
+
+    gm = torch.fx.symbolic_trace(Block())
+    rep = audit_fx(gm)
+    assert rep["n_ops"] >= 10, rep["n_ops"]
+    assert rep["has_normalization"] and "softmax" in rep["amplifiers"]
+    lm = fx_to_ir(gm)
+    assert len(lm.report.covered) >= 10, lm.report.covered
+    # chunk/getitem は「構造」として表せないと言う（黙って別名にしない）
+    assert lm.report.partial
+    assert any("構造" in u for u in lm.report.unsupported), lm.report.unsupported
+    txt = "\n".join(lm.report.to_lines())
+    assert "このモデルを計算しない" in txt
+    # 降下できた命令列自体は 3 ターゲットとも成立する
+    for t in cg.TARGETS:
+        if cg.toolchain(t) is None:
+            continue
+        assert cg.verify_codegen(lm.module, target=t)[1].ok is True
+
+
 def test_the_documented_product_entry_point_works_with_real_torch():
     """`torch.compile(model, backend="tsugi")` — README が掲げる実際の入口。
 
@@ -237,6 +286,7 @@ def main() -> int:
               test_call_module_targets_resolve_or_the_whole_audit_is_a_false_ok,
               test_lowered_ir_means_the_same_thing_as_the_model,
               test_real_model_reaches_machine_code_through_the_product_facade,
+              test_a_realistic_transformer_block_is_handled_honestly,
               test_the_documented_product_entry_point_works_with_real_torch):
         try:
             t()
