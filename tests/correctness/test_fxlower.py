@@ -196,6 +196,37 @@ def test_real_model_reaches_machine_code_through_the_product_facade():
     assert ad.exit_code in (0, 1, 2)
 
 
+def test_the_documented_product_entry_point_works_with_real_torch():
+    """`torch.compile(model, backend="tsugi")` — README が掲げる実際の入口。
+
+    これまで実 torch で一度も走らせていなかった。想定ユーザーが最初に打つコマンドが
+    動くことと、警告が **今の実態**（codegen は L2 まで・実行は eager 素通し）を
+    述べることを固定する。"no codegen yet" は自分の製品についての虚偽になった。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 実 torch.compile 経路は未検証（正直に skip）")
+        return
+    import warnings
+
+    import tsugi_torch
+    tsugi_torch.register()
+    m = nn.Sequential(nn.Linear(16, 16), nn.LayerNorm(16), nn.Softmax(-1))
+    x = torch.randn(4, 16)
+    compiled = torch.compile(m, backend="tsugi")
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        out = compiled(x)
+    assert torch.allclose(out, m(x)), "eager 素通しの出力が変わっている"
+    msgs = [str(x.message) for x in w if "[tsugi]" in str(x.message)]
+    assert msgs, "検証警告が出ていない"
+    msg = msgs[0]
+    assert "no codegen yet" not in msg, "自分の製品について古い虚偽が残っている"
+    assert "codegen:" in msg and "IR へ降下" in msg
+    assert "実行は未検証" in msg           # 実行の未検証は言い続ける
+    # 静的監査が実グラフを見えていること（0 ops の偽OK でない）
+    assert "numeric ops" in msg and not msg.count("0 numeric ops")
+
+
 def main() -> int:
     ok = True
     for t in (test_lowering_produces_ir_that_both_vendors_assemble,
@@ -205,7 +236,8 @@ def main() -> int:
               test_unspecified_eps_is_declared_as_an_assumption,
               test_call_module_targets_resolve_or_the_whole_audit_is_a_false_ok,
               test_lowered_ir_means_the_same_thing_as_the_model,
-              test_real_model_reaches_machine_code_through_the_product_facade):
+              test_real_model_reaches_machine_code_through_the_product_facade,
+              test_the_documented_product_entry_point_works_with_real_torch):
         try:
             t()
             print(f"[PASS] {t.__name__}")

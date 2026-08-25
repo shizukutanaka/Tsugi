@@ -55,7 +55,8 @@ _DECOMPOSITION_NOTE = {
 class LoweringReport:
     """降下でできたこと・できなかったこと・黙らなかったこと。"""
 
-    n_nodes: int = 0
+    n_nodes: int = 0                                       # グラフ全体のノード数
+    n_calls: int = 0                                       # うち op 呼び出しの数
     covered: list[str] = field(default_factory=list)       # 降下できた FX target
     unsupported: list[str] = field(default_factory=list)   # 表せなかった FX target
     decomposed: list[str] = field(default_factory=list)    # 恒等式で分解した注記
@@ -68,7 +69,10 @@ class LoweringReport:
         return bool(self.unsupported)
 
     def to_lines(self) -> list[str]:
-        out = [f"FX {self.n_nodes} ノード中 {len(self.covered)} を IR へ降下"]
+        # 分母は *呼び出しノード* にする。placeholder/output/get_attr を分母に入れると
+        # 「4/10 しか降下できていない」と読めてしまい、実態を過小に見せる。
+        out = [f"FX 呼び出し {self.n_calls} 件中 {len(self.covered)} を IR へ降下"
+               f"（グラフ全体 {self.n_nodes} ノード）"]
         if self.unsupported:
             out.append(f"表せない op {sorted(set(self.unsupported))} → **partial**："
                        "生成物はモデル全体ではない（発散予測もこのぶん過小評価）")
@@ -314,6 +318,7 @@ def fx_to_ir(gm: Any, *, name: str = "fx_kernel") -> LoweredModule:
             continue
         if op not in _CALL_OPS:
             continue
+        rep.n_calls += 1
 
         t = _target_name(node, gm)
         kind = _classify(t)

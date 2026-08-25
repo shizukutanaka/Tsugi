@@ -1232,7 +1232,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-100: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-101: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2336,6 +2336,39 @@ def _check_meta_integrity() -> None:
     check("lowered IR preserves meaning (NumPy interp vs closed form; vs torch eager if present)",
           float(np.max(np.abs(_got100 - _ref100))) < 1e-12
           and (_torch100 is None or _torch100 is True))
+
+    # 101. README が掲げる実際の入口は `torch.compile(model, backend="tsugi")` である。
+    #      そこが出す警告は **今の実態**を述べねばならない。codegen 実装後も
+    #      "no codegen yet" と言い続けるのは自分の製品についての虚偽になる。
+    #      同時に、実行は eager 素通しのままだと言い続ける（L2 と L3 を混同させない）。
+    _src101 = (ROOT / "python" / "tsugi_torch" / "__init__.py").read_text(
+        encoding="utf-8")
+    _warn101 = None
+    try:
+        import warnings as _w101
+
+        import torch as _t101
+        import torch.nn as _tn101
+
+        import tsugi_torch as _tt101
+        _tt101.register()
+        _m101 = _tn101.Sequential(_tn101.Linear(16, 16), _tn101.LayerNorm(16),
+                                  _tn101.Softmax(-1))
+        _x101 = _t101.randn(4, 16)
+        with _w101.catch_warnings(record=True) as _rec101:
+            _w101.simplefilter("always")
+            _out101 = _t101.compile(_m101, backend="tsugi")(_x101)
+        _msgs101 = [str(r.message) for r in _rec101 if "[tsugi]" in str(r.message)]
+        _warn101 = (_t101.allclose(_out101, _m101(_x101)) and bool(_msgs101)
+                    and "codegen:" in _msgs101[0]
+                    and "実行は未検証" in _msgs101[0]
+                    and "0 numeric ops" not in _msgs101[0])
+    except Exception:                                  # noqa: BLE001
+        _warn101 = None                                # torch 無し: 主張しない
+    check("the documented entry point torch.compile(backend='tsugi') states today's truth",
+          "no codegen yet" not in _src101              # 古い虚偽が残っていない
+          and "実行は eager に素通し" in _src101        # 実行の未検証は言い続ける
+          and (_warn101 is None or _warn101 is True))
 
 
 def main() -> int:

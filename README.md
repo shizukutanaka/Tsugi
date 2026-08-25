@@ -81,16 +81,31 @@ python -m tsugi my_kernel.py    # 自分のカーネル（@tsugi.jit + make_args
 終了コードは **CI ゲート契約**（OK/INFO=0・WARN=1・BLOCK=2）——そのまま CI の合否に使える。
 詳しくは [QUICKSTART.md](docs/QUICKSTART.md)。
 
-### torch.compile バックエンド（Phase 4・要 LLVM/MLIR + 実機）
+### torch.compile バックエンド（**想定ユーザーの入口**・検証は今動く）
 
 ```python
 import torch
-import tsugi_torch  # backend登録（codegen 未実装時は検証だけ先に届き eager 実行）
+import tsugi_torch                       # backend 登録
 
-model = MyTransformer().cuda()           # or .to("hip")
+model = MyTransformer()
 compiled = torch.compile(model, backend="tsugi")
-out = compiled(x)                        # Tsugi経由・両ベンダー対応（codegen 完成後）
+out = compiled(x)                        # 実行は eager 素通し（後述）
 ```
+
+警告として届くもの（GPU 不要・実測例）:
+
+```
+[tsugi] verification-only (codegen は L2 まで検証済み・実行は eager 素通し):
+  4 numeric ops, amplifiers=['layer_norm', 'softmax'], model_divergence≈4.1e-01,
+  task_flip_bound≤81.8% … codegen: 呼び出し 3 件中 3 を IR へ降下し
+  3/3 ターゲットでアセンブル検証。実行は未検証（要実機）
+```
+
+**なぜ実行は eager のままか**: 生成した機械語は L2（ベンダーのアセンブラが受理・
+意図どおり符号化・ローダの形）までしか検証されておらず、走らせて正しい保証が無い。
+検証は今届き、実行は実機が来てから——[CODEGEN.md](docs/CODEGEN.md) の検証レベル参照。
+
+`tsugi.verify(fx_graph)` を直接呼べば同じ判定を `Audit`（`exit_code`/`to_text`）で得られる。
 
 タイルカーネルを直接書く:
 

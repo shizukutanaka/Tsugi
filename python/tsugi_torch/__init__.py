@@ -14,15 +14,15 @@ from typing import Any, Callable, List
 def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
     """TorchDynamo から FX GraphModule を受け取り、Tsugi カーネルへ変換する。
 
-    Phase 4 の実装計画:
-      1. TorchInductor の lowering を再利用して融合機会を取得
-      2. hot op (matmul/attention/norm/elementwise) を tsugi.tile IR へ変換
-      3. SPEC.md §3 パイプラインでコンパイル (tsugi.tile→gpu→NVVM/ROCDL)
-      4. 標準 GEMM 等は cuBLAS/rocBLAS へ escape-hatch (性能優先・R5)
-      5. 残りは torch eager にフォールバック (正しさ優先)
+    実装状況（正直な線引き・第 60 回時点）:
+      - ✅ FX グラフの静的監査（propagation・非決定 op・dynamic shape・タスク影響）
+      - ✅ **FX → Tsugi IR 降下 → 実 PTX/AMDGCN 生成 → ベンダーのアセンブラで検証**
+        （`fxlower` + `codegen`。GPU 不要・L2 まで）
+      - ❌ 生成した機械語の**実行**（要実機・L3）。よって実行は eager に素通しする
+      - ❌ 融合・escape-hatch（cuBLAS/rocBLAS 委譲）・autotuning
 
-    現状: codegen は未実装だが、FX グラフに静的検証（propagation）を走らせて警告を出す
-    —— 「検証だけ先に届ける」楔の早期価値。実行は eager に素通し（嘘をつかない）。
+    実行を eager に委ねるのは「嘘をつかない」ため——生成物は L2 までしか検証されて
+    おらず、走らせて正しい保証が無い。**検証は今届き、実行は実機が来てから**。
     """
     # 検証だけ先に届ける: FX グラフを静的監査し増幅 op / モデル発散を警告（codegen 不要）。
     try:
@@ -80,10 +80,36 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             outlier = (f" [outlier channels: scale 広がり ×{spread:.0f} → 単一 scale 仮定が"
                        "崩れる・per-channel 検証を検討]"
                        if spread is not None and spread >= 10.0 else "")
-            warnings.warn(
-                f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
+            # codegen: 楔ユーザーにも「単一ソース → 両ベンダーの実機械語」を届ける。
+        # 失敗しても実行は壊さない（best-effort・警告は出続ける）。
+        codegen_note = ""
+        try:
+            from tsugi import codegen as _cg
+
+            from .fxlower import fx_to_ir
+            _lm = fx_to_ir(gm)
+            _ok = []
+            for _t in _cg.TARGETS:
+                _asm = _cg.verify_codegen(_lm.module, target=_t)[1]
+                if _asm.available and _asm.ok:
+                    _ok.append(_t)
+            codegen_note = (
+                f" codegen: 呼び出し {_lm.report.n_calls} 件中 "
+                f"{len(_lm.report.covered)} を IR へ降下し "
+                f"{len(_ok)}/{len(_cg.TARGETS)} ターゲットでアセンブル検証"
+                + ("（**partial**: 表せない op "
+                   f"{sorted(set(_lm.report.unsupported))} があるため生成物はモデル"
+                   "全体ではない）" if _lm.report.partial else "")
+                + "。実行は未検証（要実機）")
+        except Exception:  # noqa: BLE001
+            codegen_note = " codegen: 降下できず（静的監査のみ）"
+
+        warnings.warn(
+                f"[tsugi] verification-only (codegen は L2 まで検証済み・実行は "
+                f"eager 素通し): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
                 f"{task}{dyn}{nondet}{norm}{basis}{outlier}. "
+                f"{codegen_note}. "
                 "cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない
