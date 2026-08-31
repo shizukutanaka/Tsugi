@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .arrays import asarray
+
 from .constants import SAFETY
 from .report import FindingReport, Risk
 from .tolerance import unit_roundoff
@@ -49,8 +51,8 @@ def systematic_divergence(a: np.ndarray, b: np.ndarray) -> float:
 
     b が a より一様に α 倍なら α-1 を返す。乱雑な累積順序差は zero-mean ゆえ ≈0。
     """
-    af = a.astype(np.float64)
-    bf = b.astype(np.float64)
+    af = asarray(a, dtype=np.float64)      # device テンソルも受ける
+    bf = asarray(b, dtype=np.float64)
     ra = float(np.sqrt(np.mean(af ** 2)) + 1e-30)
     rb = float(np.sqrt(np.mean(bf ** 2)))
     return rb / ra - 1.0
@@ -67,8 +69,8 @@ def systematic_divergence_stderr(a: np.ndarray, b: np.ndarray, n_boot: int = 200
     再標本化し、bias 統計量のばらつき（標準偏差）を経験的に求める。
     N が大きければ標準誤差は無視できるほど小さくなり挙動は変わらない。
     """
-    af = np.asarray(a, dtype=np.float64).ravel()
-    bf = np.asarray(b, dtype=np.float64).ravel()
+    af = asarray(a, dtype=np.float64).ravel()
+    bf = asarray(b, dtype=np.float64).ravel()
     n = af.size
     if n < 2:
         return 0.0
@@ -449,7 +451,7 @@ def calibrate_safety(divergences, K: int, dtype: str = "float16", scale: float =
     """
     from .tolerance import expected_gemm_abs_error
 
-    d = np.abs(np.asarray(divergences, dtype=np.float64).ravel())
+    d = np.abs(asarray(divergences, dtype=np.float64).ravel())
     sigma_unit = expected_gemm_abs_error(K, dtype, scale, safety=1.0, model=model)
     rep = SafetyCalibrationReport(
         n=int(d.size), safety=float(safety), sigma_unit=float(sigma_unit),

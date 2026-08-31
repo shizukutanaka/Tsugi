@@ -26,6 +26,8 @@ from statistics import NormalDist
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 _INF_LEN = 2 ** 62   # safe_generation_length の実質 ∞（int で扱える上限・p=0 用）
@@ -166,8 +168,8 @@ def _per_token_flips(logits_a: np.ndarray, logits_b: np.ndarray, decode: str,
     """
     from .decision import decision_flips, nucleus_flip_rate, topk_flip_rate
 
-    a = np.asarray(logits_a)
-    b = np.asarray(logits_b)
+    a = asarray(logits_a)
+    b = asarray(logits_b)
     if decode == "greedy":
         flips = decision_flips(a, b)
         return int(flips.size), int(flips.sum())

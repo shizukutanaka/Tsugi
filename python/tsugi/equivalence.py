@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import Risk  # 検証層共通の深刻度モデル
 
 # dtype 別の許容誤差（BENCHMARK.md §4 と整合）。
@@ -134,8 +136,8 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
       DIVERGENT  : multiset も不一致 → 真の数値発散
     LAYOUT は transpose/再タイルで修正可能 —— 数値検証の対象でなく codegen の整列問題。
     """
-    af = np.asarray(a)
-    bf = np.asarray(b)
+    af = asarray(a)
+    bf = asarray(b)
     if af.shape == bf.shape and compare_gemm(af, bf, K, dtype).equivalent:
         return DV_EQUIVALENT
     fa = af.reshape(-1)
@@ -148,8 +150,8 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
 
 
 def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> EquivalenceReport:
-    a_raw = np.asarray(a)
-    b_raw = np.asarray(b)
+    a_raw = asarray(a)
+    b_raw = asarray(b)
     # 形状不一致を最初に検査する。NumPy の暗黙 broadcast（例 (64,1) と (64,64)・
     # スカラと行列）に頼って比較すると、方向次第で偽 DIVERGENT にも偽 OK にもなりうる
     # （broadcast された片方の値が他方に「たまたま」一致すれば equivalent=True になる）。
@@ -209,8 +211,8 @@ def truncate_to_tensorcore(x: np.ndarray, precision: str = "ieee",
     """
     mant = _TENSORCORE_MANTISSA_BITS.get(precision, 23)
     if mant >= 23:
-        return np.asarray(x, dtype=np.float32)
-    xi = np.asarray(x, dtype=np.float32).view(np.int32)
+        return asarray(x, dtype=np.float32)
+    xi = asarray(x, dtype=np.float32).view(np.int32)
     drop = 23 - mant
     trunc = (xi >> drop) << drop                    # 低位ビット切り捨て = ゼロ方向（RTZ）
     if rounding == "rtz":
@@ -246,8 +248,8 @@ def simulate_vendor_matmul(a: np.ndarray, b: np.ndarray, *,
         # 2 TF32 成分に分割し、a_hi·b_hi + a_hi·b_lo + a_lo·b_hi の 3 項で積む（lo·lo は落とす）。
         # TF32 テンサーコアから ~fp32 精度を復元する誤差補正——TF32 発散の *緩和策* であり、
         # 精度ポリシー選択（ieee/tf32/tf32x3）の一つ（Ootomo & Yokota 2022, arXiv:2203.03341）。
-        a32 = np.asarray(a, dtype=np.float32)
-        b32 = np.asarray(b, dtype=np.float32)
+        a32 = asarray(a, dtype=np.float32)
+        b32 = asarray(b, dtype=np.float32)
         a_hi = truncate_to_tensorcore(a32, "tf32", input_rounding)
         a_lo = truncate_to_tensorcore(a32 - a_hi, "tf32", input_rounding)
         b_hi = truncate_to_tensorcore(b32, "tf32", input_rounding)
@@ -283,8 +285,8 @@ def precision_policy_hint(a: np.ndarray, b: np.ndarray, K: int,
         return None
     from .constants import SAFETY
     from .tolerance import unit_roundoff
-    af = np.asarray(a, dtype=np.float64)
-    bf = np.asarray(b, dtype=np.float64)
+    af = asarray(a, dtype=np.float64)
+    bf = asarray(b, dtype=np.float64)
     denom = float(np.linalg.norm(af) + 1e-30)
     r = float(np.linalg.norm(af - bf) / denom)
     fp32_floor = SAFETY * (max(1, K) ** 0.5) * unit_roundoff("float32")

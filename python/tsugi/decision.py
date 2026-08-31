@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 # --- 閾値定数 (Q5: magic number 排除) ---
@@ -41,14 +43,14 @@ _TV_BOUND_VACUOUS: float = 0.5
 
 def margin(logits: np.ndarray) -> np.ndarray:
     """各サンプルの判断マージン = top1 − top2（最後の軸をクラス軸とみなす）。"""
-    x = np.asarray(logits, dtype=np.float64)
+    x = asarray(logits, dtype=np.float64)
     part = np.partition(x, -2, axis=-1)
     return part[..., -1] - part[..., -2]
 
 
 def decision_flips(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """ベンダー間で argmax（判断）が変わったサンプルの真偽配列。"""
-    return np.argmax(a, axis=-1) != np.argmax(b, axis=-1)
+    return np.argmax(asarray(a), axis=-1) != np.argmax(asarray(b), axis=-1)
 
 
 def tie_rate(logits: np.ndarray, eps: float = 0.0) -> float:
@@ -77,8 +79,8 @@ def topk_flip_rate(a: np.ndarray, b: np.ndarray, k: int = 5) -> float:
     候補がどれか境界（rank k と k+1）を跨ぐと flip = より大きな摂動を要し、生成の
     実効的な「選択肢の安定性」を測る。
     """
-    af = np.asarray(a)
-    bf = np.asarray(b)
+    af = asarray(a)
+    bf = asarray(b)
     n, c = af.shape[0], af.shape[-1]
     kk = min(k, c)
     ta = np.argpartition(af, -kk, axis=-1)[:, -kk:]
@@ -91,7 +93,7 @@ def topk_flip_rate(a: np.ndarray, b: np.ndarray, k: int = 5) -> float:
 def _nucleus_mask(logits: np.ndarray, p: float, temperature: float) -> np.ndarray:
     """top-p（nucleus）集合のメンバシップ真偽（vocab 軸）。softmax(logit/temp) 降順で
     累積確率が p に達するまでの最小集合（境界トークンを含む）。"""
-    x = np.asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
+    x = asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
     e = np.exp(x - x.max(axis=-1, keepdims=True))
     pr = e / e.sum(axis=-1, keepdims=True)
     order = np.argsort(-pr, axis=-1)
@@ -111,7 +113,7 @@ def nucleus_flip_rate(a: np.ndarray, b: np.ndarray, p: float = 0.9,
     argmax/top-k 集合と違い **スケール不変でない**（logit スケール=温度で nucleus が伸縮）。
     これは温度設定がベンダー間一致に効くことを意味する（honest な区別）。
     """
-    if np.asarray(a).shape[0] == 0:
+    if asarray(a).shape[0] == 0:
         return 0.0
     ma = _nucleus_mask(a, p, temperature)
     mb = _nucleus_mask(b, p, temperature)
@@ -120,8 +122,8 @@ def nucleus_flip_rate(a: np.ndarray, b: np.ndarray, p: float = 0.9,
 
 def divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
     """ベンダー間 logit 差の典型値 δ（RMS）。"""
-    af = np.asarray(a, dtype=np.float64)
-    bf = np.asarray(b, dtype=np.float64)
+    af = asarray(a, dtype=np.float64)
+    bf = asarray(b, dtype=np.float64)
     return float(np.sqrt(np.mean((af - bf) ** 2)))
 
 
@@ -133,8 +135,8 @@ def residual_divergence_rms(a: np.ndarray, b: np.ndarray) -> float:
     ので判断を覆さない。各サンプルで α,c を最小二乗 fit して除いた残差が、実際にフリップを
     起こす成分。total δ でなくこれを使うと bound が正確（系統発散の過大評価を排す）。
     """
-    af = np.asarray(a, dtype=np.float64)
-    bf = np.asarray(b, dtype=np.float64)
+    af = asarray(a, dtype=np.float64)
+    bf = asarray(b, dtype=np.float64)
     ac = af - af.mean(axis=-1, keepdims=True)
     bc = bf - bf.mean(axis=-1, keepdims=True)
     alpha = (ac * bc).sum(axis=-1, keepdims=True) / ((ac * ac).sum(axis=-1, keepdims=True) + 1e-30)
@@ -173,7 +175,7 @@ def predicted_flip_bound(ref_logits: np.ndarray, delta,
     m = margin(ref_logits)
     if m.size == 0:
         return 0.0
-    delta_arr = np.broadcast_to(np.asarray(delta, dtype=np.float64), m.shape)
+    delta_arr = np.broadcast_to(asarray(delta, dtype=np.float64), m.shape)
     k = int(np.count_nonzero(m < 2.0 * delta_arr))
     return flip_rate_upper_bound(k, int(m.size), confidence=confidence)
 
@@ -194,7 +196,7 @@ def _abs_delta(ref_logits: np.ndarray, rel_divergence: float) -> np.ndarray:
     紛れた高スケールサンプルで δ を過小評価しない）。flip_bound_from_divergence /
     tv_bound_from_divergence / flip_bound_support_from_divergence が共有する単一情報源。
     """
-    x = np.asarray(ref_logits, dtype=np.float64)
+    x = asarray(ref_logits, dtype=np.float64)
     global_scale = float(np.sqrt(np.mean(x ** 2)) + 1e-30)
     per_sample_scale = np.sqrt(np.mean(x ** 2, axis=-1))
     return rel_divergence * np.maximum(global_scale, per_sample_scale)
@@ -223,7 +225,7 @@ def flip_bound_support(ref_logits: np.ndarray, delta) -> dict:
     if n == 0:
         return {"exceedances": 0, "n": 0, "rel_uncertainty": math.inf,
                 "well_supported": False, "min_exceedances": _MIN_EXCEEDANCES}
-    delta_arr = np.broadcast_to(np.asarray(delta, dtype=np.float64), m.shape)
+    delta_arr = np.broadcast_to(asarray(delta, dtype=np.float64), m.shape)
     k = int(np.count_nonzero(m < 2.0 * delta_arr))
     return {"exceedances": k, "n": n,
             "rel_uncertainty": (1.0 / math.sqrt(k)) if k > 0 else math.inf,
@@ -271,8 +273,8 @@ def regression_flip_rate(a: np.ndarray, b: np.ndarray, *,
     絶対的な atol の組み合わせ（numpy allclose と整合）。
     スケール不変でないため rtol の設定はタスク依存（例: 価格予測では 0.1%, 物理シミュは 1e-5）。
     """
-    a_ = np.asarray(a, dtype=np.float64).ravel()
-    b_ = np.asarray(b, dtype=np.float64).ravel()
+    a_ = asarray(a, dtype=np.float64).ravel()
+    b_ = asarray(b, dtype=np.float64).ravel()
     if a_.size == 0:
         return 0.0
     tol = atol + rtol * np.abs(a_)
@@ -287,8 +289,8 @@ def binary_flip_rate(a: np.ndarray, b: np.ndarray, *,
     大きなマージンで同じ判断・0 付近でフリップしやすい（argmax の margin と類似の役割）。
     量子化（int8）や dtype 変換で threshold 付近の出力が揺れやすい（tie_rate と対応）。
     """
-    a_ = np.asarray(a, dtype=np.float64).ravel()
-    b_ = np.asarray(b, dtype=np.float64).ravel()
+    a_ = asarray(a, dtype=np.float64).ravel()
+    b_ = asarray(b, dtype=np.float64).ravel()
     if a_.size == 0:
         return 0.0
     return float(np.mean((a_ >= threshold) != (b_ >= threshold)))
@@ -299,7 +301,7 @@ def binary_margin(a: np.ndarray, *, threshold: float = 0.5) -> np.ndarray:
 
     argmax タスクの margin(logit) に相当。小さいほど near-tie（フリップしやすい）。
     """
-    return np.abs(np.asarray(a, dtype=np.float64).ravel() - threshold)
+    return np.abs(asarray(a, dtype=np.float64).ravel() - threshold)
 
 
 def ranking_flip_rate(scores_a: np.ndarray, scores_b: np.ndarray, *, k: int = 10) -> float:
@@ -308,8 +310,8 @@ def ranking_flip_rate(scores_a: np.ndarray, scores_b: np.ndarray, *, k: int = 10
     検索/推薦システムでは「上位 k 件が同じか」がユーザーに見える差。スコア値自体の
     乖離より集合一致が重要（argmax の topk_flip_rate と同じ思想・ndim=1 の listwise 版）。
     """
-    a_ = np.asarray(scores_a, dtype=np.float64)
-    b_ = np.asarray(scores_b, dtype=np.float64)
+    a_ = asarray(scores_a, dtype=np.float64)
+    b_ = asarray(scores_b, dtype=np.float64)
     if a_.ndim == 1:
         kk = min(k, a_.size)
         ta = set(np.argpartition(a_, -kk)[-kk:])
@@ -331,7 +333,7 @@ def ranking_flip_rate(scores_a: np.ndarray, scores_b: np.ndarray, *, k: int = 10
 
 def _softmax(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     """温度つき softmax（_nucleus_mask と同じ temperature ガードを共有）。"""
-    x = np.asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
+    x = asarray(logits, dtype=np.float64) / max(temperature, 1e-9)
     e = np.exp(x - x.max(axis=-1, keepdims=True))
     return e / e.sum(axis=-1, keepdims=True)
 
@@ -356,8 +358,8 @@ def sampling_epsilon(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         ε_i = ‖(b_i − mean b_i) − (a_i − mean a_i)‖∞
     最後の軸を語彙（クラス）軸とみなし、サンプルごとに返す。
     """
-    a_ = np.asarray(a, dtype=np.float64)
-    b_ = np.asarray(b, dtype=np.float64)
+    a_ = asarray(a, dtype=np.float64)
+    b_ = asarray(b, dtype=np.float64)
     d = ((b_ - b_.mean(axis=-1, keepdims=True))
          - (a_ - a_.mean(axis=-1, keepdims=True)))
     return np.abs(d).max(axis=-1)
@@ -382,7 +384,7 @@ def tv_bound(eps, temperature: float = 1.0):
     `compare_task(task="sampling")` は判定を *実測* TV で行い、本上界は別枠で報告し、
     無情報なら自己申告する（`_TV_BOUND_VACUOUS`）。
     """
-    return np.tanh(np.asarray(eps, dtype=np.float64) / max(temperature, 1e-9))
+    return np.tanh(asarray(eps, dtype=np.float64) / max(temperature, 1e-9))
 
 
 def sampling_divergence(a: np.ndarray, b: np.ndarray,
@@ -417,7 +419,7 @@ def tv_bound_from_divergence(ref_logits: np.ndarray, rel_divergence: float,
     ときは `sampling_divergence`（実測 ε）を使うこと。この仮定は
     `flip_bound_from_divergence` の妥当域仮定（audit のレポートに明示）と同系統。
     """
-    x = np.asarray(ref_logits, dtype=np.float64)
+    x = asarray(ref_logits, dtype=np.float64)
     return float(np.max(tv_bound(_abs_delta(x, rel_divergence), temperature))) if x.size else 0.0
 
 
@@ -502,8 +504,8 @@ def compare_task(a: np.ndarray, b: np.ndarray, *, task: str,
     診断だった）。
     """
     from .rollout import flip_rate_upper_bound
-    a_ = np.asarray(a, dtype=np.float64)
-    b_ = np.asarray(b, dtype=np.float64)
+    a_ = asarray(a, dtype=np.float64)
+    b_ = asarray(b, dtype=np.float64)
     n = int(a_.ravel().size)
     flipped_margin_median = 0.0
     overall_margin_median = 0.0
@@ -615,6 +617,10 @@ def compare_decisions(a: np.ndarray, b: np.ndarray, *, flip_budget: float = 0.0,
     n が大きければ上限は点推定にほぼ収束し挙動は変わらない。
     """
     from .rollout import flip_rate_upper_bound
+    # 公開入口で一度だけ正規化する（device テンソルも受ける）。以降の内部処理が
+    # 素の numpy を前提にできるので、内部の一箇所を直し忘れて壊れることがない。
+    a, b = asarray(a), asarray(b)
+    ref = asarray(ref)
     flips = decision_flips(a, b)
     ref_logits = a if ref is None else ref
     m = margin(ref_logits)

@@ -927,6 +927,46 @@ def test_audit_cross_vendor_accepts_device_tensors_from_real_kernels():
     assert ad2.exit_code in (0, 1, 2)
 
 
+def test_every_tensor_taking_public_function_accepts_device_tensors():
+    """検証層は実機出力を突き合わせるためにある——**面で** device 対応を固定する。
+
+    1 箇所ずつ直すと直し漏れる。`tsugi.arrays.asarray` を 1 つ定義して層が使う
+    asarray を差し替えたので、ここは公開 API を掃いて非回帰を守る。
+    """
+    import tsugi
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 16))
+    b = a + 1e-4
+    lg = rng.standard_normal((40, 8))
+    runs = [_DeviceTensor(rng.standard_normal((8, 16))) for _ in range(4)]
+    D = _DeviceTensor
+    cases = {
+        "equivalence.compare": lambda: tsugi.equivalence.compare(D(a), D(b)),
+        "decision.compare_decisions":
+            lambda: tsugi.decision.compare_decisions(D(lg), D(lg + 1e-4)),
+        "decision.compare_task":
+            lambda: tsugi.decision.compare_task(D(lg), D(lg + 1e-4), task="ranking"),
+        "rollout.rollout_from_logits":
+            lambda: tsugi.rollout.rollout_from_logits(D(lg), D(lg + 1e-4), 16),
+        "envelope.check_tensor":
+            lambda: tsugi.envelope.check_tensor(
+                D(a), tsugi.envelope.certify_gemm(256, "float16")),
+        "calibration.check_systematic":
+            lambda: tsugi.calibration.check_systematic(D(a), D(b)),
+        "nondeterminism.noise_floor_from_runs":
+            lambda: tsugi.nondeterminism.noise_floor_from_runs(runs),
+        "propagation.empirical_cond":
+            lambda: tsugi.propagation.empirical_cond(D(a), "reduce"),
+    }
+    failed = []
+    for name, fn in cases.items():
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"{name}: {type(exc).__name__}: {exc}")
+    assert not failed, "device テンソルを拒む公開関数がある:\n  " + "\n  ".join(failed)
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -969,6 +1009,7 @@ def main() -> int:
         test_audit_demo_runs_end_to_end,
         test_audit_runtime_accepts_device_tensors,
         test_audit_cross_vendor_accepts_device_tensors_from_real_kernels,
+        test_every_tensor_taking_public_function_accepts_device_tensors,
     ]
     for t in tests:
         try:

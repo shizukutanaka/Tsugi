@@ -65,6 +65,15 @@ CUDA/HIP テンソルに生の TypeError を投げるため、実機を手にし
 通すようにした。`layers_*`/`fn_*` は *呼び出し可能* で配列ではないため変換しない
 （一律変換して既存テストが検出した）。
 
+さらに掃いたところ、これは **層全体に及ぶ種類の欠陥**だった: `equivalence.compare` /
+`decision.compare_decisions` / `envelope.check_tensor` / `calibration.check_systematic` /
+`nondeterminism.noise_floor_from_runs` など、テンソルを取る公開関数がすべて同じ壊れ方を
+していた（74 箇所の `np.asarray`）。各所に変換を撒くのでなく **層が使う asarray そのものを
+1 つ差し替えた**（`tsugi/arrays.py`・Musk 第 3 段階: 部品を足すのでなく既存を正しくする）。
+`audit.to_array` はその薄い再輸出にし、定義を 1 箇所に保つ。不変条件 **105** は
+公開 API を **面で掃いて** 非回帰を守り、素の `np.asarray` が device テンソルを拒むこと
+（＝掃きが「たまたま通っている」のではないこと）も同時に確かめる。
+
 同じ欠陥は **より重要な入口**にも残っていた: `audit_cross_vendor(run_a, run_b, K)` の
 `run_*` は *実 GPU カーネル* であり返るテンソルは GPU 上にある。しかも
 `docs/GPU-BRINGUP.md` はこれを「実機が来た日の最初のコマンド」として指示している。

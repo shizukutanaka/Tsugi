@@ -18,9 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
-
 from . import ir
+from .arrays import asarray
 from .report import Risk
 
 TARGETS = ("nvidia", "amd_cdna", "amd_rdna")
@@ -676,29 +675,11 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
 
 
 def to_array(x):
-    """GPU テンソルを含む配列様オブジェクトを NumPy 配列にする（None は素通し）。
+    """後方互換の別名。実体は `tsugi.arrays.asarray`（定義は 1 箇所に保つ）。
 
-    **なぜ要るか**: `audit_runtime` は「両ベンダーの実機出力を突き合わせる」ための入口
-    であり、渡されるテンソルは当然 **GPU 上にある**。`np.asarray` は CUDA/HIP テンソルに
-    対して素の TypeError（"can't convert cuda:0 device type tensor to numpy"）を投げる
-    ——実機を手にしたユーザーが最初に打つコマンドが、製品の説明ではなく torch の
-    エラーで止まる。`.detach().cpu().numpy()` を持つなら使う。
+    デバイス（GPU）テンソルを NumPy 化する。**なぜ要るか**は `tsugi/arrays.py` を参照。
     """
-    if x is None:
-        return None
-    for step in ("detach", "cpu"):
-        if hasattr(x, step):
-            try:
-                x = getattr(x, step)()
-            except Exception:  # noqa: BLE001 — 変換できなければ次の手段へ
-                break
-    if hasattr(x, "numpy"):
-        try:
-            return np.asarray(x.numpy())
-        except Exception:  # noqa: BLE001
-            pass
-    return np.asarray(x)
-
+    return asarray(x)
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,

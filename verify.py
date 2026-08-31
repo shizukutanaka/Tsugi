@@ -1299,7 +1299,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-104: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-105: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2518,6 +2518,53 @@ def _check_meta_integrity() -> None:
     _acvd103 = _acv103(lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
                        lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
                        K=256, n_runs=4)
+    # 検証層は「**両ベンダーの実機出力**を突き合わせる」ためにあるのだから、テンソルを
+    # 取る公開関数は *すべて* device テンソルを受けられねばならない。1 箇所ずつ直すと
+    # 直し漏れるので、`arrays.asarray` を 1 つ定義して層が使う asarray を差し替えた。
+    # ここは **面で**（公開 API を掃いて）非回帰を固定する。
+    _tsu103 = _tsugi89
+    _L103 = _rng103.standard_normal((40, 8))
+    _runs103 = [_Dev103(_rng103.standard_normal((8, 16))) for _ in range(4)]
+    _sweep103 = [
+        ("equivalence.compare",
+         lambda: _tsu103.equivalence.compare(_Dev103(_a103), _Dev103(_b103))),
+        ("decision.compare_decisions",
+         lambda: _tsu103.decision.compare_decisions(_Dev103(_L103),
+                                                   _Dev103(_L103 + 1e-4))),
+        ("decision.compare_task",
+         lambda: _tsu103.decision.compare_task(_Dev103(_L103),
+                                               _Dev103(_L103 + 1e-4),
+                                               task="ranking")),
+        ("rollout.rollout_from_logits",
+         lambda: _tsu103.rollout.rollout_from_logits(_Dev103(_L103),
+                                                     _Dev103(_L103 + 1e-4), 16)),
+        ("envelope.check_tensor",
+         lambda: _tsu103.envelope.check_tensor(
+             _Dev103(_a103), _tsu103.envelope.certify_gemm(256, "float16"))),
+        ("calibration.check_systematic",
+         lambda: _tsu103.calibration.check_systematic(_Dev103(_a103),
+                                                     _Dev103(_b103))),
+        ("nondeterminism.noise_floor_from_runs",
+         lambda: _tsu103.nondeterminism.noise_floor_from_runs(_runs103)),
+        ("propagation.empirical_cond",
+         lambda: _tsu103.propagation.empirical_cond(_Dev103(_a103), "reduce")),
+    ]
+    _sweep_bad103 = []
+    for _name103, _fn103 in _sweep103:
+        try:
+            _fn103()
+        except Exception as _exc103:                       # noqa: BLE001
+            _sweep_bad103.append((_name103, type(_exc103).__name__))
+    # 検査の有効性: 素の `np.asarray` は device テンソルを拒む——つまりこの掃きは
+    # 「たまたま通っている」のではなく、変換が効いているから通っている。
+    _plain_rejects103 = False
+    try:
+        np.asarray(_Dev103(_a103))
+    except TypeError:
+        _plain_rejects103 = True
+    check("every tensor-taking public function accepts device (GPU) tensors",
+          not _sweep_bad103 and _plain_rejects103)
+
     check("audit_runtime / audit_cross_vendor accept device (GPU) tensors",
           not _plain103                                  # 検査が有効
           and isinstance(_ta103(_Dev103(_a103)), np.ndarray)

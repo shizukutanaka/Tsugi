@@ -44,6 +44,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 EQUIVALENT = "EQUIVALENT"
@@ -156,7 +158,7 @@ def simulate_nondeterministic_reduction(parts: np.ndarray, seed: int) -> np.ndar
     acc = np.float32(0.0)
     for i in order:
         acc = np.float32(acc + flat[i])
-    return np.asarray(acc, dtype=np.float32)
+    return asarray(acc, dtype=np.float32)
 
 
 def _spread_stats(stack: np.ndarray) -> dict[str, float]:
@@ -182,13 +184,13 @@ def collect_runs(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
     SAFETY 校正・比較対象の取得）は **この 1 セットから全部導く**。関数を分けずに
     スタックを共有するのはそのため（同じ run を二度走らせない）。
     """
-    return np.stack([np.asarray(run_fn(seed0 + i), dtype=np.float64)
+    return np.stack([asarray(run_fn(seed0 + i), dtype=np.float64)
                      for i in range(n_runs)])
 
 
 def noise_floor_from_runs(stack: np.ndarray) -> dict[str, float]:
     """既に集めた run スタックからノイズ床統計を出す（再実行しない版）。"""
-    s = np.asarray(stack, dtype=np.float64)
+    s = asarray(stack, dtype=np.float64)
     stats = _spread_stats(s)
     stats["n_runs"] = int(s.shape[0])
     return stats
@@ -206,7 +208,7 @@ def pair_deviations(stack: np.ndarray) -> np.ndarray:
     使うと標本どうしが run_0 を通じて相関し、許容限界の統計（独立標本を前提とする）
     が正当化できないため。返り値は floor(n/2) 個の `max|run_2i - run_2i+1|`。
     """
-    s = np.asarray(stack, dtype=np.float64)
+    s = asarray(stack, dtype=np.float64)
     m = s.shape[0] // 2
     if m == 0:
         return np.zeros(0)
@@ -239,7 +241,7 @@ def simulate_batch_variant_reduction(parts: np.ndarray, tile: int) -> np.ndarray
         for v in flat[i:i + tile]:
             chunk = np.float32(chunk + v)
         acc = np.float32(acc + chunk)
-    return np.asarray(acc, dtype=np.float32)
+    return asarray(acc, dtype=np.float32)
 
 
 def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
@@ -251,8 +253,8 @@ def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
     本番でバッチが変動するなら、この床も等価判定に織り込むべき（実効床 = max(run-to-run,
     batch-variance, 数値検出限界)）。
     """
-    runs = [np.asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
-    stats = _spread_stats(np.stack(runs))
+    runs = [asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
+    stats = _spread_stats(np.stack([asarray(r) for r in runs]))
     stats["n_batches"] = len(batch_tiles)
     return stats
 
@@ -367,8 +369,8 @@ def compare_stable(run_a: Callable[[int], np.ndarray],
     run_to_run = max(nf_a[key], nf_b[key])
     noise = max(run_to_run, batch_floor)
 
-    a = np.asarray(run_a(0), dtype=np.float64)
-    b = np.asarray(run_b(0), dtype=np.float64)
+    a = asarray(run_a(0), dtype=np.float64)
+    b = asarray(run_b(0), dtype=np.float64)
     scale = float(np.sqrt(np.mean(a ** 2)) + 1e-30)
     numerical = expected_gemm_abs_error(K, dtype, scale)
     tol = derive_tolerance(K, dtype, scale, noise_floor=noise)["atol"]

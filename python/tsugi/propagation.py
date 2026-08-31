@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from .arrays import asarray
 from .constants import SAFETY
 from .tolerance import unit_roundoff
 
@@ -229,7 +230,7 @@ def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum",
     """
     import numpy as np
 
-    x = np.asarray(sample, dtype=np.float64)
+    x = asarray(sample, dtype=np.float64)
     if kind in ("reduce", "softmax"):
         if reduce_kind == "max":
             return 1.0
