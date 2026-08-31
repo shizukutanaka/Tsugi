@@ -970,6 +970,21 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     return ad
 
 
+def _wrap_run(fn):
+    """実 GPU カーネルの戻り値を NumPy 化する薄いラッパ（None は素通し）。
+
+    `audit_cross_vendor` に渡される `run_a`/`run_b` は *実機のカーネル* であり、
+    返るのは GPU 上のテンソルである。ノイズ床の実測は NumPy で行うので、境界で変換する。
+    """
+    if fn is None:
+        return None
+
+    def _wrapped(*args, **kwargs):
+        return to_array(fn(*args, **kwargs))
+
+    return _wrapped
+
+
 def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None,
                        n_runs: int = 16, logits_a=None, logits_b=None,
                        flip_budget: float = 0.001, run_batch=None,
@@ -994,6 +1009,13 @@ def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None
     の 3 つを導く。(3) は「検証器の定数が実機で正しいか」を実測で問う層であり、
     実機入口である本関数にしか置き場がない（手順書は docs/GPU-BRINGUP.md）。
     """
+    # run_* は **実 GPU カーネル**であり、返るテンソルは GPU 上にある。ここを通さないと
+    # `docs/GPU-BRINGUP.md` が指示する最初のコマンドが torch の生の TypeError で止まる
+    # （audit_runtime と同じ欠陥が、より重要な入口に残っていた）。
+    run_a, run_b = _wrap_run(run_a), _wrap_run(run_b)
+    run_batch = _wrap_run(run_batch)
+    logits_a, logits_b = to_array(logits_a), to_array(logits_b)
+
     import numpy as np
 
     from .calibration import SRC_RUN_TO_RUN, calibrate_safety

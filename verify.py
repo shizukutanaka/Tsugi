@@ -103,6 +103,10 @@ def _doc_api_references(text: str | None = None) -> list[tuple[str, str, str]]:
     「no codegen yet」という自社製品についての虚偽が残っていた。**参照の実在を機械で
     検査する**ことで、この *種類* の腐りを構造的に止める。
 
+    対象は first-party（`tsugi*` と `tests.*`）。`docs/GPU-BRINGUP.md` が指示する
+    `tests.gpu.harness` の名前も含む——実機が来た日に最初に打つ import であり、
+    ここが腐ると一番痛い。
+
     実行までは求めない（多くの例は変数を前提とする断片で、実行させるにはフィクスチャが
     要り検査が脆くなる）。「その名前があるか」だけを見るのが費用対効果の最適点。
 
@@ -137,7 +141,7 @@ def _doc_api_references(text: str | None = None) -> list[tuple[str, str, str]]:
                 continue                        # 説明用の断片（シグネチャ列挙など）
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and \
-                        (node.module or "").startswith("tsugi"):
+                        (node.module or "").startswith(("tsugi", "tests")):
                     mod = _resolve(node.module)
                     if mod is None:
                         bad.append((src_name, node.module, "import failed"))
@@ -2509,13 +2513,23 @@ def _check_meta_integrity() -> None:
     except TypeError:
         _plain103 = False
     _ad103 = _audit_runtime(_Dev103(_a103), _Dev103(_b103), K=256, dtype="float16")
-    check("audit_runtime accepts device (GPU) tensors, and does not mangle callables",
+    from tsugi.audit import audit_cross_vendor as _acv103
+    _rngc103 = np.random.default_rng(1)
+    _acvd103 = _acv103(lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
+                       lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
+                       K=256, n_runs=4)
+    check("audit_runtime / audit_cross_vendor accept device (GPU) tensors",
           not _plain103                                  # 検査が有効
           and isinstance(_ta103(_Dev103(_a103)), np.ndarray)
           and _ta103(None) is None
           and _ad103.exit_code in (0, 1, 2)
           and _audit_runtime(_a103, _b103, K=256,
-                             dtype="float16").exit_code in (0, 1, 2))
+                             dtype="float16").exit_code in (0, 1, 2)
+          # 実機入口（GPU-BRINGUP が指示する最初のコマンド）も同様
+          and _acvd103.exit_code in (0, 1, 2)
+          and _acv103(lambda s: _rngc103.standard_normal((8, 16)),
+                      lambda s: _rngc103.standard_normal((8, 16)),
+                      K=256, n_runs=4).exit_code in (0, 1, 2))
 
     # 104. ドキュメントは静かに腐る。API 名が変わっても Markdown は誰も型検査しないので、
     #      ユーザーが最初に打つコマンドだけが壊れる。本ラウンドで実際に「no codegen yet」

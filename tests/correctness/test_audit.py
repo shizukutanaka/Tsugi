@@ -905,6 +905,28 @@ def test_audit_runtime_accepts_device_tensors():
     assert audit_runtime(a, b, K=256, dtype="float16").exit_code in (0, 1, 2)
 
 
+def test_audit_cross_vendor_accepts_device_tensors_from_real_kernels():
+    """`audit_cross_vendor(run_a, run_b, K)` の run_* は **実 GPU カーネル**である。
+
+    返るテンソルは GPU 上にあり、`docs/GPU-BRINGUP.md` はこれを実機が来た日の
+    最初のコマンドとして指示している。境界で NumPy 化しないと、その最初の一手が
+    torch の生の TypeError で止まる（audit_runtime と同じ欠陥が、より重要な入口に
+    残っていた）。
+    """
+    rng = np.random.default_rng(0)
+
+    def _dev_run(_seed):
+        return _DeviceTensor(rng.standard_normal((8, 16)))
+
+    ad = audit_cross_vendor(_dev_run, _dev_run, K=256, n_runs=4)
+    assert ad.exit_code in (0, 1, 2)
+    # 素の ndarray を返すカーネルも従来どおり通る
+    ad2 = audit_cross_vendor(lambda s: rng.standard_normal((8, 16)),
+                             lambda s: rng.standard_normal((8, 16)),
+                             K=256, n_runs=4)
+    assert ad2.exit_code in (0, 1, 2)
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -946,6 +968,7 @@ def main() -> int:
         test_verify_one_call_facade_accepts_path_and_module,
         test_audit_demo_runs_end_to_end,
         test_audit_runtime_accepts_device_tensors,
+        test_audit_cross_vendor_accepts_device_tensors_from_real_kernels,
     ]
     for t in tests:
         try:
