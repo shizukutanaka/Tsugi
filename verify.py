@@ -23,6 +23,7 @@ verify.py の不変条件は tests/correctness/test_*.py と *意図的に* 重�
 from __future__ import annotations
 
 import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,68 @@ _DEPENDENCY_LICENSE_ALLOWLIST: dict[str, str] = {
     "numpy": "BSD-3-Clause",
     "torch": "BSD-3-Clause 系（PyTorch 独自ライセンス・permissive）",
 }
+
+
+def _doc_api_references(text: str | None = None) -> list[tuple[str, str, str]]:
+    """docs/README の python コード例が参照する API のうち、**実在しない**ものを返す。
+
+    ドキュメントは静かに腐る。API 名が変わっても Markdown は誰も型検査しないので、
+    ユーザーが最初に打つコマンドだけが壊れる——本ラウンドで実際に
+    「no codegen yet」という自社製品についての虚偽が残っていた。**参照の実在を機械で
+    検査する**ことで、この *種類* の腐りを構造的に止める。
+
+    実行までは求めない（多くの例は変数を前提とする断片で、実行させるにはフィクスチャが
+    要り検査が脆くなる）。「その名前があるか」だけを見るのが費用対効果の最適点。
+
+    解析は正規表現でなく AST で行う: 複数行の `from x import (a, b)` を正規表現で
+    取ると `(` を名前と誤認し、シグネチャだけを並べた説明用ブロックを構文エラーとして
+    誤報する（最初の実装で実際に 4 件の誤検出が出た）。構文として解析できない
+    ブロックは *説明用の断片* とみなして飛ばす——**誤報の多いゲートは無視される**ので、
+    正しさより先に信頼性を取る。
+    """
+    import ast
+    import importlib
+
+    bad: list[tuple[str, str, str]] = []
+    if text is not None:
+        sources = [("<inline>", text)]
+    else:
+        docs = sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md"]
+        sources = [(str(d.relative_to(ROOT)), d.read_text(encoding="utf-8"))
+                   for d in docs if d.exists()]
+
+    def _resolve(name: str):
+        try:
+            return importlib.import_module(name)
+        except Exception:                                     # noqa: BLE001
+            return None
+
+    for src_name, body in sources:
+        for block in re.findall(r"```python\n(.*?)```", body, re.S):
+            try:
+                tree = ast.parse(block)
+            except SyntaxError:
+                continue                        # 説明用の断片（シグネチャ列挙など）
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and \
+                        (node.module or "").startswith("tsugi"):
+                    mod = _resolve(node.module)
+                    if mod is None:
+                        bad.append((src_name, node.module, "import failed"))
+                        continue
+                    for alias in node.names:
+                        if alias.name != "*" and not hasattr(mod, alias.name):
+                            bad.append(
+                                (src_name, f"{node.module}.{alias.name}", "missing"))
+                elif isinstance(node, ast.Attribute) and \
+                        isinstance(node.value, ast.Name) and \
+                        node.value.id in ("tsugi", "codegen"):
+                    mod = _resolve("tsugi" if node.value.id == "tsugi"
+                                   else "tsugi.codegen")
+                    if mod is not None and not hasattr(mod, node.attr):
+                        bad.append((src_name, f"{node.value.id}.{node.attr}",
+                                    "missing"))
+    return bad
 
 
 def _declared_dependencies(text: str | None = None) -> list[str]:
@@ -1232,7 +1295,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-103: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-104: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2453,6 +2516,22 @@ def _check_meta_integrity() -> None:
           and _ad103.exit_code in (0, 1, 2)
           and _audit_runtime(_a103, _b103, K=256,
                              dtype="float16").exit_code in (0, 1, 2))
+
+    # 104. ドキュメントは静かに腐る。API 名が変わっても Markdown は誰も型検査しないので、
+    #      ユーザーが最初に打つコマンドだけが壊れる。本ラウンドで実際に「no codegen yet」
+    #      という自社製品についての虚偽が残っていた（不変条件 101 が個別に潰した）。
+    #      ここは *種類* として止める: docs/README の python 例が参照する tsugi API が
+    #      すべて実在すること。plant-and-detect で検出器自体の有効性も確かめる。
+    check("documented python examples reference APIs that actually exist",
+          not _doc_api_references()
+          # 存在しない属性・存在しない import を検出できる（検査が効いている）
+          and _doc_api_references(
+              "```python\nimport tsugi\ntsugi.no_such_api()\n```")
+          and _doc_api_references(
+              "```python\nfrom tsugi.codegen import no_such_name\n```")
+          # 複数行 import を誤検出しない（誤報の多いゲートは無視されるので重要）
+          and not _doc_api_references(
+              "```python\nfrom tsugi.decision import (\n    margin,\n)\n```"))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない
