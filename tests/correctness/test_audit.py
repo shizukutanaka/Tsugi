@@ -286,14 +286,22 @@ def test_audit_verdict_from_static_only():
     assert not a.portable
 
 
-def test_runtime_phase_excluded_from_verdict():
-    # runtime 層は実機データ待ちゆえ判定に影響しない（静的層のみで verdict）
+def test_pending_phases_excluded_from_verdict():
+    """pending（実機データ待ち・被覆報告）は判定に入らない。
+
+    以前はここで pending フェーズが 1 つであることを固定していたが、それは契約でなく
+    その時点の *偶然* だった（被覆フェーズ追加で 2 つになった）。固定すべきは
+    **「pending は verdict に算入されない」** という契約そのもの。
+    """
     mod, block, cfg = _demo_module()
     a = audit(mod, cfg, block_dims=block)
-    rt = [p for p in a.phases if p.when == "pending"]
-    assert len(rt) == 1
+    pending = [p for p in a.phases if p.when == "pending"]
+    assert pending, "pending フェーズが 1 つも無い"
+    assert {"runtime", "coverage"} <= {p.name.split()[0] for p in pending}
     assert all(p.when == "decided" for p in a.decided_phases)
     assert a.max_risk == max(p.max_risk for p in a.decided_phases)
+    # pending をいくら足しても verdict は変わらない（算入されない証明）
+    assert a.max_risk == max(p.max_risk for p in a.phases if p.when == "decided")
 
 
 def test_audit_text_has_lifecycle_and_verdict():
@@ -995,13 +1003,24 @@ def test_report_names_the_layers_that_did_not_run():
     ran = {p.name.split()[0] for p in ad.phases}
 
     assert unrun, "実データ無しなのに未実行の層がゼロと報告された"
-    assert "走らなかった層" in txt
+    assert "検査していない層" in txt
+    assert any(p.name.startswith("coverage") for p in ad.phases)
     for layer in ("equivalence", "decision", "worstcase", "blame", "correctness"):
         assert f"{layer}: 未実行" in txt, layer
     # 走った層を未実行と誤報しない
     assert not [u for u in unrun if u.split(":")[0] in ran], unrun
     # 「何を渡せば走るか」が全項目に書かれている
     assert all(need.strip() for need in LAYER_CATALOG.values())
+
+    # **3 入口すべて** が同じ規律に従う（片方だけ開示すると片肺になる）。
+    # audit_runtime は 15 層中 1 層しか走らないのに何も告げていなかった。
+    rt = audit_runtime(np.zeros((8, 16)), np.zeros((8, 16)) + 1e-4,
+                       K=256, dtype="float16")
+    assert any(p.name.startswith("coverage") for p in rt.phases)
+    assert "検査していない層" in rt.to_text()
+    # 機械可読（to_dict）にも載る——CI が被覆をそのまま読める
+    assert any(ph["name"].startswith("coverage")
+               for ph in rt.to_dict()["phases"])
 
 
 def main() -> int:
@@ -1018,7 +1037,7 @@ def main() -> int:
         test_audit_sample_auto_measures_empirical_cond,
         test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,
-        test_runtime_phase_excluded_from_verdict,
+        test_pending_phases_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
         test_audit_verdict_is_machine_readable_for_ci_gating,
         test_audit_without_cfg_still_runs_portability,

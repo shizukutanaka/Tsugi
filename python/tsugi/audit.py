@@ -162,6 +162,28 @@ def _unrun_layers(phases) -> list[str]:
             for name, need in LAYER_CATALOG.items() if name not in ran]
 
 
+def _coverage_phase(phases) -> "AuditPhase":
+    """判定の **被覆範囲** を 1 フェーズとして返す（3 つの入口が共有する単一定義）。
+
+    `audit` / `audit_runtime` / `audit_torch` のどれから来ても同じ規律で
+    「何を検査し、何を検査していないか」を述べる。片方の入口にだけ開示を付けると、
+    もう片方が「全層を通した判定」と読まれる——本ラウンドで繰り返し見つけた
+    *片肺* の類型（Q59/Q60/Q64）。フェーズとして持つので `to_dict()` にも載り、
+    CI が被覆をそのまま機械可読に読める。
+    """
+    ran = sorted({p.name.split()[0] for p in phases} & set(LAYER_CATALOG))
+    unrun = _unrun_layers(phases)
+    cov = AuditPhase("coverage 判定の被覆範囲", "pending", Risk.INFO)
+    cov.lines.append(f"検査した層: {len(ran)}/{len(LAYER_CATALOG)} {ran}")
+    if unrun:
+        cov.lines.append(f"**検査していない層: {len(unrun)}**"
+                         "（判定に含まれない——下記のデータを渡せば走る）")
+        cov.lines += [f"  {u}" for u in unrun]
+    else:
+        cov.lines.append("全層を検査した")
+    return cov
+
+
 def _gemm_depth(module: ir.Module, cfg) -> int:
     """累積深さ K ≈ dot 反復数 × BK（マジックナンバーでなく構成由来）。"""
     n_dots = sum(1 for k in module.kernels for op in k.body if op.kind == "dot")
@@ -703,15 +725,9 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         "  数値発散はマージン分布を介してフリップに翻訳・タスク予算で判定",
         "→ 実データがあれば audit_runtime(...) でこれらを実行し 1 判定に束ねる",
     ]
-    # **走らなかった層を名指しで言う**（判定の被覆範囲を利用者に見せる）。
-    # これが無いと「移植可」が *全層を通した判定* と読まれる——開発ゲートで見つけた
-    # 「緑は何を意味するか」の製品版（同じ偽OK の類型）。
-    unrun = _unrun_layers(a.phases)
-    if unrun:
-        rt.lines.append(f"この監査で走らなかった層: {len(unrun)}/{len(LAYER_CATALOG)}"
-                        "（下記は *検査していない* ——判定に含まれない）")
-        rt.lines += [f"  {u}" for u in unrun]
     a.phases.append(rt)
+    # 判定の被覆範囲を最後に述べる（3 入口共通の規律）。
+    a.phases.append(_coverage_phase(a.phases))
     a.stamp(**(provenance or {}))
     return a
 
@@ -989,6 +1005,9 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         wp.lines.append(wc.to_text())
         ad.phases.append(wp)
 
+    # 実データを渡した入口ほど「徹底的に調べられた」と読まれる。実際には渡された
+    # データで走れる層だけが走るので、被覆範囲を明示する（audit と同じ規律）。
+    ad.phases.append(_coverage_phase(ad.phases))
     ad.stamp(**(provenance or {}))
     return ad
 

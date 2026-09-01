@@ -2679,20 +2679,32 @@ def _check_meta_integrity() -> None:
     from tsugi.audit import LAYER_CATALOG as _CAT108
     from tsugi.audit import _unrun_layers as _unrun108
 
+    #      しかも規律は **3 つの入口すべて** に要る: `audit`（静的）だけに付けても
+    #      `audit_runtime`（実データ）と `audit_torch`（楔ユーザー）が「全層を通した
+    #      判定」と読まれる——実際 `audit_runtime(a, b, K)` は 15 層中 **1 層**しか
+    #      走らないのに何も告げていなかった。片肺にしない。
     _ad108 = _tsugi89.audit(_mod90, block_dims=(32,))
+    _rt108 = _audit_runtime(_a103, _b103, K=256, dtype="float16")
+    _tor108 = _at89(_gm89)
     _txt108 = _ad108.to_text()
     _unrun108_list = _unrun108(_ad108.phases)
     _ran108 = {p.name.split()[0] for p in _ad108.phases}
-    check("the report names the layers that did NOT run, and what data would run them",
+    check("all three entry points name the layers that did NOT run, and what would run them",
           _unrun108_list                                   # 実データ無しなら必ず未実行がある
-          and "走らなかった層" in _txt108
           and all(f"{n}: 未実行" in _txt108 for n in
                   ("equivalence", "decision", "worstcase", "blame", "correctness"))
           # 走った層は未実行として挙げない（誤報を出さない）
           and not any(u.split(":")[0] in _ran108 for u in _unrun108_list)
           # 目録は「何を渡せば走るか」を全項目について述べる
           and all(v.strip() for v in _CAT108.values())
-          and {"portability", "codegen", "propagation"} <= set(_CAT108))
+          and {"portability", "codegen", "propagation"} <= set(_CAT108)
+          # **3 入口すべて** が被覆フェーズを持ち、機械可読（to_dict）にも載る
+          and all(any(p.name.startswith("coverage") for p in ad.phases)
+                  for ad in (_ad108, _rt108, _tor108))
+          and all("検査していない層" in ad.to_text()
+                  for ad in (_ad108, _rt108, _tor108))
+          and any(ph["name"].startswith("coverage")
+                  for ph in _rt108.to_dict()["phases"]))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない

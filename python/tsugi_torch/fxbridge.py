@@ -333,5 +333,8 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
         "実機ノイズ床とクロス発散は audit_cross_vendor(run_a, run_b, K) で実測する。",
     ]
     ad.phases.append(rt)
+    # 楔ユーザーの入口も同じ規律で被覆範囲を述べる（片方だけ開示すると片肺になる）。
+    from tsugi.audit import _coverage_phase
+    ad.phases.append(_coverage_phase(ad.phases))
     ad.stamp()
     return ad
