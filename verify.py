@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-108: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-109: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2705,6 +2705,20 @@ def _check_meta_integrity() -> None:
                   for ad in (_ad108, _rt108, _tor108))
           and any(ph["name"].startswith("coverage")
                   for ph in _rt108.to_dict()["phases"]))
+
+    # 109. **目録そのものの完全性**（また一段深い検査）。`LAYER_CATALOG` に載っていない
+    #      層が出ると、被覆計算はそれを「走った」とも「走らなかった」とも数えず
+    #      **黙って落とす**。実際 `torch/FX 静的監査`（楔ユーザー経路の中核）が目録から
+    #      漏れており、その経路の被覆が過小に報告されていた。3 入口が出しうる
+    #      フェーズ名がすべて目録か META に属することを固定する。
+    from tsugi.audit import META_PHASES as _META109
+    _seen109 = set()
+    for _ad109 in (_ad108, _rt108, _tor108):
+        _seen109 |= {p.name.split()[0] for p in _ad109.phases}
+    check("the layer catalog covers every phase the entry points can produce",
+          not (_seen109 - set(_CAT108) - _META109)
+          and "torch/FX" in _CAT108            # 楔ユーザー経路の層が目録にある
+          and _META109 == {"runtime", "coverage"})
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない

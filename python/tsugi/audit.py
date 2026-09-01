@@ -1,8 +1,9 @@
 """Tsugi audit — 検証層を 1 つの判定に束ねる統合ファサード。
 
-13 視点（portability/equivalence/occupancy/tolerance/feasibility/propagation/
-envelope/decision/rollout/worstcase/decision拡張/attribution/blame）＋メタ層
-（calibration/oracle_check）＋基盤（nondeterminism）が出揃った。
+検証層の目録は **`LAYER_CATALOG` が単一情報源**（層名 → その層を走らせるのに要るもの）。
+散文に層数を書くと必ず腐るので書かない——第 61 回に「13 検証層」という記述が 7 箇所
+あるのに実体は 15 層、という食い違いを見つけた（数え方の異なる分類が並存していた）。
+メタ層（calibration/oracle_check）と基盤（nondeterminism）はこれとは別に存在する。
 個別に呼ぶのでなく、traced IR ＋タイル構成から **静的に実行できる層をまとめて回し、
 1 つの Audit レポートにする**。さらに *実機データが要る層*（実行時エンベロープ・
 非決定性ノイズ・タスクフリップ）を「実行時チェックリスト」として明示し、検証の
@@ -138,6 +139,7 @@ class Audit:
 #: 同じ偽OK の類型である——**実行されなかった検査を判定に含めて読ませない**。
 LAYER_CATALOG: dict[str, str] = {
     "portability": "静的（常に実行）",
+    "torch/FX": "静的（torch.fx GraphModule を渡したとき）",
     "feasibility": "静的（タイル構成 cfg が要る）",
     "occupancy": "静的（block_dims が要る）",
     "numerics": "静的（常に実行）",
@@ -160,6 +162,11 @@ def _unrun_layers(phases) -> list[str]:
     ran = {p.name.split()[0] for p in phases}
     return [f"{name}: 未実行 — {need}"
             for name, need in LAYER_CATALOG.items() if name not in ran]
+
+
+#: 検証層でない管理用フェーズ。被覆の分母に入れない（runtime は「これから何をするか」の
+#: チェックリスト、coverage は被覆報告そのもの）。目録の完全性検査はこれを除外する。
+META_PHASES: frozenset[str] = frozenset({"runtime", "coverage"})
 
 
 def _coverage_phase(phases) -> "AuditPhase":
