@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-107: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-108: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2669,6 +2669,30 @@ def _check_meta_integrity() -> None:
           # plant-and-detect: ずれた数値を検出できる（検査が効いている）
           and _doc_numeric_claims("CPU 999 スイート")
           and not _doc_numeric_claims("（数値を書かない文章）"))
+
+    # 108. 不変条件 106 の **製品版**。開発ゲートで「緑は何を意味するか」を狭めたなら、
+    #      製品のレポートも同じ規律に従うべきである——このプロダクトは「13 検証層」を
+    #      掲げるが `python -m tsugi k.py` の既定出力に現れるのは 5 層ほどで、残りは
+    #      *データが無いので走っていない*。それを告げないと利用者は「移植可」を
+    #      **全層を通した判定** と読む（同じ偽OK の類型）。走らなかった層を名指しし、
+    #      何を渡せば走るかまで書く。
+    from tsugi.audit import LAYER_CATALOG as _CAT108
+    from tsugi.audit import _unrun_layers as _unrun108
+
+    _ad108 = _tsugi89.audit(_mod90, block_dims=(32,))
+    _txt108 = _ad108.to_text()
+    _unrun108_list = _unrun108(_ad108.phases)
+    _ran108 = {p.name.split()[0] for p in _ad108.phases}
+    check("the report names the layers that did NOT run, and what data would run them",
+          _unrun108_list                                   # 実データ無しなら必ず未実行がある
+          and "走らなかった層" in _txt108
+          and all(f"{n}: 未実行" in _txt108 for n in
+                  ("equivalence", "decision", "worstcase", "blame", "correctness"))
+          # 走った層は未実行として挙げない（誤報を出さない）
+          and not any(u.split(":")[0] in _ran108 for u in _unrun108_list)
+          # 目録は「何を渡せば走るか」を全項目について述べる
+          and all(v.strip() for v in _CAT108.values())
+          and {"portability", "codegen", "propagation"} <= set(_CAT108))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない

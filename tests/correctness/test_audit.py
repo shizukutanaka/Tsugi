@@ -967,6 +967,43 @@ def test_every_tensor_taking_public_function_accepts_device_tensors():
     assert not failed, "device テンソルを拒む公開関数がある:\n  " + "\n  ".join(failed)
 
 
+def test_report_names_the_layers_that_did_not_run():
+    """判定の **被覆範囲** を利用者に見せる（不変条件 106 の製品版）。
+
+    このプロダクトは「13 検証層」を掲げるが、実データ無しの既定出力に現れるのは
+    5 層ほどで、残りは *走っていない*。それを告げないと「移植可」が **全層を通した
+    判定** と読まれる——開発ゲートで塞いだ「緑は何を意味するか」と同じ偽OK の類型。
+    """
+    import numpy as np
+
+    import tsugi
+    from tsugi import tile
+    from tsugi.audit import LAYER_CATALOG, _unrun_layers
+
+    @tsugi.jit
+    def k(a, b, c, M, N, K, BM, BN, BK):
+        acc = tile.zeros((BM, BN), tsugi.float32)
+        acc = tile.dot(tile.load(a, (0, 0), (BM, BK)),
+                       tile.load(b, (0, 0), (BK, BN)), acc)
+        tile.store(c, (0, 0), acc.to(tsugi.float16))
+
+    args = (np.zeros((32, 32), np.float16), np.zeros((32, 32), np.float16),
+            np.zeros((32, 32), np.float32), 32, 32, 32, 16, 16, 16)
+    ad = tsugi.audit(tsugi.trace(k, args, {}, program_ids=(0, 0)), block_dims=(32,))
+    txt = ad.to_text()
+    unrun = _unrun_layers(ad.phases)
+    ran = {p.name.split()[0] for p in ad.phases}
+
+    assert unrun, "実データ無しなのに未実行の層がゼロと報告された"
+    assert "走らなかった層" in txt
+    for layer in ("equivalence", "decision", "worstcase", "blame", "correctness"):
+        assert f"{layer}: 未実行" in txt, layer
+    # 走った層を未実行と誤報しない
+    assert not [u for u in unrun if u.split(":")[0] in ran], unrun
+    # 「何を渡せば走るか」が全項目に書かれている
+    assert all(need.strip() for need in LAYER_CATALOG.values())
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -1010,6 +1047,7 @@ def main() -> int:
         test_audit_runtime_accepts_device_tensors,
         test_audit_cross_vendor_accepts_device_tensors_from_real_kernels,
         test_every_tensor_taking_public_function_accepts_device_tensors,
+        test_report_names_the_layers_that_did_not_run,
     ]
     for t in tests:
         try:

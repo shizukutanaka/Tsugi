@@ -128,6 +128,40 @@ class Audit:
         return "\n".join(lines)
 
 
+#: 検証層の全目録と、その層を走らせるのに要るもの。**走らなかった層を名指しで言う**
+#: ために持つ（`_unrun_layers`）。
+#:
+#: なぜ要るか: このプロダクトは「13 検証層」を掲げるが、`python -m tsugi k.py` の
+#: 既定出力に現れるのは 5 層ほどで、残りは *データが無いので走っていない*。ところが
+#: レポートはその不在を告げず、利用者は「移植可」を **全層を通した判定** と読む。
+#: これは開発ゲートで見つけた「緑は何を意味するか」（不変条件 106）の製品版であり、
+#: 同じ偽OK の類型である——**実行されなかった検査を判定に含めて読ませない**。
+LAYER_CATALOG: dict[str, str] = {
+    "portability": "静的（常に実行）",
+    "feasibility": "静的（タイル構成 cfg が要る）",
+    "occupancy": "静的（block_dims が要る）",
+    "numerics": "静的（常に実行）",
+    "propagation": "静的（常に実行）",
+    "codegen": "静的（常に実行・アセンブラがあれば L2）",
+    "envelope": "実データ: 代表テンソル sample=",
+    "equivalence": "実機データ: 両ベンダーの出力 a_out/b_out",
+    "decision": "実機データ: 両ベンダーの logits_a/logits_b",
+    "rollout": "実機データ: logits＋生成長 gen_length",
+    "worstcase": "実機データ: 実行可能なカーネル fn_a/fn_b",
+    "attribution": "実機データ: 層ごとの出力 layers_a/layers_b",
+    "blame": "実機データ＋oracle: どちらのベンダーを直すか",
+    "correctness": "oracle: 真値（一致≠正しさ・共有モード障害の検出）",
+    "safety": "実機データ: 同一ベンダーの複数 run（SAFETY 定数の校正）",
+}
+
+
+def _unrun_layers(phases) -> list[str]:
+    """目録のうち、この監査で **走らなかった** 層を必要データつきで返す。"""
+    ran = {p.name.split()[0] for p in phases}
+    return [f"{name}: 未実行 — {need}"
+            for name, need in LAYER_CATALOG.items() if name not in ran]
+
+
 def _gemm_depth(module: ir.Module, cfg) -> int:
     """累積深さ K ≈ dot 反復数 × BK（マジックナンバーでなく構成由来）。"""
     n_dots = sum(1 for k in module.kernels for op in k.body if op.kind == "dot")
@@ -669,6 +703,14 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         "  数値発散はマージン分布を介してフリップに翻訳・タスク予算で判定",
         "→ 実データがあれば audit_runtime(...) でこれらを実行し 1 判定に束ねる",
     ]
+    # **走らなかった層を名指しで言う**（判定の被覆範囲を利用者に見せる）。
+    # これが無いと「移植可」が *全層を通した判定* と読まれる——開発ゲートで見つけた
+    # 「緑は何を意味するか」の製品版（同じ偽OK の類型）。
+    unrun = _unrun_layers(a.phases)
+    if unrun:
+        rt.lines.append(f"この監査で走らなかった層: {len(unrun)}/{len(LAYER_CATALOG)}"
+                        "（下記は *検査していない* ——判定に含まれない）")
+        rt.lines += [f"  {u}" for u in unrun]
     a.phases.append(rt)
     a.stamp(**(provenance or {}))
     return a
