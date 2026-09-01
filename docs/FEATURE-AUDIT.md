@@ -9,7 +9,8 @@
 
 - **Tsugi**: PyTorch `torch.compile` 向けの GPU ベンダー間（NVIDIA↔AMD）移植性検証
   ライブラリ。数値等価性・起動可能性・タスク影響を GPU 実機なしの CPU シミュレーションで
-  検証する。コードは `python/tsugi/`（30 モジュール）と `python/tsugi_torch/`（2 モジュール）。
+  検証する。コードは `python/tsugi/` と `python/tsugi_torch/`（モジュール数は増えるので数えない——
+  文書に焼き込んだ数値は腐る。第 61 回に台帳の数値主張 6 件すべてが実態とずれていた）。
 - **facade**: 製品の主要入口となる統合関数。`python/tsugi/audit.py` の
   `audit()`（静的検証）・`audit_runtime()`（実データ検証）・`audit_cross_vendor()`（実機入口）、
   および `python/tsugi_torch/__init__.py` の `_tsugi_compile()`（torch.compile バックエンド）。

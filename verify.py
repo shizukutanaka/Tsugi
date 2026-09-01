@@ -73,7 +73,8 @@ def _orphan_tests() -> list[str]:
     import re
 
     orphans: list[str] = []
-    for p in sorted((ROOT / "tests" / "correctness").glob("test_*.py")):
+    suites = sorted((ROOT / "tests" / "correctness").glob("test_*.py"))
+    for p in suites:
         try:
             src = p.read_text(encoding="utf-8")
         except Exception:  # noqa: BLE001
@@ -82,6 +83,21 @@ def _orphan_tests() -> list[str]:
             refs = len(re.findall(rf"\b{re.escape(fn)}\b", src)) - 1  # -1 = def 行自身
             if refs == 0:
                 orphans.append(f"{p.name}:{fn}")
+
+    # **ファイル単位の孤児も見る**（第 61 回で発見した検査の穴）。
+    # 上のループは「関数がそのファイルの main() に登録されているか」しか見ておらず、
+    # **そのファイル自体が run.py のスイート表に載っているか**を問うていなかった——
+    # 一段浅い検査だった。実際 test_attribution / test_blame / test_worstcase /
+    # test_tsugi_torch_compile の 4 本（29 本中）がゲートから外れており、
+    # attribution（新視点12）・blame（新視点13）・worstcase・torch backend は
+    # **`python check.py` が緑でも一度も走っていなかった**。
+    try:
+        runner = (ROOT / "tests" / "correctness" / "run.py").read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return orphans
+    for p in suites:
+        if f'"{p.name}"' not in runner:
+            orphans.append(f"run.py に未登録（ゲートで一度も走らない）: {p.name}")
     return orphans
 
 
@@ -158,6 +174,40 @@ def _doc_api_references(text: str | None = None) -> list[tuple[str, str, str]]:
                     if mod is not None and not hasattr(mod, node.attr):
                         bad.append((src_name, f"{node.value.id}.{node.attr}",
                                     "missing"))
+    return bad
+
+
+def _doc_numeric_claims(text: str | None = None) -> list[str]:
+    """台帳（ASSESSMENT/FEATURE-AUDIT）の**数えられる主張**が実態と合うかを返す。
+
+    第 60 回で doc の *API 参照* の腐りは不変条件 104 で止めたが、doc の *数値主張* は
+    素通しだった——本ラウンドの実測で **6 件すべて腐っていた**（不変条件 190→206、
+    スイート 23→29、モジュール 30→34、docs 29→32、verify.py 1,400→2,600 行、
+    ゲート 17〜18s→実測）。同じ *種類* の腐りである。
+
+    方針（Musk 第 2 段階「最良の部品は無い部品」）: 数えられる数値は **原則 doc から
+    削る**。行数・秒数・docs 本数・モジュール数・不変条件の総数は、保守コストだけ高く
+    価値が薄いので文章から消した。**機械照合するのは CPU スイート数ただ 1 つ**——
+    実際に欠陥（23 と書いてあるが 29 本ある＝4 本がゲート外）が出た唯一の数値であり、
+    かつ安定して定義できるため。
+
+    不変条件の総数を*照合しない*のは意図的である: `len(INVARIANTS)` はこの検査自身が
+    走っている最中の途中値であり、最終値と 1 ずれる（自己参照）。**正しく書けない数値は
+    文書から消すのが正解**で、検査を無理に足すのは筋が悪い。
+    """
+    import re
+
+    bad: list[str] = []
+    suites = re.findall(r'"(test_\w+\.py)"',
+                        (ROOT / "tests" / "correctness" / "run.py").read_text(
+                            encoding="utf-8"))
+    n_suites = len(set(suites))
+    src = text if text is not None else (
+        ROOT / "docs" / "ASSESSMENT.md").read_text(encoding="utf-8")
+
+    for found in re.findall(r"CPU\s+(\d+)\s*スイート", src):
+        if int(found) != n_suites:
+            bad.append(f"CPU スイート数: 文書は {found}・実際は {n_suites}")
     return bad
 
 
@@ -1299,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-105: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-107: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2593,6 +2643,32 @@ def _check_meta_integrity() -> None:
           # 複数行 import を誤検出しない（誤報の多いゲートは無視されるので重要）
           and not _doc_api_references(
               "```python\nfrom tsugi.decision import (\n    margin,\n)\n```"))
+
+    # 106. 「緑」が何を意味するかを狭める。環境起因の skip（torch 無しなら意味論照合と
+    #      実 FX 結線が丸ごと飛ぶ）がサマリに現れないと、**緑が「全部検証した」と読まれる**
+    #      ——GPU 側で Q37 が塞いだのと同型の穴が CPU 側に残っていた（Q60）。
+    #      さらに本ラウンドはより重い穴を見つけた: ゲートが **29 本中 4 本を一度も
+    #      走らせていなかった**（attribution/blame/worstcase/torch backend）。
+    #      `_orphan_tests()` が「関数→ファイル」しか見ず「ファイル→ゲート」を
+    #      見ていない *一段浅い* 検査だったため（Q59）。両方をここで固定する。
+    _runner106 = (ROOT / "tests" / "correctness" / "run.py").read_text(encoding="utf-8")
+    _suites106 = {p.name for p in
+                  (ROOT / "tests" / "correctness").glob("test_*.py")}
+    check("the gate runs every suite on disk, and says how much it skipped",
+          # すべてのスイートがゲートに登録されている（4 本の取りこぼしの回帰固定）
+          all(f'"{n}"' in _runner106 for n in _suites106)
+          and not _orphan_tests()
+          # サマリが環境起因 skip を数えて報告する（緑の意味を狭める）
+          and "環境起因の skip" in _runner106
+          and "_SKIP_RE" in _runner106)
+
+    # 107. 台帳の **数えられる主張** が実態と一致する（第 60 回の不変条件 104 は
+    #      API 参照だけを見ており、数値主張は素通しだった——実測 6 件すべて腐っていた）。
+    check("the ledger's countable claims match reality",
+          not _doc_numeric_claims()
+          # plant-and-detect: ずれた数値を検出できる（検査が効いている）
+          and _doc_numeric_claims("CPU 999 スイート")
+          and not _doc_numeric_claims("（数値を書かない文章）"))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない

@@ -30,9 +30,18 @@ LINT_TARGETS = ["python/", "verify.py", "check.py", "tests/", "examples/"]
 SMOKE_EXAMPLES = ["examples/matmul.py", "examples/user_kernel.py", "examples/audit_demo.py"]
 
 
+#: correctness スイートが報告した環境起因 skip の件数（ゲートのサマリへ透過する）。
+_SKIPS: list[int] = []
+
+
+def _skip_count() -> int:
+    return _SKIPS[0] if _SKIPS else 0
+
+
 def _run(name: str, cmd: list[str], *, env_extra: dict[str, str] | None = None) -> tuple[str, bool, float]:
     """1 ゲートを実行し (名前, 成否, 秒) を返す。出力は失敗時のみ見せる（ノイズ削減）。"""
     import os
+    import re
 
     env = {**os.environ, **(env_extra or {})}
     t0 = time.time()
@@ -42,37 +51,51 @@ def _run(name: str, cmd: list[str], *, env_extra: dict[str, str] | None = None) 
     if not ok:
         sys.stdout.write(proc.stdout[-4000:])
         sys.stderr.write(proc.stderr[-4000:])
+    m = re.search(r"環境起因の skip（CPU スイート内）: (\d+) 件", proc.stdout or "")
+    if m:
+        _SKIPS.append(int(m.group(1)))
     return name, ok, dt
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     fast = "--fast" in argv
+
+    # ゲートは **直列** に走らせる。一度 ThreadPoolExecutor で並列化してみたが、
+    # 4 コア環境で 40s → **104s と大幅に悪化**した（実測）——correctness スイート自身が
+    # 既に 4 ワーカーを使っており、そこへ verify.py と smoke 3 本を重ねると
+    # oversubscription で全員が遅くなる。**並列化すべきは 1 段だけ**（run.py の内側）。
+    # 効かない部品は入れない（Musk 第 2 段階）。
     results: list[tuple[str, bool, float]] = []
+    wall0 = time.time()
 
     if shutil.which("ruff"):
         results.append(_run("lint (ruff)", ["ruff", "check", *LINT_TARGETS]))
     else:
         print("[SKIP ] lint (ruff) — ruff 未インストール（pip install ruff）")
 
-    results.append(_run("correctness suites", [sys.executable, "tests/correctness/run.py"]))
+    results.append(_run("correctness suites",
+                        [sys.executable, "tests/correctness/run.py"]))
     results.append(_run("invariants (verify.py)", [sys.executable, "verify.py"]))
 
     if not fast:
         for ex in SMOKE_EXAMPLES:
             results.append(_run(f"smoke {ex}", [sys.executable, ex],
                                 env_extra={"PYTHONPATH": str(ROOT / "python")}))
+    wall = time.time() - wall0
 
     print()
-    total = 0.0
     failed = []
     for name, ok, dt in results:
-        total += dt
         print(f"[{'PASS' if ok else 'FAIL'}] {name} ({dt:.1f}s)")
         if not ok:
             failed.append(name)
+    # 「緑＝全部検証した」と読ませない: スイート側が数えた環境起因 skip を透過する。
+    skips = _skip_count()
+    tail = f"・環境起因 skip {skips} 件" if skips else ""
     print(f"\n{'ALL GATES PASS' if not failed else 'FAILED: ' + ', '.join(failed)} "
-          f"({total:.1f}s{'・--fast: examples スモーク省略' if fast else ''})")
+          f"({wall:.1f}s{tail}"
+          f"{'・--fast: examples スモーク省略' if fast else ''})")
     return 0 if not failed else 1
 
 
