@@ -264,7 +264,8 @@ def audit_fx(gm: Any, ref_logits=None, sample=None) -> dict:
 
 
 def audit_torch(gm: Any, *, ref_logits=None, sample=None,
-                flip_budget: float = 0.001) -> "Any":
+                flip_budget: float = 0.001, task: str = "classification",
+                task_kwargs: dict | None = None) -> "Any":
     """FX グラフを **ゲート付き判定**（`Audit`）として返す——PyTorch 経路の製品入口。
 
     `audit_fx` は素の dict を返すため、CI ゲート契約（`exit_code`）も人間可読レポート
@@ -320,7 +321,7 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
     if sample is not None:
         try:
             from .simulate import simulate_cross_vendor
-            sim = simulate_cross_vendor(gm, sample)
+            sim = simulate_cross_vendor(gm, sample, task=task, task_kwargs=task_kwargs)
             if sim is None:
                 sim_note = ("降下が partial か重みを束縛できないため模倣できない"
                             "（0 で埋めず、天井のみで報告する）")
@@ -364,7 +365,13 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
         dp.lines.append(
             f"実測フリップ率 {sim_worst.flip_rate * 100:.3f}%（上界 "
             f"{sim_worst.flip_rate_ub * 100:.3f}%・最悪クラス {sim_worst.name}・"
-            f"n={sim_worst.n}）／予算 {flip_budget * 100:.3f}%")
+            f"n={sim_worst.n}・task={sim_worst.task}）／予算 {flip_budget * 100:.3f}%")
+        if sim_worst.task == "classification":
+            # 新視点11 の静かな誤用を新しい道具で踏み直さない。同じモデルでも
+            # task=regression では 94.8%、argmax では 0.0% になりうる。
+            dp.lines.append("  フリップは **argmax（多クラス分類）前提**。回帰・バイナリ・"
+                            "ランキング・サンプリングのモデルは argmax が固定され 0% に"
+                            "張りつく——`task=` を指定しないとこの行は出荷判断に使えない")
         if rep.get("task_flip_bound") is not None:
             dp.lines.append(
                 f"  参考: 静的天井由来の上界 {rep['task_flip_bound'] * 100:.2f}% は"

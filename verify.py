@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-112: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-113: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2845,6 +2845,34 @@ def _check_meta_integrity() -> None:
           "非適用" in _sim111 and "CLASS_REQUIRES" in _sim111
           and "表現できない" in _sim111
           and (_vac112 is None or _vac112 is True))
+
+    # 113. **同じ罠を新しい道具で踏み直さない**（第 62 回・模倣への 2 度目の自己問答）。
+    #      新視点11 は既に「argmax を非分類タスクに使うと flip_rate=0 に固まる静かな
+    #      誤用」を記録し、`decision.compare_task` を用意していたのに、模倣は
+    #      `decision_flips`（argmax）を **無条件に** 呼んでいた。同じモデル・同じ発散でも
+    #      分類の読みでは 0.0%、回帰の読みでは 94.8%——回帰モデルは「フリップ 0%」として
+    #      出荷される。既存層が解いた問題を、新しい層が作り直していないかを固定する。
+    _task113 = None
+    try:
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv113
+        _cls113 = _scv113(_g110, _x110)
+        _reg113 = _scv113(_g110, _x110, task="regression", task_kwargs={"rtol": 1e-4})
+        _ad113 = _at89(_g110, ref_logits=_m110(_t110.from_numpy(_x110)).detach().numpy(),
+                       sample=_x110, task="regression", task_kwargs={"rtol": 1e-4})
+        _task113 = (
+            _cls113.worst.flip_rate == 0.0                 # argmax では 0 に見える
+            and _reg113.worst.flip_rate > _cls113.worst.flip_rate   # タスクで変わる
+            and _reg113.worst.task == "regression"
+            # 分類のときは argmax 前提だと黙らない（誤用は検出できないので明示する）
+            and any("argmax" in ln for ln in _cls113.to_lines())
+            and _ad113.exit_code == 2                      # 回帰の読みで BLOCK に届く
+            and "task=regression" in _ad113.to_text())
+    except Exception:                                  # noqa: BLE001
+        _task113 = None                                # torch 無し: 主張しない
+    check("flip semantics follow the declared task; argmax is never applied silently",
+          "compare_task" in _sim111 and "task=" in _sim111
+          and "argmax" in _sim111
+          and (_task113 is None or _task113 is True))
 
     check("the wedge path measures an activation, never a lifted weight",
           "Parameter" in _init111                      # 型で活性と重みを分ける

@@ -516,6 +516,43 @@ def test_a_class_that_cannot_fire_is_named_not_reported_as_zero():
     assert w.rel_divergence == max(c.rel_divergence for c in full.measured)
 
 
+def test_flip_semantics_follow_the_task_not_always_argmax():
+    """argmax を非分類タスクに当てる**静かな誤用**を、新しい道具で踏み直さない。
+
+    新視点11 が既に「argmax を非分類タスクに使うと flip_rate=0 に固まる」と記録して
+    いるのに、模倣は `decision_flips`（argmax）を無条件に呼んでいた。同じモデル・
+    同じ発散でも、分類の読みでは 0.0%、回帰の読みでは 94.8% になる——回帰モデルは
+    「フリップ 0%」として出荷され、これは最も重い偽OK である。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: タスク意味論の分岐は未検証（正直に skip）")
+        return
+    from tsugi_torch.fxbridge import audit_torch
+    from tsugi_torch.simulate import simulate_cross_vendor
+
+    m, gm, x = _sim_model()
+    xa = x.numpy()
+    cls = simulate_cross_vendor(gm, xa)
+    reg = simulate_cross_vendor(gm, xa, task="regression", task_kwargs={"rtol": 1e-4})
+    assert cls is not None and reg is not None
+    assert cls.worst.flip_rate == 0.0, "分類の読みが 0% でない（前提の変化）"
+    assert reg.worst.flip_rate > cls.worst.flip_rate, (
+        "回帰の読みが分類より小さい——タスク意味論が効いていない")
+    assert reg.worst.task == "regression" and cls.worst.task == "classification"
+
+    # 分類のときは argmax 前提であることを黙らない（誤用を検出できないので明示する）
+    assert any("argmax" in ln for ln in cls.to_lines())
+    assert not any("argmax（多クラス分類）前提" in ln for ln in reg.to_lines())
+
+    # 製品入口も task を受け取り、判定行に何の意味論かを書く
+    ref = m(x).detach().numpy()
+    ad = audit_torch(gm, ref_logits=ref, sample=xa, task="regression",
+                     task_kwargs={"rtol": 1e-4}, flip_budget=0.001)
+    dec = next(p for p in ad.phases if p.name.startswith("decision"))
+    assert "task=regression" in "\n".join(dec.lines)
+    assert ad.exit_code == 2, "回帰の読みで予算を大きく超えたのに BLOCK していない"
+
+
 def main() -> int:
     ok = True
     for t in (test_lowering_produces_ir_that_both_vendors_assemble,
@@ -534,7 +571,8 @@ def main() -> int:
               test_gate_blocks_on_measured_flips_not_on_the_ceiling,
               test_simulation_refuses_graphs_it_cannot_bind,
               test_the_representative_input_is_an_activation_not_a_weight,
-              test_a_class_that_cannot_fire_is_named_not_reported_as_zero):
+              test_a_class_that_cannot_fire_is_named_not_reported_as_zero,
+              test_flip_semantics_follow_the_task_not_always_argmax):
         try:
             t()
             print(f"[PASS] {t.__name__}")

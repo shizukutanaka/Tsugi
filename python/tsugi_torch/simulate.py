@@ -92,12 +92,14 @@ class ClassResult:
     storage: str = "float16"     # このクラスを測った格納 dtype
     applicable: bool = True      # False なら「差が無い」でなく「表現できない」
     why: str = ""                # 非適用の理由（黙って 0 を出さない）
+    task: str = "classification"  # フリップをどのタスク意味論で測ったか
 
 
 @dataclass
 class SimulationReport:
     classes: list[ClassResult] = field(default_factory=list)
     n_samples: int = 0
+    task: str = "classification"
 
     @property
     def measured(self) -> list[ClassResult]:
@@ -117,7 +119,8 @@ class SimulationReport:
         return next((c for c in self.measured if c.name == "order"), None)
 
     def to_lines(self) -> list[str]:
-        out = [f"CPU 2 ベンダー模倣（n={self.n_samples}・既知の発散クラス）:"]
+        out = [f"CPU 2 ベンダー模倣（n={self.n_samples}・既知の発散クラス・"
+               f"フリップは task={self.task} の意味論）:"]
         for c in self.classes:
             if not c.applicable:
                 out.append(f"  {c.name:7s}: **非適用** — {c.why}"
@@ -127,6 +130,10 @@ class SimulationReport:
                        f"フリップ率 {c.flip_rate * 100:.3f}%（上界 {c.flip_rate_ub * 100:.3f}%）")
         out.append("  ※ 模倣は既知クラスのみ。実機固有の要因（超越関数実装・FMA 融合・"
                    "レイアウト依存の縮約順）は含まないので、これは実機発散の *下界*。")
+        if self.task == "classification":
+            out.append("  ※ フリップは **argmax（多クラス分類）前提**。回帰・バイナリ・"
+                       "ランキング・サンプリングのモデルでは argmax が固定され "
+                       "flip=0 に張りつく（静かな誤用）——`task=` を指定すること。")
         return out
 
 
@@ -190,6 +197,8 @@ def refusal_reason(gm: Any, inputs) -> str:
 def simulate_cross_vendor(gm: Any, x, *,
                           classes: tuple[str, ...] = ("order", "f16acc", "tf32", "rtz"),
                           storage: tuple[str, ...] = ("float16", "float32"),
+                          task: str = "classification",
+                          task_kwargs: dict | None = None,
                           confidence: float = 0.95) -> SimulationReport | None:
     """FX グラフを CPU で「2 ベンダー」として走らせ、発散クラスごとに実測する。
 
@@ -199,7 +208,7 @@ def simulate_cross_vendor(gm: Any, x, *,
     **None**（模倣できないことを黙って 0 で埋めない）。理由は `refusal_reason`。
     """
     from tsugi.arrays import asarray
-    from tsugi.decision import decision_flips
+    from tsugi.decision import compare_task, decision_flips
     from tsugi.equivalence import simulate_vendor_matmul
     from tsugi.interp import evaluate
     from tsugi.rollout import flip_rate_upper_bound
@@ -223,13 +232,13 @@ def simulate_cross_vendor(gm: Any, x, *,
                                           **cfg).astype(np.float64)
         return _dot
 
-    rep = SimulationReport()
+    rep = SimulationReport(task=task)
     for name in classes:
         cfg_a, cfg_b, store = DIVERGENCE_CLASSES[name]
         if store not in storage:
             # そのクラスが発現する格納 dtype を測っていない。0 でなく **非適用**と言う。
             rep.classes.append(ClassResult(
-                name, 0.0, 0.0, 0.0, 0, store, applicable=False,
+                name, 0.0, 0.0, 0.0, 0, store, applicable=False, task=task,
                 why=f"{store} 格納を測っていない: " + CLASS_REQUIRES.get(name, "前提未充足")))
             continue
         out_a = evaluate(lm.module, binds, dot=vendor(cfg_a, store))[-1]
@@ -239,7 +248,14 @@ def simulate_cross_vendor(gm: Any, x, *,
         out_b = evaluate(lm.module, binds, dot=vendor(cfg_b, store))[-1]
         denom = float(np.max(np.abs(out_a))) + 1e-30
         rel = float(np.max(np.abs(out_a - out_b))) / denom
-        if out_a.ndim >= 2 and out_a.shape[-1] > 1:
+        if task != "classification":
+            # 非分類タスクに argmax を当てると flip=0 に張りつく（新視点11 の静かな
+            # 誤用）。decision 層は既にタスク別の意味論を持っているので、模倣も
+            # そちらへ委ねる——同じ罠を新しい道具で踏み直さない。
+            tr = compare_task(out_a, out_b, task=task, confidence=confidence,
+                              **(task_kwargs or {}))
+            n, fr, ub = int(tr.n), float(tr.flip_rate), float(tr.flip_rate_ub)
+        elif out_a.ndim >= 2 and out_a.shape[-1] > 1:
             flips = decision_flips(out_a, out_b)
             n = int(flips.size)
             k = int(flips.sum())
@@ -252,9 +268,9 @@ def simulate_cross_vendor(gm: Any, x, *,
         # 起きた）。0 と報告すると偽OKなので、非適用として名指しする。
         if rel == 0.0 and name in CLASS_REQUIRES:
             rep.classes.append(ClassResult(
-                name, 0.0, 0.0, 0.0, n, store, applicable=False,
+                name, 0.0, 0.0, 0.0, n, store, applicable=False, task=task,
                 why=f"{store} 格納でも差がビット同一 — 前提: "
                     + CLASS_REQUIRES[name]))
             continue
-        rep.classes.append(ClassResult(name, rel, fr, ub, n, store))
+        rep.classes.append(ClassResult(name, rel, fr, ub, n, store, task=task))
     return rep
