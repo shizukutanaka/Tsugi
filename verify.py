@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-113: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-114: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2873,6 +2873,37 @@ def _check_meta_integrity() -> None:
           "compare_task" in _sim111 and "task=" in _sim111
           and "argmax" in _sim111
           and (_task113 is None or _task113 is True))
+
+    # 114. **見出しの数値それ自体に同じ問いを向ける**（第 62 回・追補4）。
+    #      「静的値は実測の 200〜1700 倍」という本ラウンドの見出しは、実測を
+    #      **スケール正規化** `max|Δ|/max|a|` で測ったときの比だった。`equivalence.compare`
+    #      が使う正準の **要素ごと** `max(|Δ|/(|a|+1e-12))` で測ると、同じ差が静的値を
+    #      **上回る**（f16acc 2.6・tf32 5.7・rtz 7.0 対 静的 3.6e-2）。要素ごとの値は
+    #      分母が 0 に近い要素（GELU/LayerNorm 出力）に支配されるので、伝播モデル
+    #      （典型スケールの量）と比べる相手としては前者が適切だが、**「天井」と一言で
+    #      呼べば要素ごとの意味でも上界だと読まれる**。両尺度を報告し、どちらと
+    #      比べているかを明記することを固定する。
+    _metric114 = None
+    try:
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv114
+        _s114 = _scv114(_g110, _x110)
+        _sp114 = next(p for p in _at89(_g110, sample=_x110).phases
+                      if p.name.startswith("simulation"))
+        _metric114 = (
+            # 2 尺度は別物で、要素ごとが必ず大きい（分母の小さい要素に支配される）
+            all(c.max_rel_elementwise >= c.rel_divergence for c in _s114.measured)
+            # スケール正規化では天井を下回るが、要素ごとでは上回るクラスがある
+            and _s114.worst.rel_divergence < _ceil110
+            and any(c.max_rel_elementwise > _ceil110 for c in _s114.measured)
+            # 両方を出し、どちらと比べているかを述べる
+            and "スケール正規化" in "\n".join(_s114.to_lines())
+            and "要素ごと" in "\n".join(_s114.to_lines())
+            and "天井を上回る" in "\n".join(_sp114.lines))
+    except Exception:                                  # noqa: BLE001
+        _metric114 = None                              # torch 無し: 主張しない
+    check("the ceiling names the metric it bounds; the other metric is reported too",
+          "max_rel_elementwise" in _sim111 and "スケール正規化" in _sim111
+          and (_metric114 is None or _metric114 is True))
 
     check("the wedge path measures an activation, never a lifted weight",
           "Parameter" in _init111                      # 型で活性と重みを分ける

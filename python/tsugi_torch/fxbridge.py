@@ -338,10 +338,19 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
         if w is not None and w.rel_divergence > 0 and ceiling:
             ratio = ceiling / w.rel_divergence
             sp.lines.append(f"  静的天井 δ={ceiling:.2e} は最悪クラス実測"
-                            f"（{w.name}: δ={w.rel_divergence:.2e}）の ×{ratio:.0f}")
+                            f"（{w.name}: δ={w.rel_divergence:.2e}・スケール正規化）"
+                            f"の ×{ratio:.0f}")
             if ratio >= 10.0:
                 sp.lines.append("  → 天井は *無情報*: 許容の上限であって予測ではない。"
                                 "判定は下の実測フリップで行う")
+            if w.max_rel_elementwise > ceiling:
+                # 「天井」は *スケール正規化* の意味でしか上界でない。要素ごとの
+                # 相対誤差（equivalence.compare の正準）では上回る——一言で「天井」と
+                # 呼ぶと、あらゆる意味で上界だと読まれる（追補4）。
+                sp.lines.append(
+                    f"  ただし **要素ごと**の相対誤差は {w.max_rel_elementwise:.2e} で"
+                    f"天井を上回る（分母が 0 に近い要素に支配される）。"
+                    "静的値が上界なのは *スケール正規化* の意味に限る")
         ad.phases.append(sp)
     else:
         sp = AuditPhase("simulation CPU 2 ベンダー模倣", "pending", Risk.INFO)

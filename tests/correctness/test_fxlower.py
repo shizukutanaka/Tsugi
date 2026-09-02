@@ -553,6 +553,42 @@ def test_flip_semantics_follow_the_task_not_always_argmax():
     assert ad.exit_code == 2, "回帰の読みで予算を大きく超えたのに BLOCK していない"
 
 
+def test_the_ceiling_is_only_a_ceiling_under_one_metric():
+    """見出し数値それ自体への問答（第 62 回・追補4）。
+
+    「静的値は実測の 200〜1700 倍」という主張は、実測を **スケール正規化**
+    `max|Δ|/max|a|` で測ったときの比だった。`equivalence.compare` が使う正準の
+    **要素ごと** `max(|Δ|/(|a|+1e-12))` で測ると、同じ差が静的値を **上回る**。
+    つまり静的値は「あらゆる意味での上界」ではない。両方を報告し、どちらと
+    比べているかを明記することを固定する。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 尺度の取り違えは未検証（正直に skip）")
+        return
+    from tsugi_torch.fxbridge import audit_fx, audit_torch
+    from tsugi_torch.simulate import simulate_cross_vendor
+
+    m, gm, x = _sim_model()
+    xa = x.numpy()
+    ceiling = audit_fx(gm, sample=xa)["model_divergence"]
+    sim = simulate_cross_vendor(gm, xa)
+    assert sim is not None
+    for c in sim.measured:
+        # 2 尺度は別物であり、要素ごとの方が必ず大きい（分母が小さい要素に支配される）
+        assert c.max_rel_elementwise >= c.rel_divergence, c.name
+    exceed = [c.name for c in sim.measured if c.max_rel_elementwise > ceiling]
+    assert exceed, "要素ごとの誤差が全クラスで天井以下——尺度の違いが消えている"
+    assert sim.worst.rel_divergence < ceiling, "スケール正規化では天井を下回るはず"
+
+    txt = "\n".join(sim.to_lines())
+    assert "スケール正規化" in txt and "要素ごと" in txt
+    ad = audit_torch(gm, ref_logits=m(x).detach().numpy(), sample=xa)
+    sp = next(p for p in ad.phases if p.name.startswith("simulation"))
+    body = "\n".join(sp.lines)
+    assert "スケール正規化" in body
+    assert "天井を上回る" in body, "天井が上界でない尺度があることを黙っている"
+
+
 def main() -> int:
     ok = True
     for t in (test_lowering_produces_ir_that_both_vendors_assemble,
@@ -572,7 +608,8 @@ def main() -> int:
               test_simulation_refuses_graphs_it_cannot_bind,
               test_the_representative_input_is_an_activation_not_a_weight,
               test_a_class_that_cannot_fire_is_named_not_reported_as_zero,
-              test_flip_semantics_follow_the_task_not_always_argmax):
+              test_flip_semantics_follow_the_task_not_always_argmax,
+              test_the_ceiling_is_only_a_ceiling_under_one_metric):
         try:
             t()
             print(f"[PASS] {t.__name__}")

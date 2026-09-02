@@ -38,8 +38,27 @@
 
 模倣は **既知の発散クラスだけ** を含む。実機固有の要因（超越関数の実装差・FMA
 contraction の有無・レイアウト依存の縮約順）は含まないので、実測値は実機発散の
-**下界**、静的天井は **上界** である。両方を報告し、実機照合（`audit_cross_vendor`）で
-更新することを前提にする。
+**下界**である。実機照合（`audit_cross_vendor`）で更新することを前提にする。
+
+## 「天井」は何の天井か（追補4・自分の見出し数値への問答）
+
+上表の 200×/1700× は、実測を **スケール正規化** `max|Δ|/max|a|` で測ったときの比で
+ある。ところが `equivalence.compare` が使う正準の相対誤差は **要素ごと**
+`max(|Δ|/(|a|+1e-12))` で、こちらで測ると同じ差が 2〜7 と出る——**静的値 3.6e-2 を
+上回る**。つまり静的値は「あらゆる意味での上界」ではない:
+
+| クラス | スケール正規化 | 要素ごと | 静的値 3.6e-2 との関係 |
+|---|---|---|---|
+| order  | 2.2e-5 | 1.8e-3 | 下回る |
+| f16acc | 4.6e-4 | 2.6e0  | **上回る** |
+| tf32   | 4.1e-4 | 5.7e0  | **上回る** |
+| rtz    | 9.3e-4 | 7.0e0  | **上回る** |
+
+要素ごとの値は分母が 0 に近い要素（GELU/LayerNorm の出力）に支配されるので、
+伝播モデル（op ごとの相対条件数を掛け合わせる *典型スケール* の量）と比べる相手として
+適切なのはスケール正規化の方である。しかし **「天井」と一言で呼ぶと、要素ごとの
+意味でも上界だと読まれる**。よって両方を報告し、どちらと比べているかを明記する。
+**見出しの数値それ自体にも同じ問いを向けること。**
 """
 from __future__ import annotations
 
@@ -85,10 +104,15 @@ CLASS_REQUIRES: dict[str, str] = {
 @dataclass
 class ClassResult:
     name: str
-    rel_divergence: float        # max|a−b| / max|a|
+    rel_divergence: float        # max|a−b| / max|a|（**スケール正規化**・堅牢）
     flip_rate: float             # argmax が変わったサンプル率（点推定）
     flip_rate_ub: float          # Wilson 上側限界（小標本で 0 を過信しない）
     n: int
+    #: `equivalence.compare` と同じ **要素ごと** の相対誤差の最大値
+    #: max(|a−b| / (|a|+1e-12))。分母が 0 に近い要素（GELU/LayerNorm の出力など）で
+    #: 発散するため、スケール正規化より桁で大きくなる。どちらか一方だけを
+    #: 「相対発散」と呼ぶと、比較相手を取り違える（第 62 回・追補4）。
+    max_rel_elementwise: float = 0.0
     storage: str = "float16"     # このクラスを測った格納 dtype
     applicable: bool = True      # False なら「差が無い」でなく「表現できない」
     why: str = ""                # 非適用の理由（黙って 0 を出さない）
@@ -126,10 +150,15 @@ class SimulationReport:
                 out.append(f"  {c.name:7s}: **非適用** — {c.why}"
                            "（0 と報告すると「発散なし」と読まれる）")
                 continue
-            out.append(f"  {c.name:7s}[{c.storage[-2:]}]: 相対発散 {c.rel_divergence:.2e}  "
+            out.append(f"  {c.name:7s}[{c.storage[-2:]}]: 相対発散 {c.rel_divergence:.2e}"
+                       f"（要素ごと {c.max_rel_elementwise:.2e}）  "
                        f"フリップ率 {c.flip_rate * 100:.3f}%（上界 {c.flip_rate_ub * 100:.3f}%）")
         out.append("  ※ 模倣は既知クラスのみ。実機固有の要因（超越関数実装・FMA 融合・"
                    "レイアウト依存の縮約順）は含まないので、これは実機発散の *下界*。")
+        out.append("  ※ 「相対発散」はスケール正規化 max|Δ|/max|a|。括弧内は "
+                   "`equivalence.compare` と同じ **要素ごと** の最大相対誤差で、"
+                   "分母が 0 に近い要素（GELU/LayerNorm 出力）で桁が上がる。"
+                   "静的伝播の値と比べてよいのは前者のみ（後者は上回りうる）。")
         if self.task == "classification":
             out.append("  ※ フリップは **argmax（多クラス分類）前提**。回帰・バイナリ・"
                        "ランキング・サンプリングのモデルでは argmax が固定され "
@@ -238,7 +267,7 @@ def simulate_cross_vendor(gm: Any, x, *,
         if store not in storage:
             # そのクラスが発現する格納 dtype を測っていない。0 でなく **非適用**と言う。
             rep.classes.append(ClassResult(
-                name, 0.0, 0.0, 0.0, 0, store, applicable=False, task=task,
+                name, 0.0, 0.0, 0.0, 0, storage=store, applicable=False, task=task,
                 why=f"{store} 格納を測っていない: " + CLASS_REQUIRES.get(name, "前提未充足")))
             continue
         out_a = evaluate(lm.module, binds, dot=vendor(cfg_a, store))[-1]
@@ -248,6 +277,10 @@ def simulate_cross_vendor(gm: Any, x, *,
         out_b = evaluate(lm.module, binds, dot=vendor(cfg_b, store))[-1]
         denom = float(np.max(np.abs(out_a))) + 1e-30
         rel = float(np.max(np.abs(out_a - out_b))) / denom
+        # 同じ差を **2 つの尺度**で測る。どちらか一方だけを「相対発散」と呼ぶと、
+        # 比較相手（静的伝播の値）と別の量を突き合わせることになる（追補4）。
+        _e = np.abs(out_a - out_b) / (np.abs(out_a) + 1e-12)
+        rel_elem = float(np.nanmax(_e)) if _e.size else 0.0
         if task != "classification":
             # 非分類タスクに argmax を当てると flip=0 に張りつく（新視点11 の静かな
             # 誤用）。decision 層は既にタスク別の意味論を持っているので、模倣も
@@ -268,9 +301,10 @@ def simulate_cross_vendor(gm: Any, x, *,
         # 起きた）。0 と報告すると偽OKなので、非適用として名指しする。
         if rel == 0.0 and name in CLASS_REQUIRES:
             rep.classes.append(ClassResult(
-                name, 0.0, 0.0, 0.0, n, store, applicable=False, task=task,
+                name, 0.0, 0.0, 0.0, n, storage=store, applicable=False, task=task,
                 why=f"{store} 格納でも差がビット同一 — 前提: "
                     + CLASS_REQUIRES[name]))
             continue
-        rep.classes.append(ClassResult(name, rel, fr, ub, n, store, task=task))
+        rep.classes.append(ClassResult(name, rel, fr, ub, n, storage=store, task=task,
+                                       max_rel_elementwise=rel_elem))
     return rep
