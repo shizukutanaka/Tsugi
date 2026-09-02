@@ -393,8 +393,8 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 190 件**（`verify.py`）と 27 テストファイル・property test
-  （10 性質 × 200 試行）。
+- **機械検証可能な不変条件**（`verify.py`・件数は実行して確認する）と CPU テスト
+  スイート群・property test（10 性質 × 200 試行）。
 
 ---
 

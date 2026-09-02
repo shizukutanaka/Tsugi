@@ -97,7 +97,7 @@ out = compiled(x)                        # 実行は eager 素通し（後述）
 ```
 [tsugi] verification-only (codegen は L2 まで検証済み・実行は eager 素通し):
   3 numeric ops, amplifiers=['layer_norm', 'softmax'], model_divergence≈5.1e-01,
-  実測フリップ 0.000%（上界 1.046%・最悪クラス order・n=256・CPU 2 ベンダー模倣
+  実測フリップ 0.000%（上界 1.046%・最悪クラス f16acc・n=256・CPU 2 ベンダー模倣
   ＝実機発散の下界）, task_flip_bound≤55.1%（天井・予測ではない）
   … codegen: 呼び出し 3 件中 3 を IR へ降下し 3/3 ターゲットでアセンブル検証。
   実行は未検証（要実機）
@@ -148,7 +148,7 @@ Tile DSL / torch.compile  →  tsugi.tile IR  →  tsugi.gpu IR  →  ┬ NVVM �
 
 ## ドキュメント案内（目的別の読む順）
 
-docs/ は 29 本あるため、**目的から入口を選ぶ**。
+docs/ は本数が多いので、**目的から入口を選ぶ**。
 
 **使う人**（今すぐ試したい）
 [QUICKSTART.md](docs/QUICKSTART.md)（60 秒・`python -m tsugi`）→
@@ -184,7 +184,7 @@ docs/ は 29 本あるため、**目的から入口を選ぶ**。
 | 完成形ファイル（仕様/ADR/README/FAQ/Benchmark/SPEC-verification） | ✅ 完了 | — |
 | リファレンス実装（CPU/NumPy・正しさの真値） | ✅ 完了 | test_reference（数値真値） |
 | 上流コンパイラ（DSL→tsugi.tile IR→各社intrinsic写像） | ✅ 完了 | DSL 全14opにlowering同期（drift不変条件）・tracer/compile テスト |
-| 不変条件 verify | ✅ 完了 | verify.py 82/82 invariants・全26スイート213テスト関数PASS |
+| 不変条件 verify | ✅ 完了 | `python verify.py` 全不変条件 PASS・`python check.py` が全 CPU スイートを実行 |
 | 移植性検証層（portability・新視点） | ✅ 完了 | warp/MMA/bf16/累積順序 リスク検出 |
 | 数値等価性層（equivalence・新視点） | ✅ 完了 | 擬似ベンダーで発散検出を実証 |
 | 占有率推定（occupancy） | ✅ 完了 | 一次情報源HW値・同一構成のベンダー差 |

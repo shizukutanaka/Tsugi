@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-111: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-112: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2812,6 +2812,40 @@ def _check_meta_integrity() -> None:
             and _s111 is not None and _s111.n_samples == 256)   # 標本数は出力の行数
     except Exception:                                  # noqa: BLE001
         _dyn111 = None                                 # torch 無し: 主張しない
+    # 112. **偽OK を直す道具の中に偽OK があった**（第 62 回・自分の模倣への自己問答）。
+    #      当初 `tf32`/`rtz` を fp16 格納で回しており、両方とも「相対発散 0.00e+00」と
+    #      報告していた。しかしこれは「差が無い」でなく「**その差が表現できない**」——
+    #      fp16 の仮数 10 bit は TF32 と同じで丸めが恒等になり、`input_precision="ieee"`
+    #      は `truncate_to_tensorcore` が仮数 23 bit で即 return するので丸めモードの
+    #      指定ごと捨てられる。0 と出せば「TF32 起因の発散は無い」と読まれる。正しい
+    #      格納で測ると `rtz` は f16 累積より **大きい** 発散を示す（隠れていたのは
+    #      最小のクラスではなく最大のクラスだった）。
+    _vac112 = None
+    try:
+        from tsugi_torch.simulate import CLASS_REQUIRES as _req112
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv112
+        _full112 = _scv112(_g110, _x110)
+        _f16112 = _scv112(_g110, _x110, storage=("float16",))
+        _by112 = {c.name: c for c in _full112.classes}
+        _vac112 = (
+            # 正しい格納なら前提つきクラスは実際に発散する（0 でない）
+            all(_by112[n].applicable and _by112[n].rel_divergence > 0.0 for n in _req112)
+            and _by112["rtz"].rel_divergence > _by112["f16acc"].rel_divergence
+            # 発現しない格納しか測らないなら 0 でなく「非適用」と名指しする
+            and all(not c.applicable and c.why
+                    for c in _f16112.classes if c.name in _req112)
+            and "非適用" in "\n".join(_f16112.to_lines())
+            # 最悪クラスに非適用を混ぜない・上界が並ぶときは相対発散で決着する
+            and _full112.worst.applicable
+            and _full112.worst.rel_divergence == max(c.rel_divergence
+                                                     for c in _full112.measured))
+    except Exception:                                  # noqa: BLE001
+        _vac112 = None                                 # torch 無し: 主張しない
+    check("a divergence class that cannot fire is named, never reported as a measured zero",
+          "非適用" in _sim111 and "CLASS_REQUIRES" in _sim111
+          and "表現できない" in _sim111
+          and (_vac112 is None or _vac112 is True))
+
     check("the wedge path measures an activation, never a lifted weight",
           "Parameter" in _init111                      # 型で活性と重みを分ける
           and "_activation_input" in _init111 and "_sim_inputs" in _init111

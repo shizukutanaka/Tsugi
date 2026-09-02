@@ -474,6 +474,48 @@ def test_the_representative_input_is_an_activation_not_a_weight():
     assert sim.n_samples == 256, "標本数を入力側から数えている（重みの行数を拾う）"
 
 
+def test_a_class_that_cannot_fire_is_named_not_reported_as_zero():
+    """**偽OK を直す道具の中に偽OK があった**（第 62 回・自己問答で発覚）。
+
+    当初 `tf32`/`rtz` を fp16 格納で回しており、両方とも「相対発散 0.00e+00」と出ていた。
+    しかしこれは「差が無い」ではなく「**その差が表現できない**」——fp16 の仮数 10 bit は
+    TF32 と同じなので丸めが恒等になり、`input_precision="ieee"` は丸めモードの指定ごと
+    捨てられる。0 と表示すれば読み手は「TF32 起因の発散は無い」と読む。
+    正しい格納（f32）で測ると `rtz` は f16 累積より大きい発散を示す。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 非適用クラスの扱いは未検証（正直に skip）")
+        return
+    from tsugi_torch.simulate import CLASS_REQUIRES, simulate_cross_vendor
+
+    _, gm, x = _sim_model()
+    full = simulate_cross_vendor(gm, x.numpy())
+    assert full is not None
+    by = {c.name: c for c in full.classes}
+    # 正しい格納で測れば、前提つきクラスは実際に発散を示す（0 ではない）
+    for name in CLASS_REQUIRES:
+        c = by[name]
+        assert c.applicable and c.rel_divergence > 0.0, (
+            f"{name} が発現していない（格納 {c.storage}・{c.why}）")
+    assert by["rtz"].rel_divergence > by["f16acc"].rel_divergence, (
+        "丸めモード差が f16 累積より小さい——この主張が崩れたら文書も見直すこと")
+
+    # 発現しない格納しか測らないなら「0」でなく「非適用」と名指しする
+    f16_only = simulate_cross_vendor(gm, x.numpy(), storage=("float16",))
+    assert f16_only is not None
+    for c in f16_only.classes:
+        if c.name in CLASS_REQUIRES:
+            assert not c.applicable and c.why, f"{c.name} を 0 として報告している"
+    assert all(c.applicable for c in f16_only.measured)
+    txt = "\n".join(f16_only.to_lines())
+    assert "非適用" in txt and "0.00e+00" not in txt
+
+    # 最悪クラスは非適用を混ぜず、上界が並ぶときは相対発散で決着する
+    w = full.worst
+    assert w is not None and w.applicable
+    assert w.rel_divergence == max(c.rel_divergence for c in full.measured)
+
+
 def main() -> int:
     ok = True
     for t in (test_lowering_produces_ir_that_both_vendors_assemble,
@@ -491,7 +533,8 @@ def main() -> int:
               test_static_divergence_is_a_ceiling_not_a_prediction,
               test_gate_blocks_on_measured_flips_not_on_the_ceiling,
               test_simulation_refuses_graphs_it_cannot_bind,
-              test_the_representative_input_is_an_activation_not_a_weight):
+              test_the_representative_input_is_an_activation_not_a_weight,
+              test_a_class_that_cannot_fire_is_named_not_reported_as_zero):
         try:
             t()
             print(f"[PASS] {t.__name__}")
