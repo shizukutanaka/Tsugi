@@ -49,7 +49,7 @@ def _run_suite(name: str) -> tuple[str, int, str]:
 
 def main() -> int:
     rc = 0
-    cpu_suites = ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_codegen.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_rollout.py", "test_audit.py", "test_attribution.py", "test_blame.py", "test_worstcase.py", "test_properties.py", "test_fxbridge.py", "test_fxlower.py", "test_tsugi_torch_compile.py", "test_oracle_check.py", "test_provenance.py")
+    cpu_suites = ("test_reference.py", "test_autotune.py", "test_tracer.py", "test_lowering.py", "test_codegen.py", "test_compile.py", "test_portability.py", "test_equivalence.py", "test_occupancy.py", "test_portcheck.py", "test_tolerance.py", "test_bf16.py", "test_feasibility.py", "test_propagation.py", "test_envelope.py", "test_calibration.py", "test_nondeterminism.py", "test_decision.py", "test_rollout.py", "test_audit.py", "test_attribution.py", "test_blame.py", "test_worstcase.py", "test_properties.py", "test_fxbridge.py", "test_fxlower.py", "test_tsugi_torch_compile.py", "test_oracle_check.py", "test_provenance.py", "test_tile_ops.py")
     print("=== [1] reference correctness (CPU/NumPy oracle) ===")
     # 各スイートは独立プロセスで、ファイル書き込み・環境変数変更・chdir・入れ子
     # subprocess のいずれも持たない（検査済み）。ゆえに並列化は正当性に影響しない。
