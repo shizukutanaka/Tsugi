@@ -146,6 +146,7 @@ LAYER_CATALOG: dict[str, str] = {
     "propagation": "静的（常に実行）",
     "codegen": "静的（常に実行・アセンブラがあれば L2）",
     "envelope": "実データ: 代表テンソル sample=",
+    "simulation": "torch.fx グラフ＋代表入力 sample=（CPU で 2 ベンダーを模倣し実測）",
     "equivalence": "実機データ: 両ベンダーの出力 a_out/b_out",
     "decision": "実機データ: 両ベンダーの logits_a/logits_b",
     "rollout": "実機データ: logits＋生成長 gen_length",

@@ -83,6 +83,36 @@ def flip_rate_upper_bound(flips: int, n_samples: int, confidence: float = 0.95) 
     return min(1.0, (center + margin) / denom)
 
 
+def samples_for_flip_budget(budget: float, *, confidence: float = 0.95,
+                            max_n: int = 10 ** 7) -> int:
+    """フリップ 0 を観測したとき上界を `budget` 以下にできる最小サンプル数 n。
+
+    「0 件観測 → 上界 1.05%」のような小標本の無力さを **具体的な要求数** に翻訳する。
+    これが無いと、上界が予算を超えるたびに BLOCK を出すだけで「どうすれば通るのか」が
+    利用者に見えない——偽BLOCK が常態化すると、偽OK と同じく判定が信号を失う（第 62 回）。
+
+    上界は `flip_rate_upper_bound` そのものを二分探索で反転させて求める（rule of three
+    の近似 3/budget を定数として書き込むのでなく、実装済みの上界式に問う）。
+    `budget<=0` は達成不能なので `max_n` を返す（黙って小さい数を返さない）。
+    """
+    if budget <= 0.0:
+        return max_n
+    if flip_rate_upper_bound(0, 1, confidence) <= budget:
+        return 1
+    lo, hi = 1, 2
+    while hi < max_n and flip_rate_upper_bound(0, hi, confidence) > budget:
+        lo, hi = hi, hi * 2
+    if hi >= max_n:
+        return max_n
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if flip_rate_upper_bound(0, mid, confidence) <= budget:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
 def divergence_step_quantile(flip_rate: float, q: float = 0.5) -> float:
     """初回発散が起きるトークン位置の q 分位（例 q=0.5 で中央値）。
 

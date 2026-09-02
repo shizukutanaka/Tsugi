@@ -331,6 +331,149 @@ def test_the_documented_product_entry_point_works_with_real_torch():
     assert "numeric ops" in msg and not msg.count("0 numeric ops")
 
 
+def _sim_model():
+    """束縛可能な（重みがグラフ外にある call_module のみの）実モデル。"""
+    torch.manual_seed(0)
+    m = nn.Sequential(nn.Linear(64, 64), nn.LayerNorm(64),
+                      nn.GELU(approximate="tanh"), nn.Linear(64, 32))
+    return m, torch.fx.symbolic_trace(m), torch.randn(256, 64)
+
+
+def test_static_divergence_is_a_ceiling_not_a_prediction():
+    """静的 `model_divergence` は **許容の天井** であって予測ではない（第 62 回）。
+
+    第 61 回までこの経路の唯一の数値は静的伝播だった。同じモデルを CPU で 2 ベンダー
+    として走らせて実測すると、静的値は最悪クラスの実測より桁違いに大きい。原因は
+    構造的で、伝播モデルは格納 dtype `u(fp16)` を発散単位にするが、両ベンダーが f32 で
+    累積するなら跨ベンダー差は `u(f32)` スケール（2¹³ 倍小さい）。この乖離を固定して、
+    将来この値を「予測」として提示する退行を止める。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 天井と実測の突き合わせは未検証（正直に skip）")
+        return
+    from tsugi_torch.fxbridge import audit_fx
+    from tsugi_torch.simulate import simulate_cross_vendor
+
+    _, gm, x = _sim_model()
+    rep = audit_fx(gm, sample=x.numpy())
+    sim = simulate_cross_vendor(gm, x.numpy())
+    assert sim is not None, "束縛可能なグラフで模倣が None になっている"
+    worst = sim.worst
+    assert worst is not None and worst.rel_divergence > 0.0
+    ratio = rep["model_divergence"] / worst.rel_divergence
+    assert ratio > 10.0, (
+        f"天井 {rep['model_divergence']:.2e} が実測 {worst.rel_divergence:.2e} に "
+        f"接近している（×{ratio:.1f}）——伝播モデルが変わったなら文書の主張も見直すこと")
+    # 模倣は既知クラスのみ＝下界であることを黙らない
+    assert any("下界" in ln for ln in sim.to_lines())
+
+
+def test_gate_blocks_on_measured_flips_not_on_the_ceiling():
+    """BLOCK の根拠は実測フリップであって天井ではない。
+
+    天井由来の上界は真だが無情報（このモデルで 24%）。それで BLOCK を出し続けると
+    偽BLOCK が常態化し、偽OK と同じく判定が信号を失う。実測が予算内なら BLOCK に
+    しないこと、標本不足は BLOCK でなく WARN として **要求標本数つき** で言うことを固定。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 実測ゲートは未検証（正直に skip）")
+        return
+    from tsugi.report import Risk
+    from tsugi_torch.fxbridge import audit_torch
+
+    m, gm, x = _sim_model()
+    ref = m(x).detach().numpy()
+    ad = audit_torch(gm, ref_logits=ref, sample=x.numpy())
+    names = [p.name for p in ad.phases]
+    assert any(n.startswith("simulation") for n in names), "模倣フェーズが無い"
+    dec = next(p for p in ad.phases if p.name.startswith("decision"))
+    assert "(実測)" in dec.name, "判定が天井のままになっている"
+    assert dec.max_risk is not Risk.BLOCK, "実測が予算内なのに BLOCK している"
+    text = "\n".join(dec.lines)
+    assert "天井" in text and "判定には使わない" in text
+    assert "n≥" in text, "標本不足のとき必要標本数を示していない"
+
+    # sample が無ければ天井で判定する（それしか無いので）。ただし天井と明示する。
+    ad2 = audit_torch(gm, ref_logits=ref)
+    dec2 = next(p for p in ad2.phases if p.name.startswith("decision"))
+    assert "(天井)" in dec2.name and "予測ではない" in "\n".join(dec2.lines)
+
+
+def test_simulation_refuses_graphs_it_cannot_bind():
+    """表せない op があるグラフ、重みを引けないグラフでは **None**（0 で埋めない）。"""
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: 模倣の拒否条件は未検証（正直に skip）")
+        return
+    from tsugi_torch.simulate import simulate_cross_vendor
+
+    class Chunked(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(8, 8)
+
+        def forward(self, x):
+            a, b = self.fc(x).chunk(2, dim=-1)
+            return torch.cat([b, a], dim=-1)
+
+    gm = torch.fx.symbolic_trace(Chunked())
+    assert simulate_cross_vendor(gm, torch.randn(4, 8).numpy()) is None
+
+
+def test_the_representative_input_is_an_activation_not_a_weight():
+    """`torch.compile` 経路の「実測」が **重み行列** を測っていた（第 62 回・修正済）。
+
+    dynamo は重みを引数へ持ち上げるので `example_inputs[0]` は `nn.Parameter` である。
+    それを代表入力として `audit_fx(sample=…)` に渡していたため、A-3 で導入した
+    「sample 実測: scale=…」は活性でなく重みの統計を報告していた。実測と称して別の
+    ものを測るのは、静的仮定を残すより悪い——利用者はそれを活性の実測だと読む。
+
+    同じ根から模倣の束縛も壊れる: 持ち上げられた重みは `input:` 記述子になり
+    `named_parameters()` は空になるので、代表入力 1 本を全記述子へ配ると重みの位置に
+    活性が入る。**同じテンソルを複数の記述子に当てない**ことを固定する。
+    """
+    if not HAVE_TORCH:
+        print("  [SKIP] torch 無し: dynamo の引数持ち上げは未検証（正直に skip）")
+        return
+    import torch._dynamo as dynamo
+
+    from tsugi_torch import _activation_input, _sim_inputs
+    from tsugi_torch.fxlower import fx_to_ir
+    from tsugi_torch.simulate import refusal_reason, simulate_cross_vendor
+
+    seen = []
+
+    def spy(gm, ex):
+        seen.append((gm, ex))
+        return gm.forward
+
+    dynamo.reset()
+    torch.manual_seed(0)
+    m = nn.Sequential(nn.Linear(64, 64), nn.LayerNorm(64), nn.Softmax(-1))
+    torch.compile(m, backend=spy)(torch.randn(300, 64))
+    gm, ex = seen[0]
+
+    # 前提の確認: 実際に重みが引数へ持ち上がっている（この事実が崩れたら本テストは無意味）
+    assert any(isinstance(t, torch.nn.Parameter) for t in ex), "重みが持ち上がっていない"
+    assert isinstance(ex[0], torch.nn.Parameter), "先頭が活性になった（前提の変化）"
+    assert not list(gm.named_parameters()), "dynamo グラフに重みが属性として残っている"
+
+    act = _activation_input(ex)
+    assert act is not None and act.shape == (300, 64), "活性でなく重みを選んでいる"
+
+    # 代表入力 1 本では束縛が一意に決まらない → 諦める（誤った実測を出さない）
+    assert simulate_cross_vendor(gm, act) is None
+    why = refusal_reason(gm, act)
+    assert "input:" in why or "一意" in why, f"諦めた理由を述べていない: {why!r}"
+
+    # 全引数を順に渡せば束縛できる。行を切るのは活性だけ（重みを切ると形が壊れる）
+    ins = _sim_inputs(ex, max_rows=256)
+    assert len(ins) == len(fx_to_ir(gm).report.bindings)
+    assert ins[0].shape == (64, 64), "重みの行を切っている"
+    sim = simulate_cross_vendor(gm, ins)
+    assert sim is not None and sim.worst is not None
+    assert sim.n_samples == 256, "標本数を入力側から数えている（重みの行数を拾う）"
+
+
 def main() -> int:
     ok = True
     for t in (test_lowering_produces_ir_that_both_vendors_assemble,
@@ -344,7 +487,11 @@ def main() -> int:
               test_missing_binding_raises_rather_than_silently_reusing_a_tensor,
               test_real_model_reaches_machine_code_through_the_product_facade,
               test_a_realistic_transformer_block_is_handled_honestly,
-              test_the_documented_product_entry_point_works_with_real_torch):
+              test_the_documented_product_entry_point_works_with_real_torch,
+              test_static_divergence_is_a_ceiling_not_a_prediction,
+              test_gate_blocks_on_measured_flips_not_on_the_ceiling,
+              test_simulation_refuses_graphs_it_cannot_bind,
+              test_the_representative_input_is_an_activation_not_a_weight):
         try:
             t()
             print(f"[PASS] {t.__name__}")

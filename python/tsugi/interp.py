@@ -34,8 +34,13 @@ def _reduce(x: np.ndarray, axis: int, kind: str) -> np.ndarray:
     return np.sum(x, axis=axis, keepdims=True)
 
 
-def evaluate(module: ir.Module, inputs) -> list[np.ndarray]:
+def evaluate(module: ir.Module, inputs, *, dot=None) -> list[np.ndarray]:
     """IR を NumPy で評価する。
+
+    `dot` を渡すと `dot` op の意味論を差し替えられる（`dot(x, y) -> ndarray`）。
+    これで **「ベンダー A の matmul」「ベンダー B の matmul」** を同じ IR に当てて
+    走らせられる——`equivalence.simulate_vendor_matmul` を渡せば、静的な天井でなく
+    *実測* のクロスベンダー発散が CPU で得られる（第 62 回）。既定は正確な `@`。
 
     `inputs` が dict なら `load` の `binding` 属性（`"input:x"` / `"param:weight"`）で
     束縛する——生成カーネルの引数が何のテンソルかを IR 自身が持っているので、
@@ -93,7 +98,7 @@ def evaluate(module: ir.Module, inputs) -> list[np.ndarray]:
                 if a.get("rhs_transposed"):
                     y = y.T          # linear(x,W,b) = x·Wᵀ + b
                 acc = val(op.operands[2]) if len(op.operands) > 2 else 0.0
-                r = x @ y + acc
+                r = (dot(x, y) if dot is not None else x @ y) + acc
             elif k == "store":
                 outs.append(val(op.operands[0]))
                 continue

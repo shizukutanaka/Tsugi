@@ -82,8 +82,21 @@ def _kind_of(target_name: str) -> str | None:
     return None   # placeholder/output/get_attr/view 等は除外
 
 
-def _node_K(node: Any, default: int = 512) -> int:
-    """ノードの出力 shape 末尾次元を K の目安に（shape meta が無ければ既定）。"""
+def _node_K(node: Any, default: int = 512, gm: Any = None) -> int:
+    """縮約長 K の目安。優先順: Linear の `in_features` → shape meta → 既定。
+
+    `torch.fx.symbolic_trace` は tensor_meta を付けないので、従来は **常に既定 512**
+    に落ちていた（第 62 回の実測: K=64 の層に 512 が当たり √8≈2.8× の過大）。
+    `call_module` なら重みの形から K が **厳密に** 判るので、そちらを最優先にする。
+    """
+    if getattr(node, "op", None) == "call_module" and gm is not None:
+        try:
+            sub = gm.get_submodule(str(node.target))
+            k = getattr(sub, "in_features", None)
+            if k is not None:
+                return int(k)
+        except (AttributeError, KeyError, TypeError, ValueError):
+            pass
     meta = getattr(node, "meta", None) or {}
     tm = meta.get("tensor_meta") if isinstance(meta, dict) else None
     shape = getattr(tm, "shape", None) if tm is not None else None
@@ -129,7 +142,8 @@ def fx_to_graph_ops(gm: Any) -> list[GraphOp]:
         kind = _kind_of(resolved_target(node, gm))
         if kind is None:
             continue
-        ops.append(GraphOp(kind, K=_node_K(node)) if kind == "matmul" else GraphOp(kind))
+        ops.append(GraphOp(kind, K=_node_K(node, gm=gm)) if kind == "matmul"
+                   else GraphOp(kind))
     return ops
 
 
@@ -272,8 +286,9 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
     ad = Audit()
 
     p = AuditPhase("torch/FX 静的監査", "decided", Risk.INFO)
+    # 「予測」と書いていたが実測の 100〜1000 倍だった（第 62 回）。天井と呼ぶ。
     p.lines.append(f"{rep['n_ops']} numeric ops・増幅 op={rep['amplifiers']}・"
-                   f"モデル発散(予測)≈{rep['model_divergence']:.2e}"
+                   f"モデル発散(許容の天井)≈{rep['model_divergence']:.2e}"
                    + (f"（dominant={rep['dominant']}）" if rep.get("dominant") else ""))
     if rep.get("cond_measured"):
         p.lines.append(f"  sample 実測: scale={rep['sample_scale']:.3g}"
@@ -293,14 +308,87 @@ def audit_torch(gm: Any, *, ref_logits=None, sample=None,
                        " amp≈RMS/σ に増幅（sample 指定時は実測 cond に反映済み）")
     ad.phases.append(p)
 
+    # --- 実測: CPU 上で 2 ベンダーを模倣する（第 62 回） ---
+    # 第 61 回までこの経路の唯一の数値は静的伝播の `model_divergence` だった。実測と
+    # 突き合わせたところ **最悪クラスの 200 倍・典型の 1000 倍以上** 大きく、これは
+    # 「許容の天井」であって「予測」ではなかった。天井から導いた flip 上界は真だが
+    # 無情報で、楔ユーザーには毎回「フリップ率 ≤ 40〜80%」と出る——偽BLOCK が常態化
+    # すると、偽OK と同じく判定が信号を失う。降下した IR には既に実行可能な意味
+    # （`interp.evaluate`）があるので、`dot` をベンダー模倣に差し替えて **実測** する。
+    sim = None
+    sim_note = ""
+    if sample is not None:
+        try:
+            from .simulate import simulate_cross_vendor
+            sim = simulate_cross_vendor(gm, sample)
+            if sim is None:
+                sim_note = ("降下が partial か重みを束縛できないため模倣できない"
+                            "（0 で埋めず、天井のみで報告する）")
+        except Exception as exc:            # noqa: BLE001 - 模倣の失敗で監査を落とさない
+            sim_note = f"模倣に失敗: {type(exc).__name__}: {exc}"[:160]
+    else:
+        sim_note = "sample（代表入力）未指定 → 模倣は走らない"
+
+    ceiling = rep.get("model_divergence")
+    if sim is not None:
+        sp = AuditPhase("simulation CPU 2 ベンダー模倣", "decided", Risk.INFO)
+        sp.lines += sim.to_lines()
+        w = sim.worst
+        if w is not None and w.rel_divergence > 0 and ceiling:
+            ratio = ceiling / w.rel_divergence
+            sp.lines.append(f"  静的天井 δ={ceiling:.2e} は最悪クラス実測"
+                            f"（{w.name}: δ={w.rel_divergence:.2e}）の ×{ratio:.0f}")
+            if ratio >= 10.0:
+                sp.lines.append("  → 天井は *無情報*: 許容の上限であって予測ではない。"
+                                "判定は下の実測フリップで行う")
+        ad.phases.append(sp)
+    else:
+        sp = AuditPhase("simulation CPU 2 ベンダー模倣", "pending", Risk.INFO)
+        sp.lines.append(sim_note)
+        sp.lines.append("代表入力 sample= を渡すと、同じ IR を 2 ベンダーの matmul 意味論で"
+                        "走らせ、天井でなく実測の発散とフリップ率が出る。")
+        ad.phases.append(sp)
+
     # タスク影響: 利用者の予算だけが BLOCK の根拠（閾値を発明しない）
-    if rep.get("task_flip_bound") is not None:
+    sim_worst = sim.worst if sim is not None else None
+    if sim_worst is not None and sim_worst.n:
+        from tsugi.rollout import samples_for_flip_budget
+
+        # BLOCK は **観測されたフリップ** が予算を超えたときだけ。上界が超えるのは
+        # 「標本が足りない」であって「壊れている」ではない——それを BLOCK にすると
+        # n=256 のモデルは全部 BLOCK になり、また信号を失う。両者を別の深刻度で言う。
+        over = sim_worst.flip_rate > flip_budget
+        underpowered = (not over) and sim_worst.flip_rate_ub > flip_budget
+        dp = AuditPhase("decision タスク影響(実測)", "decided",
+                        Risk.BLOCK if over else (Risk.WARN if underpowered else Risk.INFO))
+        dp.lines.append(
+            f"実測フリップ率 {sim_worst.flip_rate * 100:.3f}%（上界 "
+            f"{sim_worst.flip_rate_ub * 100:.3f}%・最悪クラス {sim_worst.name}・"
+            f"n={sim_worst.n}）／予算 {flip_budget * 100:.3f}%")
+        if rep.get("task_flip_bound") is not None:
+            dp.lines.append(
+                f"  参考: 静的天井由来の上界 {rep['task_flip_bound'] * 100:.2f}% は"
+                "*許容の天井* であって予測ではない（判定には使わない）")
+        if over:
+            dp.lines.append("  予算超過（実測）→ ベンダー間でユーザーに見える判断が変わる")
+        elif underpowered:
+            need = samples_for_flip_budget(flip_budget)
+            dp.lines.append(
+                f"  [WARN] 観測は予算内だが n={sim_worst.n} では上界が予算を超える"
+                f"——この予算を統計的に主張するには 0 フリップで n≥{need} 要る"
+                "（標本不足であって不合格ではない）")
+        dp.lines.append("  模倣は既知の発散クラスのみ＝実機発散の *下界*。"
+                        "実機照合（audit_cross_vendor）で更新すること。")
+        ad.phases.append(dp)
+    elif rep.get("task_flip_bound") is not None:
         bound = rep["task_flip_bound"]
         over = bound > flip_budget
-        dp = AuditPhase("decision タスク影響(予測)", "decided",
+        dp = AuditPhase("decision タスク影響(天井)", "decided",
                         Risk.BLOCK if over else Risk.INFO)
         dp.lines.append(f"判断フリップ率 ≤ {bound * 100:.2f}%（予算 {flip_budget * 100:.2f}%）"
-                        "——第2ベンダー実行前・代表 logit 分布からの予測")
+                        "——静的伝播の *許容の天井* からの上界。予測ではない")
+        dp.lines.append("  実測は sample= を渡すと得られる（天井は実測の 100〜1000 倍に"
+                        "なりうるので、この行だけで出荷判断をしないこと）")
         if over:
             dp.lines.append("  予算超過 → このモデルはベンダー間でユーザーに見える判断が変わりうる")
         ad.phases.append(dp)

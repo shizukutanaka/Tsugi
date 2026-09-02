@@ -38,7 +38,7 @@
 |---|---|---|---|---|---|
 | A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
 | A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU)・手続きは完了 | 実機 GPU での end-to-end 検証がゼロ。**実機入手日に実行できる手順（`docs/GPU-BRINGUP.md`）と SAFETY 校正の機械的手続き（`calibration.calibrate_safety`・実機入口に接続済み）は完成**——残るのは実機そのもの |
-| A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出に加え、**`audit_torch` が FX グラフをゲート付き `Audit`（exit_code/to_text）で返す**——想定ユーザーが `tsugi.verify(gm)` 1 コールで出荷判断できる（不変条件 89）。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
+| A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出に加え、**`audit_torch` が FX グラフをゲート付き `Audit`（exit_code/to_text）で返す**——想定ユーザーが `tsugi.verify(gm)` 1 コールで出荷判断できる（不変条件 89）。さらに第62回で **CPU 2 ベンダー模倣**（`tsugi_torch.simulate`）を結線し、判定の根拠を静的な天井から実測フリップへ移した（不変条件 110）。同時に、代表入力がdynamo に持ち上げられた **重み行列** だった欠陥を修正（不変条件 111）。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
 | A-4 | ✅解消(L2) | — | `codegen.py` ／GPU codegen | dab5d4f+ | 実 PTX/AMDGCN 生成→アセンブル→符号化照合→ロード構造→LLVM と命令選択照合。**実行のみ実機待ち(L3)** |
 | A-5 | 不足 | — | `propagation.py` / `fxbridge._kind_of` | 解消済み(3a29b94) | **数値実験で前提が反転**: 正規化は「増幅しない」のでなく LayerNorm は平均優勢入力で amp≈RMS/σ に増幅。専用 kind(`layer_norm`増幅/`rms_norm`非増幅)を導入し旧警告の偽OK 主張を撤回。残: cond は入力 sample 実測で深部活性の分布シフト未追跡 |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |

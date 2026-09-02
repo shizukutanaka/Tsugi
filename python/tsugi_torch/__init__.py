@@ -11,6 +11,59 @@ from __future__ import annotations
 from typing import Any, Callable, List
 
 
+def _activation_input(example_inputs: List[Any]):
+    """dynamo の `example_inputs` から **活性**（本物の入力）を選ぶ。
+
+    第 62 回の発見: `example_inputs[0]` を代表入力として使っていたが、dynamo は
+    **重みを引数へ持ち上げる**ので先頭は `nn.Parameter` であることが多い。実際
+    `Sequential(Linear, LayerNorm, Softmax)` では
+
+        [Parameter(64,64), Parameter(64), Tensor(256,64), Parameter(64), Parameter(64)]
+
+    となり、A-3 で導入した「sample 実測: scale=…」は**重み行列の統計を活性の統計として
+    報告していた**（scale=0.0718 は重みのスケール）。実測と称して別のものを測るのは、
+    静的仮定を残すより悪い——利用者はそれを活性の実測だと読む。
+
+    活性は素の `Tensor`、持ち上げられた重みは `nn.Parameter` なので型で分けられる
+    （名前の綴り `L_args_0_` に頼らない——dynamo のバージョンで変わる）。
+    見つからなければ **None**（重みで代用しない）。
+    """
+    try:
+        from torch.nn import Parameter
+    except Exception:                       # noqa: BLE001 — torch 無し
+        return None
+    for t in example_inputs or ():
+        if isinstance(t, Parameter):
+            continue
+        detach = getattr(t, "detach", None)
+        if detach is None:
+            continue
+        return detach().cpu().numpy()
+    return None
+
+
+def _sim_inputs(example_inputs: List[Any], max_rows: int = 256) -> list:
+    """模倣へ渡す引数列（グラフの引数と同順・同数）を作る。
+
+    行数を切るのは活性だけ——重みを切ると行列積の形が壊れる。持ち上げられた重みは
+    `nn.Parameter` なので型で見分ける（`_activation_input` と同じ規律）。
+    """
+    try:
+        from torch.nn import Parameter
+    except Exception:                       # noqa: BLE001 — torch 無し
+        return []
+    out = []
+    for t in example_inputs or ():
+        detach = getattr(t, "detach", None)
+        if detach is None:
+            return []                       # 1 本でも配列化できなければ位置対応が壊れる
+        a = detach().cpu().numpy()
+        if not isinstance(t, Parameter) and getattr(a, "ndim", 0) >= 1:
+            a = a[:max_rows]
+        out.append(a)
+    return out
+
+
 def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
     """TorchDynamo から FX GraphModule を受け取り、Tsugi カーネルへ変換する。
 
@@ -42,9 +95,7 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         # 中央値の ~1000 倍に達しうるため、scale=1 のままでは認証 atol を桁で誤る。
         sample = None
         try:
-            first = example_inputs[0] if example_inputs else None
-            if first is not None:
-                sample = first.detach().cpu().numpy()
+            sample = _activation_input(example_inputs)
         except Exception:  # noqa: BLE001 — 取れなければ従来通り静的仮定で報告
             sample = None
         rep = audit_fx(gm, ref_logits=ref_logits, sample=sample)
@@ -54,8 +105,27 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         # scatter_add 等の atomicAdd 由来 op はグラフに数値 op（matmul/softmax 等）が
         # 無くても存在しうるため、n_ops==0 でも requires_noise_floor だけで警告を出す。
         if rep["n_ops"] or rep["requires_noise_floor"]:
-            task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%"
+            # 天井（静的伝播）でなく **実測** を第一に出す（第 62 回）。天井は実測の
+            # 100〜1000 倍になりうるので、これを "task_flip_bound" として単独で見せると
+            # 毎回「≤ 40〜80%」という無情報な警告になり、読む人が全体を無視する。
+            task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%（天井・予測ではない）"
                     if rep["task_flip_bound"] is not None else "")
+            try:
+                from .simulate import refusal_reason, simulate_cross_vendor
+                # dynamo は重みを引数へ持ち上げるので、**全引数を順に**渡す。1 本だけ
+                # 渡すと束縛が一意に決まらず（第 62 回）、諦めるか誤った実測になる。
+                _ins = _sim_inputs(example_inputs)
+                _sim = simulate_cross_vendor(gm, _ins) if _ins else None
+                _w = _sim.worst if _sim is not None else None
+                if _w is not None and _w.n:
+                    task = (f", 実測フリップ {_w.flip_rate * 100:.3f}%"
+                            f"（上界 {_w.flip_rate_ub * 100:.3f}%・最悪クラス {_w.name}・"
+                            f"n={_w.n}・CPU 2 ベンダー模倣＝実機発散の下界）" + task)
+                elif _ins:
+                    # 走らなかったことを黙らない（天井だけが残るとは利用者に見えない）
+                    task += f"（実測は未取得: {refusal_reason(gm, _ins)}）"
+            except Exception:  # noqa: BLE001 — 模倣は best-effort・警告は出し続ける
+                pass
             dyn = " [has_dynamic_shapes: per-shape 再検証が必要]" if rep["has_dynamic_shapes"] else ""
             nondet = (f" [non-deterministic: {rep['nondeterministic_ops']} → "
                      "noise floor 実測が必須（静的許容では不十分）]"

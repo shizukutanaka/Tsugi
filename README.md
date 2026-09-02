@@ -96,10 +96,18 @@ out = compiled(x)                        # 実行は eager 素通し（後述）
 
 ```
 [tsugi] verification-only (codegen は L2 まで検証済み・実行は eager 素通し):
-  4 numeric ops, amplifiers=['layer_norm', 'softmax'], model_divergence≈4.1e-01,
-  task_flip_bound≤81.8% … codegen: 呼び出し 3 件中 3 を IR へ降下し
-  3/3 ターゲットでアセンブル検証。実行は未検証（要実機）
+  3 numeric ops, amplifiers=['layer_norm', 'softmax'], model_divergence≈5.1e-01,
+  実測フリップ 0.000%（上界 1.046%・最悪クラス order・n=256・CPU 2 ベンダー模倣
+  ＝実機発散の下界）, task_flip_bound≤55.1%（天井・予測ではない）
+  … codegen: 呼び出し 3 件中 3 を IR へ降下し 3/3 ターゲットでアセンブル検証。
+  実行は未検証（要実機）
 ```
+
+**なぜ数字が 2 つあるのか**: `model_divergence` は静的伝播が出す **許容の天井**で、
+どのモデルでも大きく出る（実測の 100〜1000 倍になりうる）。判断に使うのは
+**実測**のほう——同じ降下 IR を CPU で「2 ベンダー」として走らせ、既知の発散クラス
+（累積順序・f16 累積・TF32 入力・RTZ 丸め）ごとに測った値である。実測は既知クラス
+しか含まないので**実機発散の下界**、天井は上界で、真値はその間にある。
 
 **なぜ実行は eager のままか**: 生成した機械語は L2（ベンダーのアセンブラが受理・
 意図どおり符号化・ローダの形）までしか検証されておらず、走らせて正しい保証が無い。

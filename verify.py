@@ -1349,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-109: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-111: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -2719,6 +2719,105 @@ def _check_meta_integrity() -> None:
           not (_seen109 - set(_CAT108) - _META109)
           and "torch/FX" in _CAT108            # 楔ユーザー経路の層が目録にある
           and _META109 == {"runtime", "coverage"})
+
+    # 110. **天井を予測と呼ばない**（第 62 回・本ラウンド最大の発見）。楔ユーザーが
+    #      受け取る唯一の数値は静的伝播の `model_divergence` とそこから導いた flip 上界
+    #      だったが、同じモデルを CPU で 2 ベンダーとして走らせて実測すると、静的値は
+    #      最悪クラスの **200 倍・典型の 1000 倍以上**。伝播モデルは格納 dtype `u(fp16)`
+    #      を発散単位にするが、両ベンダーが f32 累積なら差は `u(f32)` スケール（2¹³ 倍
+    #      小さい）——構造的な乖離であって調整では消えない。真だが無情報な上界で毎回
+    #      BLOCK を出すと、**偽BLOCK の常態化**は偽OK と同じく判定を信号でなくする。
+    #      よって: (a) 判定は実測フリップに基づく、(b) 天井はそう名乗る、(c) 標本不足は
+    #      BLOCK でなく WARN として要求標本数つきで言う、を固定する。
+    from tsugi.rollout import samples_for_flip_budget as _sfb110
+    _src110 = (ROOT / "python" / "tsugi_torch" / "fxbridge.py").read_text(encoding="utf-8")
+    _sim110 = (ROOT / "python" / "tsugi_torch" / "simulate.py").read_text(encoding="utf-8")
+    _meas110 = None
+    try:
+        import torch as _t110
+
+        from tsugi_torch.fxbridge import audit_fx as _afx110
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv110
+        _t110.manual_seed(0)
+        _m110 = _t110.nn.Sequential(_t110.nn.Linear(64, 64), _t110.nn.LayerNorm(64),
+                                    _t110.nn.GELU(approximate="tanh"),
+                                    _t110.nn.Linear(64, 32))
+        _g110 = _t110.fx.symbolic_trace(_m110)
+        _x110 = _t110.randn(256, 64).numpy()
+        _s110 = _scv110(_g110, _x110)
+        _ceil110 = _afx110(_g110, sample=_x110)["model_divergence"]
+        _ad110 = _at89(_g110, ref_logits=_m110(_t110.from_numpy(_x110)).detach().numpy(),
+                       sample=_x110)
+        _dec110 = next(p for p in _ad110.phases if p.name.startswith("decision"))
+        _meas110 = (_s110 is not None and _s110.worst is not None
+                    and _s110.worst.rel_divergence > 0.0
+                    # 天井は実測より桁違いに大きい（これが「予測でない」ことの実証）
+                    and _ceil110 / _s110.worst.rel_divergence > 10.0
+                    and "(実測)" in _dec110.name              # 判定が実測に基づく
+                    and _ad110.exit_code < 2                  # 実測 0 なら BLOCK しない
+                    and any("n≥" in ln for ln in _dec110.lines)   # 要求標本数を出す
+                    and any(p.name.startswith("simulation") for p in _ad110.phases))
+    except Exception:                                  # noqa: BLE001
+        _meas110 = None                                # torch 無し: 主張しない
+    check("the wedge user's gate fires on measured flips, and the static value calls itself a ceiling",
+          "simulate_cross_vendor" in _src110           # 模倣が製品経路に結線されている
+          and "sim_worst.flip_rate > flip_budget" in _src110   # BLOCK は実測点推定から
+          and "flip_rate_ub" in _src110 and "samples_for_flip_budget" in _src110
+          and "許容の天井" in _src110 and "予測ではない" in _src110
+          and "下界" in _sim110                        # 模倣が実機の下界だと黙らない
+          and "simulation" in _CAT108                  # 目録に載る（黙って落ちない）
+          # 要求標本数は上界式そのものの反転（rule of three 定数を書き込まない）
+          and _sfb110(0.001) > 256 and _sfb110(0.01) < _sfb110(0.001)
+          and _sfb110(0.0) >= 10 ** 7
+          and (_meas110 is None or _meas110 is True))
+
+    # 111. **「実測」と称して別のものを測っていた**（第 62 回・110 を実装中に発見）。
+    #      dynamo は重みを引数へ *持ち上げる* ので `example_inputs[0]` は `nn.Parameter`
+    #      であることが多い。それを代表入力として `audit_fx(sample=…)` に渡していたため、
+    #      A-3 の「sample 実測: scale=…」は活性でなく **重み行列**の統計を報告していた
+    #      （実測 scale=0.0718 は重みのスケール・活性は 1.01）。同じ根で模倣の束縛も
+    #      壊れる: 持ち上げられた重みは `input:` 記述子になり `named_parameters()` は
+    #      空になるので、代表入力 1 本を全記述子へ配ると重みの位置に活性が入る。
+    #      **実測と称して別のものを測るのは、静的仮定を残すより悪い。**
+    _sim111 = (ROOT / "python" / "tsugi_torch" / "simulate.py").read_text(encoding="utf-8")
+    _init111 = _src101
+    _dyn111 = None
+    try:
+        import torch as _t111
+        import torch._dynamo as _dy111
+
+        from tsugi_torch import _activation_input as _ai111
+        from tsugi_torch import _sim_inputs as _si111
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv111
+        _seen111 = []
+
+        def _spy111(gm, ex):
+            _seen111.append((gm, ex))
+            return gm.forward
+
+        _dy111.reset()
+        _t111.manual_seed(0)
+        _m111 = _t111.nn.Sequential(_t111.nn.Linear(64, 64), _t111.nn.LayerNorm(64),
+                                    _t111.nn.Softmax(-1))
+        _t111.compile(_m111, backend=_spy111)(_t111.randn(300, 64))
+        _g111, _ex111 = _seen111[0]
+        _act111 = _ai111(_ex111)
+        _ins111 = _si111(_ex111, max_rows=256)
+        _s111 = _scv111(_g111, _ins111)
+        _dyn111 = (
+            isinstance(_ex111[0], _t111.nn.Parameter)      # 前提: 重みが持ち上がる
+            and _act111 is not None and _act111.shape == (300, 64)   # 活性を選ぶ
+            and _scv111(_g111, _act111) is None            # 1 本では諦める（誤測しない）
+            and _ins111[0].shape == (64, 64)               # 重みの行は切らない
+            and _s111 is not None and _s111.n_samples == 256)   # 標本数は出力の行数
+    except Exception:                                  # noqa: BLE001
+        _dyn111 = None                                 # torch 無し: 主張しない
+    check("the wedge path measures an activation, never a lifted weight",
+          "Parameter" in _init111                      # 型で活性と重みを分ける
+          and "_activation_input" in _init111 and "_sim_inputs" in _init111
+          and "同じテンソルを複数の記述子に当てない" in _sim111
+          and "refusal_reason" in _sim111 and "refusal_reason" in _init111
+          and (_dyn111 is None or _dyn111 is True))
 
     check("the documented entry point torch.compile(backend='tsugi') states today's truth",
           "no codegen yet" not in _src101              # 古い虚偽が残っていない
