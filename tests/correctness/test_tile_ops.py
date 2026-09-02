@@ -19,10 +19,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-import tsugi  # noqa: E402
 from tsugi import tile  # noqa: E402
 from tsugi.runtime_ref import Tensor  # noqa: E402
-from tsugi.dtypes import DType, constexpr, float16, float32  # noqa: E402
+from tsugi.dtypes import constexpr, float16, float32  # noqa: E402
 
 
 def test_sqrt_matches_numpy():

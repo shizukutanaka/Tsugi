@@ -44,6 +44,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 # tol の何倍を超えたら WARN → BLOCK に格上げするか。
@@ -61,8 +63,8 @@ _RATIO_THRESHOLD_TIED: float = 2.0
 def accuracy_relative(out: np.ndarray | Sequence, oracle: np.ndarray | Sequence,
                       *, eps: float = 1e-30) -> float:
     """output の oracle に対する相対距離。max|out − oracle| / (max|oracle| + ε)。"""
-    out = np.asarray(out, dtype=np.float64)
-    ref = np.asarray(oracle, dtype=np.float64)
+    out = asarray(out, dtype=np.float64)
+    ref = asarray(oracle, dtype=np.float64)
     if not out.size:
         return 0.0
     num = float(np.max(np.abs(out - ref)))
@@ -101,9 +103,9 @@ def compare_accuracy(a: np.ndarray | Sequence, b: np.ndarray | Sequence,
     oracle_check.verify_oracle で oracle の健全性を事前確認してから呼ぶこと推奨。
     attribution.spike（どの層）と組み合わせて "どの層の、どちらのベンダーの実装か" を特定。
     """
-    a_arr = np.asarray(a, dtype=np.float64)
-    b_arr = np.asarray(b, dtype=np.float64)
-    ref = np.asarray(oracle, dtype=np.float64)
+    a_arr = asarray(a, dtype=np.float64)
+    b_arr = asarray(b, dtype=np.float64)
+    ref = asarray(oracle, dtype=np.float64)
 
     if relative:
         dist_a = accuracy_relative(a_arr, ref)
@@ -189,15 +191,15 @@ def layer_blame(layers_a: Sequence[Callable], layers_b: Sequence[Callable],
         spike = find_spike([d[0] + d[1] for d in dists])  # 合計が最大の層
         print(f"layer {spike}: A={dists[spike][0]:.2e}, B={dists[spike][1]:.2e}")
     """
-    xa = np.asarray(x, dtype=np.float64)
+    xa = asarray(x, dtype=np.float64)
     xb = xa.copy()
     xref = xa.copy()
     result: list[tuple[float, float]] = []
 
     for la, lb, lref in zip(layers_a, layers_b, layers_oracle):
-        xa = np.asarray(la(xa), dtype=np.float64)
-        xb = np.asarray(lb(xb), dtype=np.float64)
-        xref = np.asarray(lref(xref), dtype=np.float64)
+        xa = asarray(la(xa), dtype=np.float64)
+        xb = asarray(lb(xb), dtype=np.float64)
+        xref = asarray(lref(xref), dtype=np.float64)
         if relative:
             da = accuracy_relative(xa, xref)
             db = accuracy_relative(xb, xref)

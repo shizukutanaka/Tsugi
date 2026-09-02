@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import Risk  # 検証層共通の深刻度モデル
 
 # dtype 別の許容誤差（BENCHMARK.md §4 と整合）。
@@ -134,8 +136,8 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
       DIVERGENT  : multiset も不一致 → 真の数値発散
     LAYOUT は transpose/再タイルで修正可能 —— 数値検証の対象でなく codegen の整列問題。
     """
-    af = np.asarray(a)
-    bf = np.asarray(b)
+    af = asarray(a)
+    bf = asarray(b)
     if af.shape == bf.shape and compare_gemm(af, bf, K, dtype).equivalent:
         return DV_EQUIVALENT
     fa = af.reshape(-1)
@@ -148,8 +150,8 @@ def classify_divergence(a: np.ndarray, b: np.ndarray, K: int,
 
 
 def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> EquivalenceReport:
-    a_raw = np.asarray(a)
-    b_raw = np.asarray(b)
+    a_raw = asarray(a)
+    b_raw = asarray(b)
     # 形状不一致を最初に検査する。NumPy の暗黙 broadcast（例 (64,1) と (64,64)・
     # スカラと行列）に頼って比較すると、方向次第で偽 DIVERGENT にも偽 OK にもなりうる
     # （broadcast された片方の値が他方に「たまたま」一致すれば equivalent=True になる）。
@@ -185,22 +187,135 @@ def _compare_with(a: np.ndarray, b: np.ndarray, atol: float, rtol: float) -> Equ
 
 # --- 擬似ベンダー生成（検出器テスト用・シミュレーション） ------------------
 
+# テンサーコアの入力仮数ビット数（クロスベンダー精度ポリシー差の一次資料）。
+# TF32 は NVIDIA Ampere+ のハイブリッド形式（1 符号 + 8 指数 + 10 仮数 = 19bit）。AMD ROCm は
+# TF32 非対応。bf16 入力（7 仮数）も両ベンダーで扱いが違いうる。"ieee" は truncation なし。
+# 仮数ビット数は IEEE/NVIDIA のフォーマット定義そのもの（発明した係数でない）。
+_TENSORCORE_MANTISSA_BITS: dict[str, int] = {"ieee": 23, "tf32": 10, "bf16": 7}
+
+
+def truncate_to_tensorcore(x: np.ndarray, precision: str = "ieee",
+                           rounding: str = "rne") -> np.ndarray:
+    """fp32 入力をテンサーコアの縮小仮数へ丸める（フォーマット準拠）。
+
+    TF32（10 仮数）/bf16（7 仮数）はテンサーコアが *入力* を丸めてから積和する経路を持つ。
+    これは累積順序差とは *別の* クロスベンダー発散源: 相対誤差 ≤ 2^-(仮数+1) で、実測でも
+    max rel err が TF32=4.88e-4=2^-11・bf16=3.91e-3=2^-8 とフォーマット定義に一致する。
+
+    rounding: "rne"（round-to-nearest-even・既定・**ゼロ平均**）/ "rtz"（round-toward-zero
+      ＝仮数の切り捨て・**系統的に |値| を縮める＝バイアスあり**）。NVIDIA テンサーコアの
+      丸め挙動は実装定義で、RTZ 系の経路が報告されている（Fasi/Higham/Mikaitis/Pranesh,
+      PeerJ CS 7:e330, 2021）。片ベンダーが RTZ・他方が RNE なら *系統* 発散になり、
+      calibration.check_systematic（RMS 比）が捕まえる（max_abs だけでは見逃す偽OK）。
+      これは入力精度差・累積順序差（どちらもゼロ平均）とは第 3 の質的に異なる発散クラス。
+    """
+    mant = _TENSORCORE_MANTISSA_BITS.get(precision, 23)
+    if mant >= 23:
+        return asarray(x, dtype=np.float32)
+    xi = asarray(x, dtype=np.float32).view(np.int32)
+    drop = 23 - mant
+    trunc = (xi >> drop) << drop                    # 低位ビット切り捨て = ゼロ方向（RTZ）
+    if rounding == "rtz":
+        return trunc.view(np.float32)               # 仮数を縮める＝|値| が系統的に減る
+    half = np.int32(1 << (drop - 1))
+    mask = np.int32((1 << drop) - 1)
+    rem = xi & mask
+    lsb = (trunc >> drop) & 1                        # RNE: 端数がちょうど半分なら偶数へ
+    roundup = (rem > half) | ((rem == half) & (lsb == 1))
+    trunc = trunc + (roundup.astype(np.int32) << drop)
+    return trunc.view(np.float32)
+
+
 def simulate_vendor_matmul(a: np.ndarray, b: np.ndarray, *,
-                           accum: str = "f32", split_k: int = 1) -> np.ndarray:
+                           accum: str = "f32", split_k: int = 1,
+                           input_precision: str = "ieee",
+                           input_rounding: str = "rne") -> np.ndarray:
     """異なるベンダーの数値挙動を擬似再現する（CPU・テスト専用）。
 
     accum="f16": fp16 で累積（一部 GPU 経路を模す・誤差大）
     split_k>1: K を分割して部分和を別精度で合算（累積順序差を模す）
+    input_precision="tf32"/"bf16": テンサーコアの縮小仮数へ入力を丸めてから積和する
+      （NVIDIA TF32 vs AMD IEEE のような *精度ポリシー* 差を模す・累積順序差とは別源）。
+    input_rounding="rtz": 入力仮数を round-toward-zero で丸める（既定 "rne" はゼロ平均だが
+      RTZ は |値| を系統的に縮める＝バイアス源。丸めモード差は第 3 の発散クラス）。
     これは *シミュレーション*。実 GPU の値ではない（主張と実装の一致）。
     """
     M, K = a.shape
     K2, N = b.shape
     assert K == K2
+    if input_precision == "tf32x3":
+        # 3xTF32（Triton input_precision="tf32x3" / CUTLASS 3xTF32）: 各 fp32 を hi+lo の
+        # 2 TF32 成分に分割し、a_hi·b_hi + a_hi·b_lo + a_lo·b_hi の 3 項で積む（lo·lo は落とす）。
+        # TF32 テンサーコアから ~fp32 精度を復元する誤差補正——TF32 発散の *緩和策* であり、
+        # 精度ポリシー選択（ieee/tf32/tf32x3）の一つ（Ootomo & Yokota 2022, arXiv:2203.03341）。
+        a32 = asarray(a, dtype=np.float32)
+        b32 = asarray(b, dtype=np.float32)
+        a_hi = truncate_to_tensorcore(a32, "tf32", input_rounding)
+        a_lo = truncate_to_tensorcore(a32 - a_hi, "tf32", input_rounding)
+        b_hi = truncate_to_tensorcore(b32, "tf32", input_rounding)
+        b_lo = truncate_to_tensorcore(b32 - b_hi, "tf32", input_rounding)
+        def _mm(x, y):
+            return simulate_vendor_matmul(x, y, accum=accum, split_k=split_k)
+        return _mm(a_hi, b_hi) + _mm(a_hi, b_lo) + _mm(a_lo, b_hi)
+    af = truncate_to_tensorcore(a, input_precision, input_rounding)
+    bf = truncate_to_tensorcore(b, input_precision, input_rounding)
     acc_dtype = np.float16 if accum == "f16" else np.float32
     out = np.zeros((M, N), dtype=np.float32)
     step = max(1, K // split_k)
     for k0 in range(0, K, step):
         k1 = min(k0 + step, K)
-        partial = (a[:, k0:k1].astype(np.float32) @ b[k0:k1, :].astype(np.float32))
+        partial = (af[:, k0:k1].astype(np.float32) @ bf[k0:k1, :].astype(np.float32))
         out += partial.astype(acc_dtype).astype(np.float32)
     return out
+
+
+def precision_policy_hint(a: np.ndarray, b: np.ndarray, K: int,
+                          dtype: str = "float32") -> str | None:
+    """fp32 系のクロス発散が「TF32 精度ポリシー差」の *兆候* かを判定する（診断ヒント）。
+
+    NVIDIA は fp32 GEMM を既定で TF32 に落としうる（PyTorch 2.9 `fp32_precision`・
+    FlexAttention の ieee→tf32 回帰の実例）。AMD は TF32 非対応。よって fp32 の「同一モデル」が
+    ベンダー間で ~2^-11 相対だけ食い違うことがある —— これは *バグでなく既知の精度ポリシー差*。
+    LAYOUT 判定（multiset 一致）が確証なのに対し、これは **magnitude ベースの弱いヒント**:
+      - fp32 の累積順序差（√K·u_fp32）では説明できないほど大きい（> 3× fp32 floor）
+      - かつ TF32 入力精度（safety·u_tf32・K 非依存）の範囲内（バグなら通常もっと大きい）
+    両ベンダーが fp32 なら fp32_precision='ieee' でピンするか dtype='tf32' 許容を使うべき、を促す。
+    """
+    if dtype not in ("float32", "tf32"):
+        return None
+    from .constants import SAFETY
+    from .tolerance import unit_roundoff
+    af = asarray(a, dtype=np.float64)
+    bf = asarray(b, dtype=np.float64)
+    denom = float(np.linalg.norm(af) + 1e-30)
+    r = float(np.linalg.norm(af - bf) / denom)
+    fp32_floor = SAFETY * (max(1, K) ** 0.5) * unit_roundoff("float32")
+    tf32_band = input_precision_divergence("tf32")   # safety·u_tf32（K 非依存の入力精度発散）
+    if r > 3.0 * fp32_floor and r <= tf32_band:
+        return (f"精度ポリシー差の疑い: 相対発散 {r:.2e} は fp32 累積（≲{fp32_floor:.1e}）では"
+                f"説明できず TF32 入力精度（~2^-11・K 非依存）の範囲内。NVIDIA(TF32) vs "
+                "AMD(IEEE) の既定差かもしれない（PyTorch 2.9 fp32_precision）→ "
+                "fp32_precision='ieee' でピンするか dtype='tf32' 許容を使え（バグでない可能性）")
+    return None
+
+
+def input_precision_divergence(precision: str, scale: float = 1.0,
+                               safety: float = None) -> float:
+    """テンサーコア入力精度差で正当に生じるクロスベンダー相対発散（**K 非依存**）。
+
+    重要な区別: 累積順序差の発散は √K·u で深さとともに増える（expected_gemm_abs_error）が、
+    入力仮数の丸めは各要素の *相対* 摂動なので、和をとっても相対発散は ~u のまま
+    **K に依らず一定**（実測: TF32 で K=256/2048/8192 いずれも相対 ~2.9e-4）。両オペランドが
+    それぞれ u まで丸まるため worst-case は ~2u、safety·u を保守的上界とする。
+    片ベンダーが TF32/bf16・他方が IEEE のときの発散の目安（PyTorch 2.9 fp32_precision）。
+    """
+    from .constants import SAFETY
+    from .tolerance import unit_roundoff
+    s = SAFETY if safety is None else safety
+    if precision == "tf32x3":
+        # 3xTF32 は lo·lo 項を落とすので残差は ~u_tf32²（~2⁻²²・fp32 に肉薄）。実測 ~5e-7 を
+        # safety·u_tf32² が保守的に覆う。TF32 発散の緩和策＝精度ポリシー選択の一つ。
+        u = unit_roundoff("tf32")
+        return s * u * u * scale
+    return s * unit_roundoff("tf32" if precision == "tf32" else
+                             "bfloat16" if precision == "bf16" else "float32") * scale

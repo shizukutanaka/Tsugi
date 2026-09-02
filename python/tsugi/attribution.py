@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 from .blame import _RATIO_THRESHOLD_TIED
 
@@ -59,12 +61,12 @@ def layer_divergences(layers_a: Sequence[Callable], layers_b: Sequence[Callable]
     返り値: len(layers_a) の発散リスト。インデックス i は第 i 層出力での発散。
     長さが合わない場合は短い方に揃える（ユーザーの誤指定を許容）。
     """
-    xa = np.asarray(x, dtype=np.float64)
+    xa = asarray(x, dtype=np.float64)
     xb = xa.copy()
     divs = []
     for la, lb in zip(layers_a, layers_b):
-        xa = np.asarray(la(xa), dtype=np.float64)
-        xb = np.asarray(lb(xb), dtype=np.float64)
+        xa = asarray(la(xa), dtype=np.float64)
+        xb = asarray(lb(xb), dtype=np.float64)
         num = float(np.max(np.abs(xa - xb))) if xa.size else 0.0
         if relative:
             divs.append(num / (float(np.max(np.abs(xa))) + 1e-30) if xa.size else 0.0)
@@ -316,8 +318,8 @@ def bisect_onset(fn_prefix_a: Callable[[int, np.ndarray | Sequence], np.ndarray]
         return None
 
     def div_at(i: int) -> float:
-        xa = np.asarray(fn_prefix_a(i, x), dtype=np.float64)
-        xb = np.asarray(fn_prefix_b(i, x), dtype=np.float64)
+        xa = asarray(fn_prefix_a(i, x), dtype=np.float64)
+        xb = asarray(fn_prefix_b(i, x), dtype=np.float64)
         num = float(np.max(np.abs(xa - xb))) if xa.size else 0.0
         if relative:
             return num / (float(np.max(np.abs(xa))) + 1e-30) if xa.size else 0.0

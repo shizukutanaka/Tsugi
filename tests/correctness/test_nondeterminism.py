@@ -18,10 +18,13 @@ from tsugi.nondeterminism import (  # noqa: E402
     INDISTINGUISHABLE,
     attribute,
     classify_nondeterminism,
+    collect_runs,
     compare_stable,
     measure_batch_variance,
     measure_noise_floor,
+    noise_floor_from_runs,
     nondeterminism_reason,
+    pair_deviations,
     op_is_nondeterministic,
     simulate_batch_variant_reduction,
     simulate_nondeterministic_reduction,
@@ -244,6 +247,43 @@ def test_compare_stable_reports_runs_needed_when_indistinguishable():
         assert ("run を平均すれば分離可能" in txt) or ("差が無い" in txt), txt
 
 
+def test_pair_deviations_samples_pair_differences_not_center_deviations():
+    """校正標本は「run 対の差」であって「中心からの偏差」ではない（単位の一致）。
+
+    等価判定が比較するのは max|a-b|（2 つの単発 run の差）。もし校正標本に
+    中心（平均/中央値）からの偏差を使うと、測る量が比較される量の約半分になり、
+    要求 SAFETY を系統的に約 2 倍過小評価する ——「許容は十分」と誤って言う
+    偽OK 方向の誤り。ここでは既知の分布（±d の 2 値）で両者の比を固定する。
+    """
+    d = 3.0
+    stack = np.stack([np.full((4,), -d if i % 2 == 0 else d) for i in range(8)])
+
+    pairs = pair_deviations(stack)
+    assert pairs.shape == (4,), f"重ならない対 floor(8/2)=4 個のはずが {pairs.shape}"
+    assert np.allclose(pairs, 2 * d), f"対の差は 2d={2 * d} のはず: {pairs}"
+
+    center_dev = float(np.abs(stack - stack.mean(axis=0)).max())
+    assert np.isclose(center_dev, d)
+    assert np.allclose(pairs, 2 * center_dev), \
+        "中心偏差は対の差の半分——校正に使うと要求 SAFETY を 2 倍過小評価する"
+
+    # 対が作れない（run が 1 本）なら空を返す（0 を「揺れなし」と誤らせない）
+    assert pair_deviations(stack[:1]).size == 0
+
+
+def test_noise_floor_from_runs_matches_measure_noise_floor():
+    """スタック再利用版が従来の再実行版と同じ床を出す（実機 run を二度走らせない）。"""
+    def run(s):
+        return np.random.default_rng(1234 + s).standard_normal((4, 8))
+
+    stack = collect_runs(run, n_runs=8)
+    assert stack.shape == (8, 4, 8)
+    reused = noise_floor_from_runs(stack)
+    fresh = measure_noise_floor(run, n_runs=8)
+    for key in ("spread", "spread_robust", "std", "rel", "n_runs"):
+        assert np.isclose(reused[key], fresh[key]), f"{key}: {reused[key]} vs {fresh[key]}"
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -264,6 +304,8 @@ def main() -> int:
         test_classify_nondeterminism_requires_noise_floor,
         test_runs_to_resolve_turns_indistinguishable_into_a_next_step,
         test_compare_stable_reports_runs_needed_when_indistinguishable,
+        test_pair_deviations_samples_pair_differences_not_center_deviations,
+        test_noise_floor_from_runs_matches_measure_noise_floor,
     ]
     for t in tests:
         try:

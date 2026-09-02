@@ -26,6 +26,8 @@ from statistics import NormalDist
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 _INF_LEN = 2 ** 62   # safe_generation_length の実質 ∞（int で扱える上限・p=0 用）
@@ -79,6 +81,36 @@ def flip_rate_upper_bound(flips: int, n_samples: int, confidence: float = 0.95) 
     center = phat + z2 / (2.0 * n_samples)
     margin = z * math.sqrt(phat * (1.0 - phat) / n_samples + z2 / (4.0 * n_samples ** 2))
     return min(1.0, (center + margin) / denom)
+
+
+def samples_for_flip_budget(budget: float, *, confidence: float = 0.95,
+                            max_n: int = 10 ** 7) -> int:
+    """フリップ 0 を観測したとき上界を `budget` 以下にできる最小サンプル数 n。
+
+    「0 件観測 → 上界 1.05%」のような小標本の無力さを **具体的な要求数** に翻訳する。
+    これが無いと、上界が予算を超えるたびに BLOCK を出すだけで「どうすれば通るのか」が
+    利用者に見えない——偽BLOCK が常態化すると、偽OK と同じく判定が信号を失う（第 62 回）。
+
+    上界は `flip_rate_upper_bound` そのものを二分探索で反転させて求める（rule of three
+    の近似 3/budget を定数として書き込むのでなく、実装済みの上界式に問う）。
+    `budget<=0` は達成不能なので `max_n` を返す（黙って小さい数を返さない）。
+    """
+    if budget <= 0.0:
+        return max_n
+    if flip_rate_upper_bound(0, 1, confidence) <= budget:
+        return 1
+    lo, hi = 1, 2
+    while hi < max_n and flip_rate_upper_bound(0, hi, confidence) > budget:
+        lo, hi = hi, hi * 2
+    if hi >= max_n:
+        return max_n
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if flip_rate_upper_bound(0, mid, confidence) <= budget:
+            hi = mid
+        else:
+            lo = mid
+    return hi
 
 
 def divergence_step_quantile(flip_rate: float, q: float = 0.5) -> float:
@@ -166,8 +198,8 @@ def _per_token_flips(logits_a: np.ndarray, logits_b: np.ndarray, decode: str,
     """
     from .decision import decision_flips, nucleus_flip_rate, topk_flip_rate
 
-    a = np.asarray(logits_a)
-    b = np.asarray(logits_b)
+    a = asarray(logits_a)
+    b = asarray(logits_b)
     if decode == "greedy":
         flips = decision_flips(a, b)
         return int(flips.size), int(flips.sum())
@@ -181,12 +213,25 @@ def _per_token_flips(logits_a: np.ndarray, logits_b: np.ndarray, decode: str,
     return n, int(round(rate * n))
 
 
+_BEAM_UNCERTIFIABLE = (
+    "beam(k={k}) は静的な代表 logit からは *証明可能に* 認証できない。per-token フリップ率を "
+    "(1−p)^L で系列へ合成する既存の合成則は beam に不健全: (1) argmax フリップを p にすると "
+    "beam が過渡的発散を復元するため survival を過小評価し偽OK（実測: L=20 で実 survival が "
+    "合成の 50〜95 倍）、(2) beam frontier(top-k 集合)フリップを p にすると復元を無視して "
+    "過度に悲観的（k=16 で p≈0.997・実質全 BLOCK）。beam は各ステップ argmax でなく *累積* "
+    "対数尤度で仮説を並べ替えるため、per-token 独立合成の前提が崩れる。ここでは greedy 合成を "
+    "**経験的下界の参考値**として返す（数値実験で beam survival ≥ greedy survival が全 k/L/ε で "
+    "成立・docs/SOURCES.md）が、これは *証明* でなく傾向なので verdict は OK にしない（fail-safe）。"
+    "真の beam 認証には系列レベルの beam decode（モデル状態が要る実行時活動）が必要。")
+
+
 def rollout_from_logits(logits_a: np.ndarray, logits_b: np.ndarray,
                         target_length: int, *, confidence: float = 0.99,
                         conservative: bool = True,
                         sample_confidence: float = 0.95,
                         decode: str = "greedy", topk: int = 5,
-                        top_p: float = 0.9, temperature: float = 1.0) -> RolloutReport:
+                        top_p: float = 0.9, temperature: float = 1.0,
+                        beam_width: int = 4) -> RolloutReport:
     """代表 logit 群から per-token フリップ率を測り、生成長 L へ合成する。
 
     `conservative=True`（既定）: 観測フリップ率の点推定でなく **上側信頼限界**
@@ -199,12 +244,23 @@ def rollout_from_logits(logits_a: np.ndarray, logits_b: np.ndarray,
       - "greedy" : argmax フリップ率（貪欲デコード）
       - "topk"   : top-k 候補集合フリップ率（k=`topk`）
       - "nucleus": top-p 集合フリップ率（`top_p`/`temperature`・確率依存）
+      - "beam"   : beam 探索（幅 `beam_width`）。**静的 logit からは証明可能に認証できない**
+        ため、greedy 合成を経験的下界の参考値として返しつつ verdict を必ず WARN 以上に
+        する（never OK）。詳細は `_BEAM_UNCERTIFIABLE`／docs/SOURCES.md。
 
     仮定: 渡した logit は生成中の代表的ステップ群で、フリップ率は定常（位置に依らず一定）。
     分布シフト時は再評価が要る（provenance/decision と同じ前提）。
     `survival` は *完全トークン一致* の確率（厳格な下界）であり、意味的に等価な別文は
     「発散」に数える —— task 等価より厳しい側に倒す指標である点に注意。
     """
+    if decode == "beam":
+        # beam は per-token 独立合成が不健全（累積対数尤度で並べ替え・過渡発散を復元）。
+        # greedy を経験的下界の *参考値* として出すが、証明でないので OK にはしない。
+        n, kf = _per_token_flips(logits_a, logits_b, "greedy", topk, top_p, temperature)
+        p = flip_rate_upper_bound(kf, n, sample_confidence) if conservative else (kf / n if n else 0.0)
+        rep = analyze_rollout(p, target_length, confidence=confidence)
+        rep.add(Risk.WARN, "beam", _BEAM_UNCERTIFIABLE.format(k=beam_width))
+        return rep
     n, k = _per_token_flips(logits_a, logits_b, decode, topk, top_p, temperature)
     p = flip_rate_upper_bound(k, n, sample_confidence) if conservative else (k / n if n else 0.0)
     return analyze_rollout(p, target_length, confidence=confidence)

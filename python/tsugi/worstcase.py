@@ -34,13 +34,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 
 def divergence(fn_a, fn_b, x, *, relative: bool = True) -> float:
     """入力 x における 2 ベンダー出力の発散（既定は相対・最大絶対差／出力規模）。"""
-    a = np.asarray(fn_a(x), dtype=np.float64)
-    b = np.asarray(fn_b(x), dtype=np.float64)
+    a = asarray(fn_a(x), dtype=np.float64)
+    b = asarray(fn_b(x), dtype=np.float64)
     num = float(np.max(np.abs(a - b))) if a.size else 0.0
     if relative:
         return num / (float(np.max(np.abs(a))) + 1e-30) if a.size else 0.0
@@ -51,8 +53,8 @@ def _box(x0: np.ndarray, radius: float, bounds):
     """探索領域（＝認証エンベロープ）。bounds 明示か、無ければ x0 を中心に相対 radius。"""
     if bounds is not None:
         lo, hi = bounds
-        return (np.broadcast_to(np.asarray(lo, dtype=np.float64), x0.shape).copy(),
-                np.broadcast_to(np.asarray(hi, dtype=np.float64), x0.shape).copy())
+        return (np.broadcast_to(asarray(lo, dtype=np.float64), x0.shape).copy(),
+                np.broadcast_to(asarray(hi, dtype=np.float64), x0.shape).copy())
     span = radius * (float(np.max(np.abs(x0))) + 1e-12)
     return x0 - span, x0 + span
 
@@ -66,7 +68,7 @@ def search_worst_input(fn_a, fn_b, x0, *, radius: float = 1.0, steps: int = 400,
     (x_worst, div_worst) は seed 固定で再現する反例。`bounds=(lo,hi)` で認証エンベロープを
     明示でき、無ければ x0 まわりの相対 box を使う。
     """
-    x0 = np.asarray(x0, dtype=np.float64)
+    x0 = asarray(x0, dtype=np.float64)
     lo, hi = _box(x0, radius, bounds)
     rng = np.random.default_rng(seed)
     best_x, best_d = x0.copy(), divergence(fn_a, fn_b, x0, relative=relative)
@@ -117,7 +119,7 @@ def analyze_worst_case(fn_a, fn_b, samples, *, tol: float, radius: float = 1.0,
 
     samples: 代表入力の列（各々 fn_a/fn_b に渡せる配列）。探索は最も発散した代表から開始。
     """
-    samples = [np.asarray(s, dtype=np.float64) for s in samples]
+    samples = [asarray(s, dtype=np.float64) for s in samples]
     typ = [divergence(fn_a, fn_b, s, relative=relative) for s in samples]
     typical = float(np.median(typ)) if typ else 0.0
     start = samples[int(np.argmax(typ))] if typ else np.zeros(1)

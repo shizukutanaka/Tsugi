@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .arrays import asarray
+
 from .constants import SAFETY
 from .report import FindingReport, Risk
 from .tolerance import unit_roundoff
@@ -49,8 +51,8 @@ def systematic_divergence(a: np.ndarray, b: np.ndarray) -> float:
 
     b が a より一様に α 倍なら α-1 を返す。乱雑な累積順序差は zero-mean ゆえ ≈0。
     """
-    af = a.astype(np.float64)
-    bf = b.astype(np.float64)
+    af = asarray(a, dtype=np.float64)      # device テンソルも受ける
+    bf = asarray(b, dtype=np.float64)
     ra = float(np.sqrt(np.mean(af ** 2)) + 1e-30)
     rb = float(np.sqrt(np.mean(bf ** 2)))
     return rb / ra - 1.0
@@ -67,8 +69,8 @@ def systematic_divergence_stderr(a: np.ndarray, b: np.ndarray, n_boot: int = 200
     再標本化し、bias 統計量のばらつき（標準偏差）を経験的に求める。
     N が大きければ標準誤差は無視できるほど小さくなり挙動は変わらない。
     """
-    af = np.asarray(a, dtype=np.float64).ravel()
-    bf = np.asarray(b, dtype=np.float64).ravel()
+    af = asarray(a, dtype=np.float64).ravel()
+    bf = asarray(b, dtype=np.float64).ravel()
     n = af.size
     if n < 2:
         return 0.0
@@ -291,3 +293,225 @@ def roc_sweep(strengths=(0.001, 0.005, 0.02, 0.05, 0.1), K: int = 2048,
         rows.append({"strength": st, "false_ok_max_abs": fo_alone / seeds,
                      "false_ok_combined": fo_comb / seeds})
     return rows
+
+
+# --- SAFETY 定数の実機校正（FEATURE-AUDIT A-2） -------------------------------
+#
+# 問題: SAFETY=4.0 は「4σ 相当」という *経験的* ヘッドルームであり（constants.py）、
+# 一度も実機ノイズで校正されていない。この定数は許容 atol=SAFETY·√K·u·scale と
+# 検出限界 rel=SAFETY·√K·u の両方を一律にスケールするため、誤っていれば全層の
+# 判定が同じ向きに狂う（大きすぎ→偽OK の盲点が広がる／小さすぎ→良性ノイズを
+# 偽BLOCK する）。「検証器が実機で正しい」の最終根拠がここで止まっている。
+#
+# 本節は「実機の run が手に入った瞬間に SAFETY を機械的に校正する手続き」を、
+# 実機を待たずに *実行可能な形* で固定する。手順書は docs/GPU-BRINGUP.md。
+#
+# 統計の選択（文献根拠）:
+# - 正規理論: 片側正規許容限界の係数 k(n, coverage, confidence)（Natrella 1963 の
+#   近似式。NIST/SEMATECH e-Handbook 7.2.6.3 に同式が掲載）。n→∞ で z_coverage に
+#   収束し、n が小さいほど σ 推定の不確実性を吸収して大きくなる。「4σ」は
+#   *σ が既知* の場合の値であり、n=8 程度の実測から σ を推定する現実では不足する
+#   —— この差こそが「4.0 を実測で置き換える」ことの中身。
+# - 非パラメトリック: 標本最大値を上側許容限界に使う（Wilks 1941 の順序統計量）。
+#   達成信頼度は 1-coverage^n、必要標本数は n >= ln(1-confidence)/ln(coverage)。
+# - **両者の max を採る**（保守側）。理由は文献: GPU の浮動小数ノイズは i.i.d.
+#   ガウスではなく構造的・高相関（fp16 で全誤差分散の約半分が非対角項）である
+#   ことが実測で示されており（arXiv:2511.00025）、正規理論の k 単独を信じる根拠が
+#   無い。分布仮定に依らない標本最大を併用して下回らないようにする。
+
+# 校正の既定水準。coverage=良性 run のうち許容内に収まるべき割合、
+# confidence=その主張の片側信頼水準。どちらも統計の慣用値であり、
+# 判定に効く値なので呼び出し側から明示的に上書きできる（引数）。
+_DEFAULT_COVERAGE: float = 0.99
+_DEFAULT_CONFIDENCE: float = 0.95
+
+# 校正標本の出所。run-to-run は「同一ベンダー内の縮約順序の揺れ」だけを見るため、
+# クロスベンダー発散（縮約順序 *に加えて* タイル形状・行列コア・ライブラリ実装の差を
+# 含む）の **下界** にしかならない。ゆえに run-to-run 校正は SAFETY を上げる根拠には
+# なるが、下げる（＝許容を緩める＝偽OK 方向）根拠には決してならない。
+SRC_RUN_TO_RUN: str = "run_to_run"
+SRC_CROSS_VENDOR: str = "cross_vendor"
+
+
+def tolerance_factor_normal(n: int, coverage: float = _DEFAULT_COVERAGE,
+                            confidence: float = _DEFAULT_CONFIDENCE) -> float:
+    """片側正規許容限界の係数 k（Natrella 1963 の近似式）。
+
+    意味: n 個の標本から得た mean+k·sd 以下に、母集団の割合 `coverage` 以上が
+    入ることを信頼度 `confidence` で主張できる k。
+
+        a = 1 - z_conf^2 / (2(n-1)),  b = z_cov^2 - z_conf^2 / n
+        k = (z_cov + sqrt(z_cov^2 - a·b)) / a
+
+    n が小さいと a<=0 または平方根の中身が負になり k が定義できない —— その場合は
+    `math.inf` を返す（「この標本数ではこの水準を主張できない」を黙って小さい値で
+    埋めず、呼び出し側が非パラメトリック側へ倒せるようにする fail-safe）。
+    近似ゆえ厳密表より約 1% 小さい（n=10, 0.99/0.95 で 3.94 vs 表 3.981）。
+    過小側の誤差は要求 SAFETY を小さく見積もる＝許容を締める向きなので、
+    偽OK でなく偽BLOCK 側に倒れる（このプロジェクトの許容できる誤り方）。
+    """
+    from .nondeterminism import normal_quantile
+
+    if n < 3:
+        return math.inf
+    z_cov = normal_quantile(coverage)
+    z_conf = normal_quantile(confidence)
+    a = 1.0 - z_conf ** 2 / (2.0 * (n - 1))
+    b = z_cov ** 2 - z_conf ** 2 / n
+    disc = z_cov ** 2 - a * b
+    if a <= 0.0 or disc < 0.0:
+        return math.inf
+    return (z_cov + math.sqrt(disc)) / a
+
+
+def wilks_confidence(n: int, coverage: float = _DEFAULT_COVERAGE) -> float:
+    """標本最大値を上側許容限界に使うときの達成信頼度 = 1 - coverage^n（Wilks 1941）。
+
+    分布仮定を一切置かない代わりに、n が小さいと信頼度が低い（n=8, coverage=0.99 で
+    僅か 7.7%）。「実機で 8 run 測ったから大丈夫」がなぜ弱い主張なのかを数値で示す。
+    """
+    if n <= 0:
+        return 0.0
+    return 1.0 - float(coverage) ** int(n)
+
+
+def wilks_min_runs(coverage: float = _DEFAULT_COVERAGE,
+                   confidence: float = _DEFAULT_CONFIDENCE) -> int:
+    """分布仮定なしで (coverage, confidence) の片側許容限界を得る最小標本数。
+
+    n >= ln(1-confidence) / ln(coverage)（Wilks 1941 の順序統計量）。
+    0.99/0.95 で 299 対、0.999/0.95 で 2995 対 —— 実機校正が「16 run 回して終わり」
+    では済まないことの定量的な根拠になる（docs/GPU-BRINGUP.md の run 数計画）。
+    """
+    return int(math.ceil(math.log(1.0 - confidence) / math.log(coverage)))
+
+
+@dataclass
+class SafetyCalibrationReport(FindingReport):
+    """実測した良性発散から SAFETY の要求値を導く（定数の実機校正）。"""
+
+    n: int = 0
+    safety: float = SAFETY
+    sigma_unit: float = 0.0        # SAFETY が掛かる相手（= √K·u·scale の 1σ 見積り）
+    ratio_mean: float = 0.0        # 実測発散 / sigma_unit の平均
+    ratio_sd: float = 0.0
+    ratio_max: float = 0.0
+    k_factor: float = 0.0          # Natrella の許容係数（inf なら標本不足）
+    required_normal: float = 0.0   # mean + k·sd（正規理論）
+    required_nonparametric: float = 0.0   # 標本最大（分布仮定なし）
+    required: float = 0.0          # 両者の max（保守側・判定に使う）
+    coverage: float = _DEFAULT_COVERAGE
+    confidence: float = _DEFAULT_CONFIDENCE
+    achieved_confidence: float = 0.0
+    min_runs: int = 0
+    source: str = SRC_RUN_TO_RUN
+
+    @property
+    def covers_measured_noise(self) -> bool:
+        """現行 SAFETY が実測の良性発散を覆えているか（偽BLOCK が出ない条件）。"""
+        return self.n > 0 and math.isfinite(self.required) and self.required <= self.safety
+
+    @property
+    def evidence_sufficient(self) -> bool:
+        """主張した coverage/confidence を分布仮定なしで支えられる標本数があるか。"""
+        return self.n >= self.min_runs
+
+    def to_text(self) -> str:  # type: ignore[override]
+        req = "n/a" if not math.isfinite(self.required) else f"{self.required:.3g}"
+        return super().to_text(
+            header=(f"safety calibration (SAFETY={self.safety:.2f} vs required={req}"
+                    f" @cov={self.coverage:.0%}/conf={self.confidence:.0%},"
+                    f" n={self.n} pairs, source={self.source})"),
+            empty="(measured benign divergence is consistent with the current SAFETY)")
+
+
+def calibrate_safety(divergences, K: int, dtype: str = "float16", scale: float = 1.0,
+                     safety: float = SAFETY, coverage: float = _DEFAULT_COVERAGE,
+                     confidence: float = _DEFAULT_CONFIDENCE,
+                     source: str = SRC_RUN_TO_RUN,
+                     model: str = "probabilistic") -> SafetyCalibrationReport:
+    """実測した *良性* 発散から SAFETY の要求値を導く（A-2 の校正手続き本体）。
+
+    divergences: 良性（= 同一の正しい計算の別実行）と分かっている発散の絶対値の標本。
+      実機では `nondeterminism.pair_deviations(collect_runs(...))`（独立 run 対の
+      `max|a-b|`）が入る —— 等価判定が実際に比較する量と同じ統計量であることが要点。
+    K/dtype/scale/model: 1σ 見積り `sigma_unit = √K·u·scale` を作る条件
+      （`tolerance.expected_gemm_abs_error(safety=1.0)` を再利用して二重定義を避ける）。
+
+    導出: 比 r_i = d_i / sigma_unit は「実測発散が理論 1σ の何倍か」＝ SAFETY と
+    同じ単位。required = max(正規理論の許容限界, 標本最大) を SAFETY の要求値とする。
+
+    判定（コストの非対称に従う）:
+      - required > safety → WARN。良性ノイズが許容ヘッドルームを超える＝偽BLOCK が
+        出る。回復可能な向きなので BLOCK にはしない（開発者が気づける）。
+      - source=run_to_run のときは常に INFO で「これは下界であり SAFETY を *下げる*
+        根拠にはならない」と明示する。同一ベンダー内の揺れはクロスベンダー発散の
+        部分集合にすぎず、下げれば偽OK 方向に倒れるため。
+      - 標本数が Wilks の必要数に満たない → WARN（達成信頼度を数値で併記）。
+    """
+    from .tolerance import expected_gemm_abs_error
+
+    d = np.abs(asarray(divergences, dtype=np.float64).ravel())
+    sigma_unit = expected_gemm_abs_error(K, dtype, scale, safety=1.0, model=model)
+    rep = SafetyCalibrationReport(
+        n=int(d.size), safety=float(safety), sigma_unit=float(sigma_unit),
+        coverage=float(coverage), confidence=float(confidence),
+        min_runs=wilks_min_runs(coverage, confidence), source=str(source))
+
+    if d.size == 0 or sigma_unit <= 0.0:
+        rep.add(Risk.WARN, "safety",
+                "校正標本がゼロ（独立 run 対が作れない）→ SAFETY は未校正のまま。"
+                "n_runs>=2 で実機 run を集めよ（docs/GPU-BRINGUP.md）")
+        rep.required = math.inf
+        return rep
+
+    ratios = d / sigma_unit
+    rep.ratio_mean = float(ratios.mean())
+    rep.ratio_sd = float(ratios.std(ddof=1)) if ratios.size >= 2 else 0.0
+    rep.ratio_max = float(ratios.max())
+    rep.k_factor = tolerance_factor_normal(rep.n, coverage, confidence)
+    rep.required_normal = (math.inf if not math.isfinite(rep.k_factor)
+                           else rep.ratio_mean + rep.k_factor * rep.ratio_sd)
+    rep.required_nonparametric = rep.ratio_max
+    # 正規理論と標本最大の max（保守側）。GPU の浮動小数ノイズは i.i.d. ガウスでなく
+    # 構造的・高相関（arXiv:2511.00025）なので、正規理論単独は信じない。
+    rep.required = max(rep.required_normal, rep.required_nonparametric)
+    rep.achieved_confidence = wilks_confidence(rep.n, coverage)
+
+    if not math.isfinite(rep.k_factor):
+        rep.add(Risk.WARN, "safety",
+                f"n={rep.n} 対では正規理論の許容係数が定義できない（Natrella の a<=0）"
+                f"→ 標本最大 {rep.ratio_max:.3g}σ のみを要求値に採用（分布仮定なし）")
+    if not rep.evidence_sufficient:
+        # INFO であって WARN でない理由: 標本が少ないことは既に許容係数 k に反映されて
+        # いる（n=8 で k=4.30・n=3 で k=13.3 と急増し、要求値を自動的に押し上げる）。
+        # ここで重ねて WARN を出すと二重計上になるうえ、実機校正は本質的に長期作業
+        # （299 対）なので毎回 WARN が点きっぱなしになり、本当に効く WARN
+        # （required > safety）が埋もれる。数値は出すが判定はしない。
+        rep.add(Risk.INFO, "safety",
+                f"分布仮定なしで coverage={coverage:.1%}/confidence={confidence:.0%} を"
+                f"主張するには {rep.min_runs} 対必要（Wilks 1941）。現 n={rep.n} 対の"
+                f"達成信頼度は {rep.achieved_confidence:.1%}（不足分は正規理論の許容係数"
+                f" k={rep.k_factor:.2f} が要求値を押し上げる形で吸収している）")
+    if not rep.covers_measured_noise:
+        rep.add(Risk.WARN, "safety",
+                f"SAFETY={rep.safety:.2f} が実測の良性発散を覆えていない"
+                f"（要求 {rep.required:.3g}σ・実測最大 {rep.ratio_max:.3g}σ）"
+                "→ 良性ノイズを発散と誤判定する（偽BLOCK）。constants.SAFETY の引き上げか"
+                " noise_floor の実測供給を検討せよ")
+    if source == SRC_RUN_TO_RUN:
+        rep.add(Risk.INFO, "safety",
+                "標本は run-to-run（同一ベンダー内の縮約順序の揺れのみ）→ クロスベンダー"
+                "発散（タイル形状・行列コア・ライブラリ実装の差を含む）の **下界**。"
+                "この校正は SAFETY を上げる根拠にはなるが、下げる根拠にはならない"
+                "（未測定のクロス成分を許容から外すことになり偽OK 方向に倒れる）。"
+                f"下げてよいかの判断には source={SRC_CROSS_VENDOR}（実 2 ベンダーの"
+                "良性発散）での再校正が要る")
+    elif rep.covers_measured_noise and rep.required > 0.0:
+        rep.add(Risk.INFO, "safety",
+                f"余裕 {rep.safety / rep.required:.3g}x（実測 {rep.required:.3g}σ に対し "
+                f"SAFETY={rep.safety:.2f}）。余裕はそのまま検出限界＝偽OK の盲点でもある"
+                f"（現 K={K} で {detectability_floor(K, dtype, 1.0, safety)['rel'] * 100:.1f}%"
+                f" → 要求値まで下げれば "
+                f"{detectability_floor(K, dtype, 1.0, rep.required)['rel'] * 100:.1f}%）")
+    return rep

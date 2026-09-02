@@ -44,6 +44,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk
 
 EQUIVALENT = "EQUIVALENT"
@@ -156,7 +158,7 @@ def simulate_nondeterministic_reduction(parts: np.ndarray, seed: int) -> np.ndar
     acc = np.float32(0.0)
     for i in order:
         acc = np.float32(acc + flat[i])
-    return np.asarray(acc, dtype=np.float32)
+    return asarray(acc, dtype=np.float32)
 
 
 def _spread_stats(stack: np.ndarray) -> dict[str, float]:
@@ -174,6 +176,45 @@ def _spread_stats(stack: np.ndarray) -> dict[str, float]:
             "rel_robust": robust / mean_mag}
 
 
+def collect_runs(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
+                 seed0: int = 0) -> np.ndarray:
+    """同一ベンダー・同一入力を n_runs 回走らせ、出力を 1 つのスタックに集める。
+
+    実機では 1 run が高価（GPU 実行）なので、run を消費する検証（ノイズ床の算出・
+    SAFETY 校正・比較対象の取得）は **この 1 セットから全部導く**。関数を分けずに
+    スタックを共有するのはそのため（同じ run を二度走らせない）。
+    """
+    return np.stack([asarray(run_fn(seed0 + i), dtype=np.float64)
+                     for i in range(n_runs)])
+
+
+def noise_floor_from_runs(stack: np.ndarray) -> dict[str, float]:
+    """既に集めた run スタックからノイズ床統計を出す（再実行しない版）。"""
+    s = asarray(stack, dtype=np.float64)
+    stats = _spread_stats(s)
+    stats["n_runs"] = int(s.shape[0])
+    return stats
+
+
+def pair_deviations(stack: np.ndarray) -> np.ndarray:
+    """run スタックから *独立な run 対の差* を標本化する（SAFETY 校正の入力）。
+
+    等価判定が実際に比較するのは「2 つの単発 run の差」`max|a-b|` である。ゆえに
+    校正の標本も **対の差** でなければ単位が合わない —— 中心（平均/中央値）からの
+    偏差を使うと、比較される量の約半分を測ることになり要求 SAFETY を系統的に
+    過小評価する（＝許容を緩く見積もる偽OK 方向の誤り）。
+
+    対は重ならない (0,1),(2,3),… を使う。共通の参照 run（全部 run_0 との差）を
+    使うと標本どうしが run_0 を通じて相関し、許容限界の統計（独立標本を前提とする）
+    が正当化できないため。返り値は floor(n/2) 個の `max|run_2i - run_2i+1|`。
+    """
+    s = asarray(stack, dtype=np.float64)
+    m = s.shape[0] // 2
+    if m == 0:
+        return np.zeros(0)
+    return np.array([float(np.abs(s[2 * i] - s[2 * i + 1]).max()) for i in range(m)])
+
+
 def measure_noise_floor(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
                         seed0: int = 0) -> dict[str, float]:
     """同一ベンダー・同一入力を n_runs 回走らせ run-to-run ノイズを実測する。
@@ -182,10 +223,7 @@ def measure_noise_floor(run_fn: Callable[[int], np.ndarray], n_runs: int = 16,
     （10-90 パーセンタイル幅・外れ値に頑健）の両方を返す。後者は測定グリッチで床が
     過大評価され偽BLOCK 化するのを防ぐ（compare_stable(robust=True) で選択）。
     """
-    runs = [np.asarray(run_fn(seed0 + i), dtype=np.float64) for i in range(n_runs)]
-    stats = _spread_stats(np.stack(runs))
-    stats["n_runs"] = n_runs
-    return stats
+    return noise_floor_from_runs(collect_runs(run_fn, n_runs, seed0))
 
 
 def simulate_batch_variant_reduction(parts: np.ndarray, tile: int) -> np.ndarray:
@@ -203,7 +241,7 @@ def simulate_batch_variant_reduction(parts: np.ndarray, tile: int) -> np.ndarray
         for v in flat[i:i + tile]:
             chunk = np.float32(chunk + v)
         acc = np.float32(acc + chunk)
-    return np.asarray(acc, dtype=np.float32)
+    return asarray(acc, dtype=np.float32)
 
 
 def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
@@ -215,8 +253,8 @@ def measure_batch_variance(run_of_batch: Callable[[int], np.ndarray],
     本番でバッチが変動するなら、この床も等価判定に織り込むべき（実効床 = max(run-to-run,
     batch-variance, 数値検出限界)）。
     """
-    runs = [np.asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
-    stats = _spread_stats(np.stack(runs))
+    runs = [asarray(run_of_batch(t), dtype=np.float64) for t in batch_tiles]
+    stats = _spread_stats(np.stack([asarray(r) for r in runs]))
     stats["n_batches"] = len(batch_tiles)
     return stats
 
@@ -258,8 +296,7 @@ def runs_to_resolve(cross_diff: float, noise_floor: float,
     sigma = abs(float(noise_floor))
     if d <= 0.0 or sigma <= 0.0 or d > sigma:
         return 0                       # 差が無い／ノイズが無い／既に分離済み
-    # 片側正規分位点（scipy 非依存の逆誤差関数近似・0.90/0.95/0.99 を実用範囲で被覆）
-    z = math.sqrt(2.0) * _erfinv(2.0 * confidence - 1.0)
+    z = normal_quantile(confidence)   # 片側正規分位点（scipy 非依存）
     n = math.ceil((z * sigma / d) ** 2)
     return int(min(max(n, 1), max_runs))
 
@@ -274,6 +311,18 @@ def _erfinv(y: float) -> float:
     ln1my2 = math.log(1.0 - y * y)
     t1 = 2.0 / (math.pi * a) + ln1my2 / 2.0
     return math.copysign(math.sqrt(math.sqrt(t1 * t1 - ln1my2 / a) - t1), y)
+
+
+def normal_quantile(p: float) -> float:
+    """標準正規分布の p 分位点 z_p（scipy 非依存・`_erfinv` の Winitzki 近似に基づく）。
+
+    片側信頼限界・許容限界の係数計算で共通に使う（`runs_to_resolve` と
+    `calibration.tolerance_factor_normal` の両方がこれを参照し、分位点の
+    実装が二重化しないようにする）。
+    """
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"normal_quantile domain error: {p}")
+    return math.sqrt(2.0) * _erfinv(2.0 * p - 1.0)
 
 
 @dataclass
@@ -320,8 +369,8 @@ def compare_stable(run_a: Callable[[int], np.ndarray],
     run_to_run = max(nf_a[key], nf_b[key])
     noise = max(run_to_run, batch_floor)
 
-    a = np.asarray(run_a(0), dtype=np.float64)
-    b = np.asarray(run_b(0), dtype=np.float64)
+    a = asarray(run_a(0), dtype=np.float64)
+    b = asarray(run_b(0), dtype=np.float64)
     scale = float(np.sqrt(np.mean(a ** 2)) + 1e-30)
     numerical = expected_gemm_abs_error(K, dtype, scale)
     tol = derive_tolerance(K, dtype, scale, noise_floor=noise)["atol"]

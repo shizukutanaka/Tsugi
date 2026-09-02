@@ -23,6 +23,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .arrays import asarray
+
 from .report import FindingReport, Risk  # 検証層共通の深刻度モデル
 
 # --- 閾値定数 (Q4: magic number 排除) ---
@@ -117,7 +119,7 @@ def certify_from_sample(x: np.ndarray, K: int, dtype: str = "float16",
     本関数はサンプルの RMS を直接測定し、その scale で certify_gemm を呼ぶ。
     呼び出し側は代表的な本番テンソル（キャリブレーション集合の 1 バッチ等）を渡す。
     """
-    xf = np.asarray(x, dtype=np.float64)
+    xf = asarray(x, dtype=np.float64)
     scale = float(np.sqrt(np.mean(xf ** 2))) if xf.size else 1.0
     scale = max(scale, 1e-30)   # ゼロテンソルで除算を防ぐ
     return certify_gemm(K=K, dtype=dtype, scale=scale, cond=cond, noise_floor=noise_floor)
@@ -139,7 +141,7 @@ def check_tensor(x: np.ndarray, env: Envelope) -> EnvelopeReport:
     """本番テンソルが認証済みエンベロープ内かを単一ベンダーで検査する（oracle 不要）。"""
     rep = EnvelopeReport()
     lim = dtype_limits(env.dtype)
-    xf = np.asarray(x, dtype=np.float64)
+    xf = asarray(x, dtype=np.float64)
 
     # NaN/Inf は即破綻（ベンダー間で伝播挙動も異なる）
     if not np.all(np.isfinite(xf)):
@@ -196,7 +198,7 @@ def check_softmax_input(logits: np.ndarray, env: Envelope) -> EnvelopeReport:
     """
     rep = EnvelopeReport()
     lim = dtype_limits(env.dtype)
-    xf = np.asarray(logits, dtype=np.float64)
+    xf = asarray(logits, dtype=np.float64)
     if not np.all(np.isfinite(xf)):
         rep.add(Risk.BLOCK, "softmax", "logit に NaN/Inf")
         return rep
@@ -218,7 +220,7 @@ def channel_scale_spread(x: np.ndarray, axis: int = -1) -> float:
     outlier feature（数チャネルだけ巨大＝LLM の massive activations）で桁違いに大きくなる。
     near-uniform-scale なら ~1。
     """
-    xf = np.asarray(x, dtype=np.float64)
+    xf = asarray(x, dtype=np.float64)
     if xf.ndim < 2:
         return 1.0
     chan = np.sqrt(np.mean(xf ** 2, axis=tuple(i for i in range(xf.ndim) if i != axis % xf.ndim)))

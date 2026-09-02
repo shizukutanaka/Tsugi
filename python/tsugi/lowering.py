@@ -1,8 +1,11 @@
 """Tsugi lowering plan — tsugi.tile IR op → 各社 intrinsic の対応表（設計の実体化）。
 
-実 codegen ではない。「どの op がどの NVVM/ROCDL intrinsic に落ちるか」を
-データとして表現し、テキスト出力する。これが実機での MLIR lowering 実装の仕様になる。
-ADR-004（Vulkan coopmat 非依存・MLIR intrinsic 直叩き）を機械可読にしたもの。
+ここは *設計の意図*（どの op がどの NVVM/ROCDL intrinsic に落ちるか）を人手の表として
+持つ層。ADR-004（Vulkan coopmat 非依存・MLIR intrinsic 直叩き）を機械可読にしたもの。
+
+実 codegen は `tsugi.codegen`（PTX/AMDGCN テキストを生成し ptxas / llvm-mc に
+アセンブルさせる）。本表の主張が本当かは codegen 層がベンダーのアセンブラに問う——
+表は設計の宣言、codegen はその検証、という役割分担。
 """
 from __future__ import annotations
 

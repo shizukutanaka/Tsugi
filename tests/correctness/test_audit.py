@@ -286,14 +286,22 @@ def test_audit_verdict_from_static_only():
     assert not a.portable
 
 
-def test_runtime_phase_excluded_from_verdict():
-    # runtime 層は実機データ待ちゆえ判定に影響しない（静的層のみで verdict）
+def test_pending_phases_excluded_from_verdict():
+    """pending（実機データ待ち・被覆報告）は判定に入らない。
+
+    以前はここで pending フェーズが 1 つであることを固定していたが、それは契約でなく
+    その時点の *偶然* だった（被覆フェーズ追加で 2 つになった）。固定すべきは
+    **「pending は verdict に算入されない」** という契約そのもの。
+    """
     mod, block, cfg = _demo_module()
     a = audit(mod, cfg, block_dims=block)
-    rt = [p for p in a.phases if p.when == "pending"]
-    assert len(rt) == 1
+    pending = [p for p in a.phases if p.when == "pending"]
+    assert pending, "pending フェーズが 1 つも無い"
+    assert {"runtime", "coverage"} <= {p.name.split()[0] for p in pending}
     assert all(p.when == "decided" for p in a.decided_phases)
     assert a.max_risk == max(p.max_risk for p in a.decided_phases)
+    # pending をいくら足しても verdict は変わらない（算入されない証明）
+    assert a.max_risk == max(p.max_risk for p in a.phases if p.when == "decided")
 
 
 def test_audit_text_has_lifecycle_and_verdict():
@@ -790,6 +798,231 @@ def test_audit_demo_runs_end_to_end():
     assert "移植ブロッカー" in out        # 静的に AMD 起動不能を BLOCK
 
 
+def test_audit_cross_vendor_calibrates_safety_from_the_same_runs():
+    """実機入口が SAFETY 定数を実測校正し、その分の run を追加消費しない（A-2）。
+
+    問題: SAFETY=4.0 は「4σ 相当」という経験値のまま一度も実機ノイズで校正されて
+    おらず（constants.py）、許容 atol と検出限界の両方を一律にスケールするため
+    誤っていれば全層が同じ向きに狂う。校正層は実測 run が要るので、置き場は実機
+    入口 audit_cross_vendor しかない。ここではその接続と、実機コスト（1 run = GPU
+    実行）を増やしていないこと（従来 run_*(0) を追加で 1 回走らせていた分がむしろ
+    減ること）の両方を固定する。
+    """
+    base = np.random.default_rng(0).standard_normal((8, 16)).astype(np.float32)
+    calls = {"a": 0, "b": 0}
+
+    def make(tag, noise):
+        def run(s):
+            calls[tag] += 1
+            g = np.random.default_rng(hash(tag) % 1000 + s).standard_normal(
+                base.shape).astype(np.float32)
+            return base + noise * g
+        return run
+
+    n_runs = 8
+    ad = audit_cross_vendor(make("a", 1e-6), make("b", 1e-6), K=256, n_runs=n_runs)
+    sp = next(p for p in ad.phases if "safety" in p.name)
+    assert "safety calibration" in sp.to_text()
+    assert "run_to_run" in sp.to_text()
+    # 集めた run を使い回す: 1 ベンダーあたり n_runs 回ちょうど（比較対象も stack[0]）
+    assert calls == {"a": n_runs, "b": n_runs}, f"run を余計に消費している: {calls}"
+
+    # 良性ノイズが SAFETY のヘッドルームを超えるベンダーでは WARN が立つ。
+    # 1σ = sqrt(K)*u*scale。fp16/K=256 で ~1.6e-2*scale なので、その ~10 倍を振らせる。
+    from tsugi.tolerance import expected_gemm_abs_error
+    scale = float(np.sqrt(np.mean(base.astype(np.float64) ** 2)))
+    sigma = expected_gemm_abs_error(256, "float16", scale, safety=1.0)
+
+    def loud(s):
+        sign = 1.0 if s % 2 == 0 else -1.0
+        return (base + sign * 5.0 * sigma).astype(np.float32)
+
+    ad2 = audit_cross_vendor(loud, loud, K=256, n_runs=8)
+    sp2 = next(p for p in ad2.phases if "safety" in p.name)
+    assert sp2.max_risk >= Risk.WARN and "覆えていない" in sp2.to_text(), sp2.to_text()
+
+
+def test_verify_one_call_facade_accepts_path_and_module():
+    """tsugi.verify() は CLI の Python 版——パス or traced module の 1 コールで Audit を返す。
+
+    従来 trace→audit を手で繋ぐ必要があった価値経路を 1 コールに簡素化（Musk 第3段階）。
+    パス経路と module 経路が同じ判定を返し、Audit.exit_code が CI ゲート契約に従うことを固定。
+    """
+    import tsugi
+    from tsugi.portcheck import _demo_module
+
+    ex = Path(__file__).resolve().parents[2] / "examples" / "user_kernel.py"
+    # (1) パス経路: ファイルをトレースして検証
+    ad_path = tsugi.verify(str(ex))
+    assert isinstance(ad_path, tsugi.Audit)
+    assert ad_path.exit_code in (0, 1, 2)
+    # (2) module 経路: 既に traced な module を直接検証（demo は BLOCK）
+    mod, block, cfg = _demo_module()
+    ad_mod = tsugi.verify(mod, block_dims=block, cfg=cfg)
+    assert ad_mod.exit_code == 2 and ad_mod.max_risk.name == "BLOCK"
+    # audit を直接呼んだ結果と一致（verify は audit の薄い入口）
+    from tsugi.audit import audit
+    assert ad_mod.exit_code == audit(mod, cfg, block_dims=block).exit_code
+
+
+class _DeviceTensor:
+    """GPU 上のテンソルの挙動を CPU で再現する stand-in。
+
+    実 CUDA/HIP テンソルは `np.asarray` で TypeError を投げ、`.detach().cpu().numpy()`
+    でのみ NumPy 化できる。実機を持たない環境でその経路を固定するための擬似物。
+    """
+
+    def __init__(self, arr):
+        self._a = np.asarray(arr)
+
+    def __array__(self, *a, **k):
+        raise TypeError("can't convert cuda:0 device type tensor to numpy. "
+                        "Use Tensor.cpu()")
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self._a
+
+
+def test_audit_runtime_accepts_device_tensors():
+    """`audit_runtime` は **GPU 上のテンソル**をそのまま受け取れること。
+
+    この関数は「両ベンダーの実機出力を突き合わせる」ための入口であり、渡される
+    テンソルは当然 GPU 上にある。`np.asarray` を直接呼んでいた頃は、実機を手にした
+    ユーザーの最初のコマンドが製品の説明ではなく torch の生の TypeError で止まった。
+    """
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 16))
+    b = a + rng.standard_normal((8, 16)) * 1e-4
+    la = rng.standard_normal((50, 8))
+    lb = la + rng.standard_normal((50, 8)) * 1e-4
+    ad = audit_runtime(_DeviceTensor(a), _DeviceTensor(b), K=256, dtype="float16",
+                       logits_a=_DeviceTensor(la), logits_b=_DeviceTensor(lb))
+    assert ad.exit_code in (0, 1, 2)
+    assert any("equivalence" in p.name for p in ad.phases)
+    # stand-in が実際に numpy 変換を拒む（＝この検査が有効）ことも固定
+    try:
+        np.asarray(_DeviceTensor(a))
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("stand-in が numpy 変換を拒んでいない（検査が無効）")
+    # 素の ndarray 経路が壊れていないこと
+    assert audit_runtime(a, b, K=256, dtype="float16").exit_code in (0, 1, 2)
+
+
+def test_audit_cross_vendor_accepts_device_tensors_from_real_kernels():
+    """`audit_cross_vendor(run_a, run_b, K)` の run_* は **実 GPU カーネル**である。
+
+    返るテンソルは GPU 上にあり、`docs/GPU-BRINGUP.md` はこれを実機が来た日の
+    最初のコマンドとして指示している。境界で NumPy 化しないと、その最初の一手が
+    torch の生の TypeError で止まる（audit_runtime と同じ欠陥が、より重要な入口に
+    残っていた）。
+    """
+    rng = np.random.default_rng(0)
+
+    def _dev_run(_seed):
+        return _DeviceTensor(rng.standard_normal((8, 16)))
+
+    ad = audit_cross_vendor(_dev_run, _dev_run, K=256, n_runs=4)
+    assert ad.exit_code in (0, 1, 2)
+    # 素の ndarray を返すカーネルも従来どおり通る
+    ad2 = audit_cross_vendor(lambda s: rng.standard_normal((8, 16)),
+                             lambda s: rng.standard_normal((8, 16)),
+                             K=256, n_runs=4)
+    assert ad2.exit_code in (0, 1, 2)
+
+
+def test_every_tensor_taking_public_function_accepts_device_tensors():
+    """検証層は実機出力を突き合わせるためにある——**面で** device 対応を固定する。
+
+    1 箇所ずつ直すと直し漏れる。`tsugi.arrays.asarray` を 1 つ定義して層が使う
+    asarray を差し替えたので、ここは公開 API を掃いて非回帰を守る。
+    """
+    import tsugi
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((8, 16))
+    b = a + 1e-4
+    lg = rng.standard_normal((40, 8))
+    runs = [_DeviceTensor(rng.standard_normal((8, 16))) for _ in range(4)]
+    D = _DeviceTensor
+    cases = {
+        "equivalence.compare": lambda: tsugi.equivalence.compare(D(a), D(b)),
+        "decision.compare_decisions":
+            lambda: tsugi.decision.compare_decisions(D(lg), D(lg + 1e-4)),
+        "decision.compare_task":
+            lambda: tsugi.decision.compare_task(D(lg), D(lg + 1e-4), task="ranking"),
+        "rollout.rollout_from_logits":
+            lambda: tsugi.rollout.rollout_from_logits(D(lg), D(lg + 1e-4), 16),
+        "envelope.check_tensor":
+            lambda: tsugi.envelope.check_tensor(
+                D(a), tsugi.envelope.certify_gemm(256, "float16")),
+        "calibration.check_systematic":
+            lambda: tsugi.calibration.check_systematic(D(a), D(b)),
+        "nondeterminism.noise_floor_from_runs":
+            lambda: tsugi.nondeterminism.noise_floor_from_runs(runs),
+        "propagation.empirical_cond":
+            lambda: tsugi.propagation.empirical_cond(D(a), "reduce"),
+    }
+    failed = []
+    for name, fn in cases.items():
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"{name}: {type(exc).__name__}: {exc}")
+    assert not failed, "device テンソルを拒む公開関数がある:\n  " + "\n  ".join(failed)
+
+
+def test_report_names_the_layers_that_did_not_run():
+    """判定の **被覆範囲** を利用者に見せる（不変条件 106 の製品版）。
+
+    このプロダクトは「13 検証層」を掲げるが、実データ無しの既定出力に現れるのは
+    5 層ほどで、残りは *走っていない*。それを告げないと「移植可」が **全層を通した
+    判定** と読まれる——開発ゲートで塞いだ「緑は何を意味するか」と同じ偽OK の類型。
+    """
+    import numpy as np
+
+    import tsugi
+    from tsugi import tile
+    from tsugi.audit import LAYER_CATALOG, _unrun_layers
+
+    @tsugi.jit
+    def k(a, b, c, M, N, K, BM, BN, BK):
+        acc = tile.zeros((BM, BN), tsugi.float32)
+        acc = tile.dot(tile.load(a, (0, 0), (BM, BK)),
+                       tile.load(b, (0, 0), (BK, BN)), acc)
+        tile.store(c, (0, 0), acc.to(tsugi.float16))
+
+    args = (np.zeros((32, 32), np.float16), np.zeros((32, 32), np.float16),
+            np.zeros((32, 32), np.float32), 32, 32, 32, 16, 16, 16)
+    ad = tsugi.audit(tsugi.trace(k, args, {}, program_ids=(0, 0)), block_dims=(32,))
+    txt = ad.to_text()
+    unrun = _unrun_layers(ad.phases)
+    ran = {p.name.split()[0] for p in ad.phases}
+
+    assert unrun, "実データ無しなのに未実行の層がゼロと報告された"
+    assert "検査していない層" in txt
+    assert any(p.name.startswith("coverage") for p in ad.phases)
+    for layer in ("equivalence", "decision", "worstcase", "blame", "correctness"):
+        assert f"{layer}: 未実行" in txt, layer
+    # 走った層を未実行と誤報しない
+    assert not [u for u in unrun if u.split(":")[0] in ran], unrun
+    # 「何を渡せば走るか」が全項目に書かれている
+    assert all(need.strip() for need in LAYER_CATALOG.values())
+
+    # **3 入口すべて** が同じ規律に従う（片方だけ開示すると片肺になる）。
+    # audit_runtime は 15 層中 1 層しか走らないのに何も告げていなかった。
+    rt = audit_runtime(np.zeros((8, 16)), np.zeros((8, 16)) + 1e-4,
+                       K=256, dtype="float16")
+    assert any(p.name.startswith("coverage") for p in rt.phases)
+    assert "検査していない層" in rt.to_text()
+    # 機械可読（to_dict）にも載る——CI が被覆をそのまま読める
+    assert any(ph["name"].startswith("coverage")
+               for ph in rt.to_dict()["phases"])
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -804,7 +1037,7 @@ def main() -> int:
         test_audit_sample_auto_measures_empirical_cond,
         test_propagation_phase_runs_on_module,
         test_audit_verdict_from_static_only,
-        test_runtime_phase_excluded_from_verdict,
+        test_pending_phases_excluded_from_verdict,
         test_audit_text_has_lifecycle_and_verdict,
         test_audit_verdict_is_machine_readable_for_ci_gating,
         test_audit_without_cfg_still_runs_portability,
@@ -827,7 +1060,13 @@ def main() -> int:
         test_audit_cross_vendor_folds_batch_variance_floor,
         test_audit_cross_vendor_robust_resists_single_glitchy_run,
         test_audit_cross_vendor_forwards_provenance,
+        test_audit_cross_vendor_calibrates_safety_from_the_same_runs,
+        test_verify_one_call_facade_accepts_path_and_module,
         test_audit_demo_runs_end_to_end,
+        test_audit_runtime_accepts_device_tensors,
+        test_audit_cross_vendor_accepts_device_tensors_from_real_kernels,
+        test_every_tensor_taking_public_function_accepts_device_tensors,
+        test_report_names_the_layers_that_did_not_run,
     ]
     for t in tests:
         try:

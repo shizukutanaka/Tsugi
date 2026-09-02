@@ -18,17 +18,23 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
+from .arrays import asarray
 from .constants import SAFETY
 from .tolerance import unit_roundoff
 
 # *相対*誤差を増幅する op（実測で確認）。相対発散の枠組みでは reciprocal/div/add は
-# 相対条件数 ~1（増幅しない）。真の相対増幅は (1) 符号付き reduction の相殺 と
-# (2) exp（相対条件数=|x|）。cond を明示するとその大きさを反映する。
-_AMPLIFYING = {"reduce", "softmax", "exp"}
+# 相対条件数 ~1（増幅しない）。真の相対増幅は (1) 符号付き reduction の相殺、
+# (2) exp（相対条件数=|x|）、(3) LayerNorm（平均優勢入力 μ/RMS→1 で amp≈RMS/σ・
+# ヤコビアン J=(g/σ)(I−11ᵀ/d−ŷŷᵀ/d) の最大特異値 g/σ から。実 LayerNorm への
+# 数値実験で検証済み——shift=10 で実測 amp≈10 を RMS/σ≈10.7 が上界する）。
+# RMSNorm は含めない: J=(g/r)(I−ŷŷᵀ) で相対増幅は無条件に ≤1（文献も unconditional
+# forward stability を報告・docs/SOURCES.md）。ただし 1 未満の減衰係数は入れない
+# （未検証係数の禁止・amp=1.0 固定が保守側）。cond を明示するとその大きさを反映する。
+_AMPLIFYING = {"reduce", "softmax", "exp", "layer_norm"}
 
 
 def is_amplifier(kind: str) -> bool:
-    """この op が *相対*誤差を増幅しうるか（reduce 相殺・exp）。"""
+    """この op が *相対*誤差を増幅しうるか（reduce 相殺・exp・平均優勢 LayerNorm）。"""
     return kind in _AMPLIFYING
 
 
@@ -50,8 +56,9 @@ def local_divergence(op: GraphOp) -> float:
     if op.kind == "matmul":
         # 累積順序差: tolerance.expected_gemm_abs_error と整合（相対・scale 抜き）
         return op.safety * math.sqrt(max(1, op.K)) * u
-    if op.kind in ("reduce", "softmax"):
-        # reduction の丸めは条件数で増幅されうる
+    if op.kind in ("reduce", "softmax", "layer_norm", "rms_norm"):
+        # reduction の丸めは条件数で増幅されうる（正規化層も内部に mean/var 縮約を持つ。
+        # rms_norm は cond=1 のままなので実質 safety·u＝elementwise と同じ）
         return op.safety * u * op.cond
     # elementwise/cast/scale: 1 回の丸め
     return op.safety * u
@@ -197,19 +204,33 @@ def propagate_dag(nodes, input_div: float = 0.0, *,
     return rep
 
 
-def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum") -> float:
+def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum",
+                   eps: float = 1e-5) -> float:
     """代表サンプルからデータ依存の *相対* 条件数を実測する（静的 cond=1 の置換）。
 
     静的には cond 不明（符号や値域に依存）。実機/代表データがあれば測れる:
       - reduce(sum): 和の条件数 κ = Σ|x| / |Σx|（相殺で増大・正の和なら ~1）。worst-case
         だが検証器は非対称コストゆえ保守側でよい。reduce(max) は ~1。
       - exp: 相対条件数 = max|x|。
+      - layer_norm: 行ごとの RMS/√(Var+eps) の **max**。LayerNorm y=(x−μ)/√(σ²+eps) の
+        ヤコビアン最大特異値は 1/√(σ²+eps) で、相対 RMS 増幅は RMS(x)/√(σ²+eps) が
+        上界（実 LayerNorm への数値実験で検証済み）。零平均なら ≈1・平均優勢なら ≫1。
+        median でなく max を使う理由: 外れ行（massive activation 型・零平均多数派の中に
+        平均優勢行が 1 本）を median は隠し偽OK になる。reduce の median と違い max が
+        暴走しない根拠は eps ガード——比は RMS/√eps で有界（相殺のような発散が無い）。
+        eps=1e-5 は発明した係数ではなく torch.nn.LayerNorm の既定値＝実装が実際に割る数
+        （docs/SOURCES.md）。それより小さい custom eps の近定数行では上界を超えうる
+        （病的ケース・正直な限界として記す）。
+      - rms_norm: 1.0（増幅は無条件に ≤1 を実測検証済み。ただし 1 未満の減衰は
+        未検証係数になるため入れず、1.0 に固定する）。
       - その他（div/reciprocal/add 等）: 相対的には ~1。
     audit_runtime からこれを与えれば propagation の増幅が実データで発火する。
+    注意（既存の reduce/exp と共通の制限）: sample は *ネットワーク入力* であり、深部の
+    正規化層が実際に見る活性ではない（bias 等で平均がシフトしうる・分布シフト未追跡）。
     """
     import numpy as np
 
-    x = np.asarray(sample, dtype=np.float64)
+    x = asarray(sample, dtype=np.float64)
     if kind in ("reduce", "softmax"):
         if reduce_kind == "max":
             return 1.0
@@ -217,6 +238,12 @@ def empirical_cond(sample, kind: str, axis: int = -1, reduce_kind: str = "sum") 
         den = np.abs(np.sum(x, axis=axis))
         ratio = num / np.maximum(den, 1e-30)
         return float(np.median(ratio))
+    if kind == "layer_norm":
+        if not x.size:
+            return 1.0
+        rms = np.sqrt(np.mean(x ** 2, axis=axis))
+        sd = np.sqrt(np.maximum(x.var(axis=axis), 0.0) + eps)
+        return float(np.max(rms / sd))
     if kind == "exp":
         return float(np.abs(x).max()) if x.size else 1.0
     return 1.0

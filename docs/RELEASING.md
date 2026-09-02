@@ -24,10 +24,12 @@ Tsugi の「完成品」を GitHub に公開する（タグ付きリリースを
 すべて PASS してからバージョンを確定する。1 つでも落ちたら中断して直す。
 
 ```bash
-python verify.py                              # 機械可読な不変条件（全 N/N）
-python tests/correctness/run.py               # CPU 全スイート（末尾 SUMMARY を確認）
-ruff check python/ tests/ examples/           # lint clean
+python check.py     # 全ゲート（lint + correctness + 不変条件 + examples スモーク）
 ```
+
+ゲートの実体は `check.py`（ローカル/CI/リリースが共有する単一定義）。ここで個別コマンドを
+再列挙しないこと——以前は本書・CONTRIBUTING・ci-reference.yml の 3 箇所に散らばり、
+lint 対象が食い違っていた。
 
 `run.py` の SUMMARY は「緑は CPU 検証可能範囲のみ」を意味する（GPU 二ベンダー照合は
 実機が要るため常に SKIP）。GPU 経路を「検証済み」と誤読しないこと。
@@ -65,16 +67,26 @@ GitHub の Tags/Releases ページにタグが公開され、ソースアーカ�
 ## 4. 公開確認
 
 - タグ/リリースがリモートに見えることを確認（GitHub UI、または API/`git ls-remote --tags origin`）。
-- インストール検証（任意）: `pip install .` 後 `python -c "import tsugi; print(tsugi.__version__)"`
-  が新バージョンを表示すること。
+- **配布物の検証（必須）**: ソースツリー無しで動くことを確かめる（`pip install -e` は
+  ソースを参照するので配布物の検証にならない）。クリーン venv で wheel を入れ、
+  製品の入口が動き終了コード契約を守ることまで見る:
+
+  ```bash
+  pip wheel python/ -w /tmp/wh --no-deps          # wheel をビルド
+  python -m venv /tmp/v && /tmp/v/bin/pip install /tmp/wh/tsugi_torch-*.whl
+  cd /tmp && /tmp/v/bin/python -m tsugi; echo "exit=$?"   # デモは BLOCK → exit 2 が正
+  /tmp/v/bin/python -c "import tsugi, tsugi_torch; print(tsugi.__version__, hasattr(tsugi,'verify'))"
+  ```
+
+  期待: `python -m tsugi` が移植レポートを出し **exit 2**（デモは AMD 起動不能 BLOCK）、
+  `tsugi.verify` が公開され `tsugi_torch` も同梱されていること。
 
 ---
 
 ## チェックリスト（コピー用）
 
-- [ ] `python verify.py` 全 PASS（不変条件 62 = version 整合を含む）
-- [ ] `python tests/correctness/run.py` 全 PASS
-- [ ] `ruff check python/ tests/ examples/` clean
+- [ ] `python check.py` が ALL GATES PASS（不変条件 62 = version 整合を含む）
+- [ ] 配布物検証: wheel をクリーン venv に入れ `python -m tsugi` が exit 2（§4）
 - [ ] `pyproject.toml` の `version` と `tsugi.__version__` が一致・新バージョン
 - [ ] `CHANGELOG.md` に `[X.Y.Z] — 日付` 節を切り出し・空の `[Unreleased]` を新設
 - [ ] リリースコミットを作成・push

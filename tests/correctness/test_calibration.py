@@ -16,6 +16,8 @@ from tsugi.calibration import (  # noqa: E402
     SM_DIVERGENT,
     SM_OK,
     SM_SHARED,
+    SRC_CROSS_VENDOR,
+    calibrate_safety,
     check_systematic,
     detect_shared_mode,
     detectability_floor,
@@ -25,6 +27,9 @@ from tsugi.calibration import (  # noqa: E402
     roc_sweep,
     systematic_divergence,
     systematic_divergence_stderr,
+    tolerance_factor_normal,
+    wilks_confidence,
+    wilks_min_runs,
 )
 from tsugi.equivalence import compare_gemm, simulate_vendor_matmul  # noqa: E402
 from tsugi.report import Risk  # noqa: E402
@@ -225,6 +230,118 @@ def test_detection_verdict_is_seed_independent_at_safety_times_u():
     assert above == 0, f"境界直上で判定が seed 依存（{above}/{n_seeds} が等価と誤判定）"
 
 
+# --- SAFETY 定数の実機校正（FEATURE-AUDIT A-2） ---
+
+def test_tolerance_factor_matches_published_one_sided_table():
+    """Natrella 近似が公表された片側許容係数表を再現する（係数の外部検証）。
+
+    このプロジェクトの設計ガードレールは「未検証の数値係数を導入しない」。
+    tolerance_factor_normal は SAFETY の要求値を直接スケールするため、値が
+    間違っていれば校正結果ごと間違う。標準的な片側許容限界表（coverage=0.99・
+    confidence=0.95）と照合して、実装が既知の値を再現することを固定する。
+    """
+    table = {10: 3.981, 15: 3.520, 20: 3.295, 25: 3.158, 30: 3.064,
+             50: 2.862, 100: 2.684}
+    for n, expected in table.items():
+        got = tolerance_factor_normal(n, 0.99, 0.95)
+        rel = abs(got - expected) / expected
+        assert rel < 0.015, f"n={n}: k={got:.4f} vs 表 {expected}（差 {rel:.1%}）"
+        # 近似は表より *小さい* 側に外れる（要求 SAFETY を過小 = 許容を締める向き
+        # = 偽BLOCK 側）。偽OK 側に外れていないことを明示的に固定する。
+        assert got <= expected, f"n={n}: 近似が表より大きい（偽OK 方向の外れ）"
+
+    # n→∞ で coverage の正規分位点に単調収束する（σ が既知なら k=z_p——「4σ」という
+    # 素朴な言い方が成立するのはこの極限だけで、有限標本では必ず k>z_p になる）
+    from tsugi.nondeterminism import normal_quantile
+    ks = [tolerance_factor_normal(n, 0.99, 0.95) for n in (100, 1_000, 10_000, 100_000)]
+    assert ks == sorted(ks, reverse=True), f"n について単調減少でない: {ks}"
+    assert abs(ks[-1] - normal_quantile(0.99)) < 0.02, f"z_0.99 に収束しない: {ks[-1]}"
+    # 標本が少なすぎれば「主張できない」を inf で返す（黙って小さい値で埋めない）
+    assert tolerance_factor_normal(2, 0.99, 0.95) == float("inf")
+
+
+def test_wilks_sample_size_and_confidence_are_consistent():
+    """Wilks の必要標本数と達成信頼度が互いの逆算になっている（分布仮定なしの側）。"""
+    n = wilks_min_runs(0.99, 0.95)
+    assert n == 299, f"ln(0.05)/ln(0.99) = 299 のはずが {n}"
+    assert wilks_confidence(n, 0.99) >= 0.95      # ちょうど満たす
+    assert wilks_confidence(n - 1, 0.99) < 0.95   # 1 つ足りなければ満たさない
+    # 実機で現実的な 16 対では信頼度は 15% 程度しかない（「16 run 回して終わり」の弱さ）
+    assert 0.10 < wilks_confidence(16, 0.99) < 0.20
+
+
+def test_calibrate_safety_flags_safety_that_cannot_cover_measured_noise():
+    """実測の良性発散が SAFETY のヘッドルームを超えたら WARN（校正の本体・再現ケース）。
+
+    SAFETY=4.0 は一度も実機ノイズで校正されていない経験値。実機ノイズが理論 1σ の
+    4 倍を超えていれば、良性ノイズが発散と誤判定される（偽BLOCK）。ここでは
+    「1σ の約 6 倍の良性発散」を人工的に与え、校正が要求値 6σ 超を検出して
+    現行 SAFETY では覆えないと言うことを固定する。
+    """
+    K, dtype, scale = 256, "float16", 1.0
+    from tsugi.tolerance import expected_gemm_abs_error
+    sigma = expected_gemm_abs_error(K, dtype, scale, safety=1.0)
+
+    # 良性発散が 1σ の ~6 倍（ばらつき小）。SAFETY=4.0 では覆えない。
+    big = np.full(32, 6.0 * sigma)
+    rep = calibrate_safety(big, K, dtype=dtype, scale=scale)
+    assert rep.required > 4.0, f"要求値が 4.0 以下: {rep.required}"
+    assert not rep.covers_measured_noise
+    assert any(f.risk is Risk.WARN and "覆えていない" in f.message for f in rep.findings), \
+        rep.to_text()
+
+    # 回帰なし: 1σ の 0.5 倍しか揺れなければ WARN は出ない（過剰警告しない）
+    small = np.full(32, 0.5 * sigma)
+    ok = calibrate_safety(small, K, dtype=dtype, scale=scale)
+    assert ok.covers_measured_noise, ok.to_text()
+    assert not any(f.risk >= Risk.WARN for f in ok.findings), ok.to_text()
+
+
+def test_calibrate_safety_takes_max_of_normal_theory_and_sample_max():
+    """正規理論と標本最大の大きい方を採る（GPU ノイズは i.i.d. ガウスでないため）。
+
+    arXiv:2511.00025 は GPU の浮動小数誤差が独立ガウスでなく構造的・高相関である
+    ことを実測で示した。ゆえに正規理論の許容限界 mean+k*sd 単独は信用できない。
+    重い外れ値を 1 つ混ぜ、要求値が標本最大を下回らないことを固定する
+    （下回れば「実際に観測された良性発散」を許容外と宣言することになり偽BLOCK）。
+    """
+    from tsugi.tolerance import expected_gemm_abs_error
+    sigma = expected_gemm_abs_error(256, "float16", 1.0, safety=1.0)
+    d = np.concatenate([np.full(31, 0.1 * sigma), [20.0 * sigma]])  # 裾の重い 1 発
+    rep = calibrate_safety(d, 256, scale=1.0)
+    assert rep.required >= rep.ratio_max >= 19.9, rep.to_text()
+    assert rep.required >= rep.required_normal
+
+
+def test_run_to_run_calibration_refuses_to_justify_lowering_safety():
+    """run-to-run 由来の校正は「SAFETY を下げてよい」と言わない（偽OK 方向の封じ）。
+
+    同一ベンダー内の揺れは縮約順序差だけを含み、クロスベンダー発散（タイル形状・
+    行列コア・ライブラリ実装差を含む）の下界にすぎない。これで SAFETY を下げると
+    未測定成分を許容から外すことになり偽OK に倒れる。既定 source では常にこの
+    但し書きを出し、余裕（下げ代）の提示は cross_vendor 標本のときだけに限る。
+    """
+    from tsugi.tolerance import expected_gemm_abs_error
+    sigma = expected_gemm_abs_error(256, "float16", 1.0, safety=1.0)
+    tiny = np.full(32, 0.01 * sigma)   # 極端に静か = 一見「SAFETY を下げられる」
+
+    r2r = calibrate_safety(tiny, 256, scale=1.0)
+    assert any("下げる根拠にはならない" in f.message for f in r2r.findings), r2r.to_text()
+    assert not any("余裕" in f.message for f in r2r.findings), \
+        "run-to-run 標本で下げ代を提示してはならない（偽OK 方向）"
+
+    cross = calibrate_safety(tiny, 256, scale=1.0, source=SRC_CROSS_VENDOR)
+    assert any("余裕" in f.message for f in cross.findings), cross.to_text()
+
+
+def test_calibrate_safety_reports_no_evidence_when_samples_are_empty():
+    """標本ゼロを「校正済み」と誤らせない（沈黙でなく WARN + required=inf）。"""
+    rep = calibrate_safety(np.zeros(0), 256, scale=1.0)
+    assert rep.required == float("inf")
+    assert not rep.covers_measured_noise
+    assert any(f.risk is Risk.WARN and "標本がゼロ" in f.message for f in rep.findings)
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -241,6 +358,12 @@ def main() -> int:
         test_max_abs_alone_is_untrustworthy_corpus,
         test_shared_mode_failure_is_cross_vendor_blind_spot,
         test_detection_verdict_is_seed_independent_at_safety_times_u,
+        test_tolerance_factor_matches_published_one_sided_table,
+        test_wilks_sample_size_and_confidence_are_consistent,
+        test_calibrate_safety_flags_safety_that_cannot_cover_measured_noise,
+        test_calibrate_safety_takes_max_of_normal_theory_and_sample_max,
+        test_run_to_run_calibration_refuses_to_justify_lowering_safety,
+        test_calibrate_safety_reports_no_evidence_when_samples_are_empty,
     ]
     for t in tests:
         try:

@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 
-from tsugi_torch.fxbridge import audit_fx, fx_to_graph_ops  # noqa: E402
+from tsugi_torch.fxbridge import audit_fx, audit_torch, fx_to_graph_ops  # noqa: E402
 
 
 class _TM:
@@ -168,12 +168,11 @@ def test_audit_fx_warns_dynamic_shapes():
 def test_audit_fx_detects_normalization_layers():
     """LayerNorm/RMSNorm 系の op を検出し has_normalization=True を返す（FEATURE-AUDIT.md A-5）。
 
-    正規化層はほぼ scale-invariant（LN(c·x)≈LN(x)）で、上流のスケール型クロスベンダー
-    乖離を実質的にリセットする効果を持つが、propagation.propagate() はこれを考慮せず
-    通常の reduce と同じ増幅則を適用する。恣意的な減衰係数を未検証のまま導入するのは
-    危険（過大な dilution は偽OK の温床になりうる）なので、まずは正規化層の存在を
-    可視化するに留める——has_normalization=True は「model_divergence はこの効果を
-    未考慮の保守的な上界（実際より緩め）」というシグナル。
+    scale-invariant（LN(c·x)≈LN(x)）は「相対発散を増幅しない」を意味しない——A-5 の
+    数値実験で当初の想定が反転した: RMSNorm は無条件安定（amp≤1・実測 1.0021）だが、
+    LayerNorm は平均優勢入力で amp≈RMS/σ に *増幅* する（shift=10 で実測 10.10）。
+    has_normalization は両者を含む可視化フラグで、kind 自体は propagation 側で
+    layer_norm / rms_norm に分かれる（増幅則が違うため）。
     """
     norm_gm = _GM([
         _Node("placeholder", "x"),
@@ -246,6 +245,122 @@ def test_audit_fx_sample_replaces_scale1_cond1_assumptions():
     assert rep["model_divergence"] > base["model_divergence"]
 
 
+def test_fx_maps_norm_ops_to_dedicated_kinds():
+    """正規化層は reduce でなく専用 kind に写る（A-5）。
+
+    旧写像は LayerNorm/RMSNorm を "reduce" に写し、reduce の cond 統計 Σ|x|/|Σx|
+    （符号相殺）を当てていた。これは正規化に不適切で *両方向* に誤る——零平均 sample
+    では相殺で爆発（偽BLOCK）、平均優勢 sample では ≈1 なのに実 LayerNorm は
+    RMS/σ 倍に増幅（偽OK）。mean/sum/var は従来通り reduce のままであることも固定する
+    （正規化の *統計* op と正規化そのものは別物）。
+    """
+    def _norm_gm(target):
+        return _GM([
+            _Node("placeholder", "x"),
+            _Node("call_function", "aten.addmm.default", (8, 512)),
+            _Node("call_function", target),
+            _Node("output", "output"),
+        ])
+
+    assert [o.kind for o in fx_to_graph_ops(_norm_gm("aten.native_layer_norm.default"))] \
+        == ["matmul", "layer_norm"]
+    # rms_norm は "_norm" を含むので判定順序が本質（rms が先でないと layer_norm に落ちる）
+    assert [o.kind for o in fx_to_graph_ops(_norm_gm("aten._rms_norm.default"))] \
+        == ["matmul", "rms_norm"]
+    # group/batch norm も平均減算を含むので保守的に layer_norm 扱い
+    assert [o.kind for o in fx_to_graph_ops(_norm_gm("aten.native_group_norm.default"))] \
+        == ["matmul", "layer_norm"]
+    # 正規化の統計 op は reduce のまま（回帰なし）
+    assert [o.kind for o in fx_to_graph_ops(_norm_gm("aten.mean.dim"))] == ["matmul", "reduce"]
+    assert [o.kind for o in fx_to_graph_ops(_norm_gm("aten.sum.default"))] == ["matmul", "reduce"]
+    # has_normalization は 3 種の正規化すべてで True（可視化は据置）
+    for t in ("aten.native_layer_norm.default", "aten._rms_norm.default",
+              "aten.native_group_norm.default"):
+        assert audit_fx(_norm_gm(t))["has_normalization"]
+
+
+def test_audit_fx_layer_norm_cond_fires_on_mean_dominated_sample():
+    """平均優勢 sample では LayerNorm の実測 cond が model_divergence を引き上げる（A-5）。
+
+    両方向の修正を 1 つのテストで実証する: 平均優勢（μ/RMS→1）では増幅が発火して
+    予測が上がり（旧 cond≈1 は偽OK だった）、零平均では発火せず静的値に近いまま
+    （旧 reduce 統計 Σ|x|/|Σx| は零平均で ~27 に爆発し偽BLOCK だった）。
+    """
+    gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.native_layer_norm.default"),
+        _Node("output", "output"),
+    ])
+    static = audit_fx(gm)["model_divergence"]
+    rng = np.random.default_rng(0)
+
+    mean_dominated = rng.standard_normal((32, 512)) * 0.1 + 5.0
+    hot = audit_fx(gm, sample=mean_dominated)
+    assert hot["cond_measured"] is True
+    assert "layer_norm" in hot["amplifiers"]
+    assert hot["model_divergence"] > static * 3, \
+        f"平均優勢入力で増幅が発火しない（偽OK）: {hot['model_divergence']:.2e} vs {static:.2e}"
+
+    zero_mean = rng.standard_normal((32, 512))
+    cool = audit_fx(gm, sample=zero_mean)
+    assert cool["model_divergence"] < static * 2, \
+        f"零平均入力で幻の増幅が出た（偽BLOCK）: {cool['model_divergence']:.2e} vs {static:.2e}"
+
+
+def test_audit_torch_gives_the_pytorch_path_a_gated_verdict():
+    """PyTorch 経路（このプロダクトの楔）にも CI ゲート契約付きの判定を届ける。
+
+    `audit_fx` は素の dict を返すため exit_code も to_text も無く、想定ユーザーである
+    PyTorch 開発者は出荷判断に使えなかった（ゲート付き判定は tile-DSL 経路だけが持っていた）。
+    `audit_torch`（`tsugi.verify(gm)` から到達）が両経路の契約を揃える。
+
+    fail-safe: 静的 FX は等価性を *認証できない*（第2ベンダーの実出力が無い）ので、発散量に
+    閾値を発明して BLOCK にはしない。BLOCK は **利用者が与えた flip_budget を超えたときだけ**。
+    """
+    import tsugi
+
+    gm = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten._softmax.default"),
+        _Node("output", "output"),
+    ])
+    ad = audit_torch(gm)
+    assert isinstance(ad, tsugi.Audit)
+    assert hasattr(ad, "exit_code") and hasattr(ad, "to_text")
+    # 予算が無ければ静的 FX だけで BLOCK にしない（閾値を発明しない）
+    assert ad.exit_code in (0, 1) and ad.portable
+    # 実機照合が要ることを pending phase で明示する（静的で認証済みと誤読させない）
+    assert any(p.when == "pending" and "runtime" in p.name for p in ad.phases)
+
+    # 予算超過なら BLOCK（利用者の基準のみが根拠）
+    rng = np.random.default_rng(0)
+    near_tie = rng.standard_normal((500, 32)) * 0.05     # マージン小 → フリップ上界が大
+    ad_block = audit_torch(gm, ref_logits=near_tie, flip_budget=0.001)
+    assert ad_block.exit_code == 2 and not ad_block.portable
+    # 予算が十分緩ければ同じグラフでも BLOCK にならない（予算が効いている証拠）
+    ad_ok = audit_torch(gm, ref_logits=near_tie, flip_budget=1.0)
+    assert ad_ok.exit_code < 2
+
+    # tsugi.verify(gm) から同じ判定に到達できる（1 コールの入口）
+    assert tsugi.verify(gm).exit_code == ad.exit_code
+
+
+def test_audit_torch_surfaces_nondeterminism_and_dynamic_shapes_as_warnings():
+    """非決定 op / dynamic shape は WARN として判定に載る（静的に分かる事実は決定済み扱い）。"""
+    nd = _GM([
+        _Node("placeholder", "x"),
+        _Node("call_function", "aten.addmm.default", (8, 512)),
+        _Node("call_function", "aten.scatter_add.default"),   # atomicAdd 由来の非決定
+        _Node("output", "output"),
+    ])
+    ad = audit_torch(nd)
+    txt = ad.to_text()
+    assert "非決定 op" in txt and "ノイズ床" in txt
+    assert ad.exit_code >= 1        # WARN 以上（静的許容だけでは不十分と告げる）
+
+
 def main() -> int:
     ok = True
     tests = [
@@ -257,6 +372,10 @@ def main() -> int:
         test_audit_fx_ref_scale_from_logits,
         test_audit_fx_warns_dynamic_shapes,
         test_audit_fx_detects_normalization_layers,
+        test_fx_maps_norm_ops_to_dedicated_kinds,
+        test_audit_fx_layer_norm_cond_fires_on_mean_dominated_sample,
+        test_audit_torch_gives_the_pytorch_path_a_gated_verdict,
+        test_audit_torch_surfaces_nondeterminism_and_dynamic_shapes_as_warnings,
         test_audit_fx_flags_nondeterministic_atomic_ops,
         test_audit_fx_sample_replaces_scale1_cond1_assumptions,
     ]

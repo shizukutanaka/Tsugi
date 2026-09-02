@@ -76,3 +76,38 @@ analyze_rollout(0.01, L):
 
 これでセッションの検証連鎖に *生成長* の次元が加わる: 数値（equivalence）→ タスク
 （decision）→ シーケンス（rollout）と、ユーザーに見える単位へ段階的に引き上がる。
+
+## 追補: beam search は静的 logit から認証できない（負の結果・A-9/Q22）
+
+本視点は per-token フリップ率 p を `(1−p)^L` で系列 survival へ合成する。greedy/top-k/
+nucleus はこの枠組みに乗る（各ステップ独立に候補が定まる）。だが **beam search は乗らない**。
+
+### なぜか
+
+beam は各ステップで argmax（局所最適）でなく、幅 k の仮説を **累積対数尤度** で並べ替える。
+局所的に劣る token でも系列全体のスコアが高ければ残る。この「先読み」が per-token 独立の
+前提を壊す。
+
+### 2 つの候補合成則を数値実験で試し、どちらも失敗した
+
+自己回帰トイモデル（次トークン logit が直前トークンに依存）で測定:
+
+| p の取り方 | 結果 | 誤りの向き |
+|---|---|---|
+| argmax フリップ率 | beam が過渡的発散を復元するため survival を過小評価（L=20 で実 survival が合成の 50〜95 倍） | **偽OK**（最悪） |
+| frontier(top-k 集合)フリップ率 | 復元を無視し過度に悲観的（k=16 で p≈0.997・全 BLOCK） | 無情報 |
+
+### 唯一の頑健な法則と、それでも認証しない理由
+
+`beam survival ≥ greedy survival`（全 k/L/ε で成立）。beam は幅 k の冗長性で、片ベンダーで
+一時的に順位を落とした仮説を復元しうる。だから greedy は beam の **経験的下界**——
+しかし *証明* ではない。fail-safe 原則（guardrail 3: 不確実なら BLOCK 寄り）に従い、
+`decode="beam"` は greedy 合成を参考値として返しつつ verdict を **決して OK にしない**。
+
+### 位置づけ: これは「できないことの記録」である
+
+このリポジトリは A-5 で「前提が実験で反転」を、A-9/Q32 で「TV 距離で解決」を記録した。
+Q22 は 3 つ目のパターン——**「静的検証の原理的境界を数値実験で確定し、未解決 TODO を
+解決済みの設計判断に格上げする」**。真の beam 認証には系列レベルの beam decode（モデル
+状態が要る実行時活動）が必要で、worstcase/attribution が「codegen 後」なのと同じ壁の裏側。
+出典（Kool の Gumbel-Top-k で beam↔sampling の連続性など）は docs/SOURCES.md。

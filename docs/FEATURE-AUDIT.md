@@ -9,7 +9,8 @@
 
 - **Tsugi**: PyTorch `torch.compile` 向けの GPU ベンダー間（NVIDIA↔AMD）移植性検証
   ライブラリ。数値等価性・起動可能性・タスク影響を GPU 実機なしの CPU シミュレーションで
-  検証する。コードは `python/tsugi/`（30 モジュール）と `python/tsugi_torch/`（2 モジュール）。
+  検証する。コードは `python/tsugi/` と `python/tsugi_torch/`（モジュール数は増えるので数えない——
+  文書に焼き込んだ数値は腐る。第 61 回に台帳の数値主張 6 件すべてが実態とずれていた）。
 - **facade**: 製品の主要入口となる統合関数。`python/tsugi/audit.py` の
   `audit()`（静的検証）・`audit_runtime()`（実データ検証）・`audit_cross_vendor()`（実機入口）、
   および `python/tsugi_torch/__init__.py` の `_tsugi_compile()`（torch.compile バックエンド）。
@@ -19,7 +20,7 @@
 - **fail-safe**: 不確実なら BLOCK 側に倒す設計原則。偽OK の温床（点推定の過信・暗黙の既定値）
   を潰すことがこのプロジェクトの一貫した改善軸。
 - **Risk**: 全レポート共通の深刻度。`OK < INFO < WARN < BLOCK`（`python/tsugi/report.py`）。
-- **検証基盤の規模**: `verify.py` に 167/167 の機械検証可能な不変条件。
+- **検証基盤の規模**: `verify.py` に 190/190 の機械検証可能な不変条件。
   `tests/correctness/` に 27 テストファイル。すべて CPU で実行可能（`python verify.py`）。
 - **関連文書**: この台帳（機能の過不足）に対し、`docs/ASSESSMENT.md` はプロダクト・
   プロセス・運用まで含めた長所短所改善案の評価。改善案は `docs/INSTRUCTIONS-OPUS.md`
@@ -36,14 +37,14 @@
 | ID | 分類 | 優先度 | 対象 | 状態 | 一行要約 |
 |---|---|---|---|---|---|
 | A-1 | 過剰(点推定→上側限界) | — | `decision.py` `compare_task()` | 解消済み(6e044f3) | regression/binary/ranking の予算判定を flip_rate_ub（Wilson 上側限界）に修正済み |
-| A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU) | 実機 GPU での end-to-end 検証がゼロ |
-| A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出を接続済み。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
-| A-4 | 不足 | P1 | `lowering.py` ／GPU codegen | 環境待ち(LLVM/MLIR) | PTX/AMDGCN 生成が無い（対応表のみ・Phase 4） |
-| A-5 | 不足 | P1 | `propagation.py` `propagate()` | 一部解消(425fc22) | 数値モデルは未対応(要検証)だが、torch 経路の警告で過大評価バイアスを可視化済み |
+| A-2 | 不足 | P0 | `tests/gpu/` ／実機全般 | 環境待ち(GPU)・手続きは完了 | 実機 GPU での end-to-end 検証がゼロ。**実機入手日に実行できる手順（`docs/GPU-BRINGUP.md`）と SAFETY 校正の機械的手続き（`calibration.calibrate_safety`・実機入口に接続済み）は完成**——残るのは実機そのもの |
+| A-3 | 不足 | P2 | `tsugi_torch/__init__.py` `_tsugi_compile()` | 大部分解消 | nondeterminism 警告＋sample 由来の scale/cond 実測・外れチャネル検出に加え、**`audit_torch` が FX グラフをゲート付き `Audit`（exit_code/to_text）で返す**——想定ユーザーが `tsugi.verify(gm)` 1 コールで出荷判断できる（不変条件 89）。さらに第62回で **CPU 2 ベンダー模倣**（`tsugi_torch.simulate`）を結線し、判定の根拠を静的な天井から実測フリップへ移した（不変条件 110）。同時に、代表入力がdynamo に持ち上げられた **重み行列** だった欠陥を修正（不変条件 111）。残: worstcase/attribution/LAYOUT/タスク別 decision（実行時出力が要るため codegen 後） |
+| A-4 | ✅解消(L2) | — | `codegen.py` ／GPU codegen | dab5d4f+ | 実 PTX/AMDGCN 生成→アセンブル→符号化照合→ロード構造→LLVM と命令選択照合。**実行のみ実機待ち(L3)** |
+| A-5 | 不足 | — | `propagation.py` / `fxbridge._kind_of` | 解消済み(3a29b94) | **数値実験で前提が反転**: 正規化は「増幅しない」のでなく LayerNorm は平均優勢入力で amp≈RMS/σ に増幅。専用 kind(`layer_norm`増幅/`rms_norm`非増幅)を導入し旧警告の偽OK 主張を撤回。残: cond は入力 sample 実測で深部活性の分布シフト未追跡 |
 | A-6 | 過剰(接続済) | — | facade 未接続スキャン全般 | 解消済み(88846ec) | デッドコード／未接続検出を verify.py の恒常不変条件として CI 化 |
 | A-7 | 不足 | — | `decision.py` 統計判定 | 解消済み | per-sample δ（Q19）＋多 seed 分布報告（Q48・例示値を中央値/p10-p90 に置換）、両方解消 |
 | A-8 | 不足 | — | scale 推定 | 解消済み | dtype 別 denormal 率検査(Q16)＋propagation→decision 橋の仮定をレポートに明示(Q15)、両方解消 |
-| A-9 | 不足 | P2 | タスクモデル拡張 | 一部解消 | oracle 有り時の accuracy 差併記(Q31)は解消——audit_runtime(logits_oracle=)が task レベル shared-mode を WARN。残: beam search・温度サンプリング下の分布一致 |
+| A-9 | 不足 | — | タスクモデル拡張 | **解消済み** | Q31(oracle 照合)・Q32(温度サンプリング=TV 距離)・Q22(beam=静的認証不可と結論)・**Q21(代表集合の裾サポート=超過数 k で信頼性を定量化)** をすべて解消。beam の系列レベル decode は実行時活動(別軸) |
 | A-10 | 不足 | — | 検証基盤の構造 | 解消済み | main() 分割（Q34）・乱数境界点検（Q43）・カバレッジ計測（Q38・`coverage_report.py` で関数 93.0%・未実行 op を発見し解消）、すべて解消 |
 | A-11 | 不足 | — | 開発運用（Q4/Q5/Q42/Q46） | 解消済み(4605479/afa52ef/+) | 閾値定数の境界感度テスト・依存ライセンス監査・遅延 import 方針、すべて解消 |
 | A-12 | 不足 | — | `audit.py:_graph_ops()` / `propagation.propagate_dag` | 解消済み | 恒等路つき（residual/softmax）＋計算 N 分岐（N≥2・attention ヘッド和/N-ary 合流）を SSA から抽出し propagate_dag(correlated=True・保守側)に接続。残: 交差辺のある一般 DAG のみ（SP 近似の設計上の限界） |
@@ -84,18 +85,35 @@
      `test_compare_task_ranking_single_query_no_wilson_widening`。
      verify.py 不変条件 50 番。詳細は CHANGELOG.md の commit 6e044f3 に対応するエントリを参照。
 
-2. **[A-2] 実機 GPU での end-to-end 検証が一度もない**
+2. **[A-2] 実機 GPU での end-to-end 検証が一度もない（手続きは完成・実機のみ待ち）**
    - 何が無いか: 全検証層は CPU シミュレーション（NumPy oracle・擬似ベンダー）でのみ検証済み。
      NVIDIA/AMD 実機での動作確認はゼロ（`docs/SOCRATIC-50-improvements.md` の Q50）。
    - なぜ危険か: 「検証器が実機で正しい」という主張自体が未検証。SAFETY 係数（4.0）等の
      定数も実機ノイズでの校正待ち。
-   - 推奨アクション: `tests/gpu/` ハーネス（GPU 無しでは正直に SKIP する設計）を実機で実行し、
-     `audit_cross_vendor()` に実カーネルを渡す。要 GPU 環境のため優先度は高いが着手可能性は
-     環境依存。
+   - **手続き側は解消済み**: 実機が無くても「実機の run が手に入った瞬間に機械的に校正する
+     手続き」は今フリーズできる、という切り分けで着手した。
+     - `docs/GPU-BRINGUP.md`: 実機入手日に上から順に実行できる 4 フェーズの手順書。
+       **Phase 1（ノイズ床実測）と Phase 2（SAFETY 校正）は GPU 1 台で完結する**——
+       「2 ベンダー揃うまで何もできない」は誤りで、検証器の定数校正は片側だけで着手できる。
+     - `calibration.calibrate_safety`: 実測した良性発散から SAFETY の要求値を導く。
+       「4σ」が成立するのは σ 既知の極限だけで、有限標本では片側許容限界の係数
+       k(n,coverage,confidence) > z_coverage が要る（Natrella 1963）。分布仮定なしの側は
+       Wilks 1941（0.99/0.95 に 299 対必要・16 対の達成信頼度は 14.9%）。両者の max を
+       採るのは、GPU の浮動小数ノイズが i.i.d. ガウスでなく構造的・高相関だと実測で
+       示されているため（arXiv:2511.00025・`docs/SOURCES.md`）。
+     - 実機入口 `audit_cross_vendor()` に接続済み（B-1 の轍を踏まない）。集めた run を
+       使い回し、実機 run 消費は 1 ベンダーあたり `n_runs` 回ちょうど（従来より 1 回減）。
+     - **fail-safe の要**: run-to-run 標本はクロスベンダー発散の *下界* にすぎないので、
+       SAFETY を上げる根拠にはなるが下げる根拠にはならない（下げれば未測定成分を許容から
+       外し偽OK に倒れる）。`source="cross_vendor"` を明示したときだけ下げ代を提示する。
+       verify.py 不変条件 74/75。
+   - 残る推奨アクション: `tests/gpu/` ハーネス（GPU 無しでは正直に SKIP する設計）を実機で
+     実行し、`audit_cross_vendor()` に実カーネルを渡す。結果は `docs/GPU-BRINGUP.md` の
+     記録テンプレートに追記する。着手可能性は環境依存。
 
 ### P1（P0 の次）
 
-3. **[A-3] 一部解消(commit efdc027)** `python/tsugi_torch/__init__.py` `_tsugi_compile()`
+3. **[A-3] 大部分解消(efdc027 → 9513851)** `python/tsugi_torch/__init__.py` `_tsugi_compile()`
    が `audit_fx` しか呼ばない
    - 何が無いか: torch.compile バックエンド経路は FX グラフの静的監査
      （`fxbridge.audit_fx`: 増幅 op・モデル発散・非決定 op・dynamic shape 検出）のみ。
@@ -110,35 +128,77 @@
    - なぜ危険か（残る部分）: 製品の想定入口は `torch.compile(model, backend="tsugi")`。
      そこから使えない機能（worstcase・attribution・LAYOUT 判別・タスク別 decision）は
      依然として大半のユーザーに存在しないのと同じ。
-   - 推奨アクション: example_inputs から実行時検証に必要なデータ（代表テンソル・logits）を
-     best-effort で取り出し、`audit()` の `sample=` / `ref_logits=` に相当する情報を
-     警告メッセージに追加する段階的接続。フル接続は実行時出力が要るため codegen 後。
+   - **第 60 回でさらに前進**: FX → Tsugi IR の降下（`tsugi_torch/fxlower.py`）を入れ、
+     楔ユーザーが tile-DSL 経路と同じ **codegen 検証**（アセンブル・符号化照合・
+     ロード構造・LLVM 突き合わせ）を受け取れるようにした。表せない op は partial として
+     判定に載る。降下の意味論は `tsugi.interp` で torch eager と照合済み（8 経路 <1e-9）。
+   - **その過程で実 FX に対する全面的な偽OK を発見・修正**: `call_module` の target は
+     "0"/"1" という経路名で op の種類を表さず、解決していなかったため `audit_fx` は
+     実モデルに対し「0 numeric ops・発散 0・正規化なし」を報告していた（＝想定ユーザーの
+     モデルが必ず無害判定）。stand-in グラフは aten 名を使うため露見せず、実 torch を
+     入れて初めて判明した。**duck-typed 検証の限界を示す実例**（不変条件 99）。
+   - 残り: worstcase・attribution・LAYOUT 判別・タスク別 decision。いずれも**実行時
+     出力**が要るため L3（実機）待ちで、これは検証器側の設計課題ではない。
 
-4. **[A-4] GPU codegen 未実装**
-   - 何が無いか: `python/tsugi/lowering.py` は tile op → NVVM/ROCDL/SPIRV の対応表
-     （データ）のみで、実際の PTX/AMDGCN 生成は無い。バックエンドは eager 素通し
-     （その旨を明示的に warn する誠実な実装にはなっている）。
-   - なぜ危険か: 「単一ソースで両ベンダー対応」という製品価値の中核が未達。
-   - 推奨アクション: LLVM/MLIR 環境が要る Phase 4 作業。ロードマップは
-     `python/tsugi_torch/__init__.py` の docstring に 5 段階で記載済み。
+4. **[A-4] ✅ 解消済み・L2 まで(commit dab5d4f)** GPU codegen 未実装
+   ——**「不可能」という前提そのものが誤りだった事例**
+   - 何が無かったか: `lowering.py` は tile op → NVVM/ROCDL/SPIRV の対応表（データ）
+     のみで、実際の PTX/AMDGCN 生成が無かった。
+   - **なぜ 50 回以上放置されたか**: 「codegen は LLVM/MLIR + 実機が要る」を前提として
+     書き続けていた。工程を分解すると誤りだと分かる——生成は純関数（文字列）、
+     アセンブルは CPU ツール（`ptxas` / `llvm-mc`）、実機が要るのは**実行だけ**。
+     `llvm-mc` は環境にあり `ptxas` は pip 一つで入る（どちらも GPU 不要）。
+     この誤った前提は不変条件 7 とテストにも凍結されており、検査が実装を阻んでいた。
+   - どう解消したか: `python/tsugi/codegen.py` が単一 IR から 3 ターゲット
+     （nvidia/amd_cdna/amd_rdna）の実アセンブリを生成し、**ベンダー自身のアセンブラ**に
+     受理させる。検証レベル L0-L3 を明示し、**L3（実機実行）は常に空**。
+     副産物として、アセンブラが arch 条件付き可用性を事実として返す
+     （WMMA は sm_70+ / MFMA は CDNA 専用）——手書きの表では作り込めない移植ブロッカー。
+   - 検証の重ね方（すべて CPU・すべて第三者のツールが真値）: ①ベンダーのアセンブラが
+     受理する ②逆アセンブルして意図した命令が符号化されている ③ローダが要求する部品
+     （記述子・メタデータ）が ELF に実在する ④**LLVM の命令選択と一致する**。
+     ④は独立実装による裏づけで、`add.f32` が ptxas に fma へ contraction されうる
+     という欠陥を実際に検出した（`.rn` 明示へ修正・不変条件 96）。
+   - 残り（L3・実機待ち）: 実ランタイムでのロードと起動・レイアウト接合
+     （`layout-unstitched` 注記の解消）・リファレンスとの数値照合。詳細は `docs/CODEGEN.md`。
 
-5. **[A-5] 一部解消(commit 425fc22)** `python/tsugi/propagation.py` が正規化層での
-   scale リセットを追えない（Q11）
-   - 何が無いか: `propagate()` は相対発散を op 列に沿って合成するが、LayerNorm/RMSNorm が
-     活性の scale を正規化して発散の絶対量をリセットする効果をモデル化していない（amp≈1 と単純化）。
-   - なぜ危険か: 深いモデルでの発散予測が過大（偽BLOCK 側）または構造誤りになりうる。
-   - **一部解消済み**: `propagate()` 自体の数値モデルはまだ scale リセットを考慮しないが
-     （恣意的な減衰係数を未検証のまま導入するリスクを避けるため意図的に据え置き）、
-     `fxbridge.audit_fx()` に `has_normalization: bool` を追加し、正規化層があるグラフでは
-     `model_divergence` が「scale リセット効果を未考慮の保守的な上界」であることを
-     `_tsugi_compile()` の警告メッセージで明示するようにした。ユーザーが過大な
-     WARN を額面通り受け取り過剰反応しないための透明性確保。
-   - 推奨アクション（残る本体）: `GraphOp` に scale 伝播を追加し、正規化 op で発散を
-     再基準化する版を検討。ただし減衰係数は理論的検証済みの値であるべき——例えば
-     `residual=True` の √ 合成は実際の pre-norm transformer 数値実験で検証済みだったが、
-     正規化層の scale-invariance を反映する減衰係数はまだ検証されていない。
-     未検証のまま導入すると過大な dilution が偽OK の温床になりうるため、
-     実際の LayerNorm/RMSNorm 実装に対する数値実験による検証が先決。
+5. **[A-5] ✅ 解消済み(commit 3a29b94)** 正規化層の相対発散増幅をモデル化していなかった
+   問題（Q11）——**数値実験で当初の前提が反転した事例**
+   - 何が無かったか: `propagate()` は LayerNorm/RMSNorm を専用に扱わず、`fxbridge._kind_of`
+     がこれらを `"reduce"` に写していた。そのため reduce の条件数統計 `Σ|x|/|Σx|`
+     （符号相殺）が当たっていたが、これは正規化には無関係な統計量だった。
+   - **なぜ危険だったか（台帳の当初の記述は誤りだった）**: 当初は「scale リセットを
+     未考慮 → 予測が過大（偽BLOCK 側）」とだけ書かれていた。実際は **両方向に誤っていた**:
+
+     | 入力 | 旧 cond | 実 LayerNorm の実測 amp | 誤りの向き |
+     |---|---|---|---|
+     | 零平均 | 27.3 | 1.00 | 過大 → 偽BLOCK（想定通り） |
+     | shift=3 | 1.00 | 3.15 | 過小 → **偽OK**（想定の逆） |
+     | shift=10 | 1.00 | 10.04 | 過小 → **偽OK**（想定の逆） |
+
+     さらに `_tsugi_compile` の警告文「実際の発散はこれより小さい可能性」自体が
+     **無条件の偽OK 主張**だった。
+   - **前提の反転**: 作業指示は「LN のヤコビアンは 2 方向を射影落とすので増幅は理論上
+     ≤1 になるはず」と書いていた。射影は正しいが、残る最大特異値は `g/√(σ²+eps)` で、
+     相対量では上界が `RMS(x)/√(σ²+eps) = 1/√(1−(μ/RMS)²) ≥ 1` となり **1 を下回れない**。
+     「scale-invariant だから安全」は *絶対* スケールの話で、*相対* 発散の増幅とは別物。
+     設計ガードレール 2（未検証の数値係数を導入しない）が誤った符号の係数を防いだ実例。
+   - 修正内容: kind `layer_norm`（増幅・`amp=max(1,cond)`）/`rms_norm`（非増幅・`amp=1.0`
+     固定）を追加。`empirical_cond(x,"layer_norm")` は行ごと `RMS/√(σ²+eps)` の **max**
+     （median は零平均多数派に紛れた外れ行を隠し偽OK になる。eps ガードで有界なので
+     reduce と違い max が暴走しない）。`eps=1e-5` は `torch.nn.LayerNorm` 既定値。
+     RMSNorm は実測 ≤1（worst 1.0021）だが **1 未満の減衰係数は入れない**（過大な
+     dilution は偽OK の温床）。`_kind_of` は `rms_norm` 判定が先（`"_norm"` を含むため）。
+     `mean`/`sum`/`var` は `reduce` のまま。
+   - 実証: テスト 7 本・verify.py 不変条件 76/77。受け入れ基準「予測が実測を下回らない」は
+     平均優勢・零平均の **両レジーム**で固定（零平均側は新統計で予測が下がるため、
+     下がっても偽OK にならないことの機械的証拠）。副産物として
+     `test_layer_norm_jacobian_nullspace_is_annihilated`（実装中に踏んだ seed 衝突バグを
+     2 消失特異値の実証として資産化——同じ大きさの摂動でも *向き* で増幅が 0 倍にも
+     10 倍にもなる）。
+   - **残（隠さない）**: cond は *ネットワーク入力* sample から測っており、深部の正規化層が
+     実際に見る活性ではない（bias 等で平均がシフトしうる）。reduce/exp と共通の既存制限で、
+     解消には sample の前方伝播が要る。出典は `docs/SOURCES.md`「正規化層の数値安定性」節。
 
 6. **[A-6] ✅ 解消済み(commit 88846ec)** facade 未接続・デッドコードの機械的
    スキャンが手動のままだった問題（Q56）
@@ -198,10 +258,16 @@
      test: `test_graph_ops_extracts_three_way_computed_fork`。verify.py 不変条件 68。
    - **残（設計上の限界）**: 交差辺のある一般 DAG（重み共有・cross-attention の往復）は
      series-parallel で表現できないため線形/SP 近似に留まる（`propagate_dag` の設計前提）。
-   - 将来の精緻化候補: `equivalence.simulate_vendor_matmul` は累積順序差のみを模擬する
-     単純モデル。テンサーコアのビット精度（累積幅・truncation/RNE 差）を明示的にモデル化する
-     手法が報告されている（docs/SOURCES.md「確度中」節・一次確認前）——`propagate_dag` の
-     fork/merge 構造が入った後、ノード単位の誤差モデルをこの方向に精緻化する余地がある。
+   - **精緻化（一部実装済み・commit 8a7aa46）**: `equivalence.simulate_vendor_matmul` は
+     従来 累積順序差のみを模擬していたが、テンサーコアの **入力精度**（TF32=10 仮数・
+     bf16=7 仮数）を `truncate_to_tensorcore`＋`input_precision=` で模せるようにした。
+     これは実運用で最も一般的なクロス発散源（NVIDIA TF32 vs AMD IEEE・PyTorch 2.9
+     fp32_precision）で、累積順序差（√K·u）とは **別源**——入力精度発散は K 非依存（~u・
+     数値実験で確認）。`precision_policy_hint` が fp32 の TF32 帯発散を「バグでなく精度
+     ポリシー差」の兆候として `audit_runtime` で診断（LAYOUT 判定と同系統）。一次資料は
+     Fasi/Higham/Mikaitis/Pranesh, PeerJ CS 7:e330 (2021)（docs/SOURCES.md「入力精度…」節・
+     verify.py 不変条件 83）。残: 累積幅そのもの（fp16 vs fp32 accumulate の中間丸め）の
+     ノード単位モデル化は `propagate_dag` の fork/merge と組み合わせる将来課題。
 
 ### P2（理論的ギャップ・構造改善。`docs/SOCRATIC-50-improvements.md` に詳細）
 
@@ -212,12 +278,42 @@
    （Q48: 「発散 ~2000倍」等の数字が単一 seed）。
 8. **[A-8] scale 推定の精緻化**: Q13-16（`audit()` の `sample=` 引数で大枠は解消済みだが、
    dtype 別 denormal 下限・propagation→decision 橋の仮定明文化が残る）。
-9. **[A-9] タスクモデルの拡張（一部解消）**: Q31（oracle がある時の accuracy 差併記）は
-   解消——`audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率を併記し、A↔B が一致
+9. **[A-9] タスクモデルの拡張（一部解消・Q32 を追加解消）**: Q31（oracle がある時の accuracy
+   差併記）は解消——`audit_runtime(logits_oracle=)` が各ベンダーの判断誤り率を併記し、A↔B が一致
    （低フリップ率）でも両方 oracle 判断と食い違う task レベル shared-mode を WARN する
-   （`decision.flip_rate` を oracle 相手に再利用・`verify.py` 不変条件 65）。残: Q21（代表
-   logit はキャリブレーション集合から、というガイド）、Q22/Q32（beam search・温度
-   サンプリング下の分布一致）。
+   （`decision.flip_rate` を oracle 相手に再利用・`verify.py` 不変条件 65）。
+   - **Q32（温度サンプリング下の分布一致）も解消済み（commit 29964d0）**:
+     `compare_task(task="sampling", temperature=T)` が出力分布の全変動距離で判定する。
+     上界は `tanh(ε/T)`（確率比が `[e^{−2ε/T},e^{2ε/T}]` に収まることの帰結・一次近似でなく
+     大域的）。**ε の定義が要点**——softmax は shift 不変だが scale 非不変、argmax は両方に
+     不変という非対称のため、既存の `residual_divergence_rms`（純 scale で ≈0 → 偽OK）も
+     `divergence_rms`（純 shift で大 → 偽BLOCK）も使えず、shift のみを除いた第 3 の量
+     `sampling_epsilon` を導入した。T→0 で mean TV が argmax フリップ率に一致することを
+     実測で固定（サンプリング層は decision 層の厳密な一般化）。`verify.py` 不変条件 78/79。
+   - **Q22（beam search）も解消済み（本ラウンド）——ただし「実装した」でなく「静的には
+     認証不可能と結論した」形の解消**: 数値実験で per-token フリップ率の `(1−p)^L` 合成が
+     beam に不健全と判明した。argmax フリップを p にすると beam の復元を無視して survival を
+     過小評価し偽OK（L=20 で実 survival が合成の 50〜95 倍）、frontier(top-k 集合)フリップを
+     p にすると過度に悲観的（k=16 で p≈0.997・実質全 BLOCK）。beam は累積対数尤度で仮説を
+     並べ替えるため per-token 独立合成の前提が崩れる。頑健な法則は `beam survival ≥ greedy
+     survival`（beam の冗長性が過渡的発散を復元・全 k/L/ε で実測）だが *証明* でなく傾向なので、
+     `rollout_from_logits(decode="beam")`／`audit_runtime(decode="beam")` は greedy を経験的
+     下界の参考値として返しつつ verdict を **決して OK にしない**（`verify.py` 不変条件 80/81）。
+     真の beam 認証には系列レベル decode（モデル状態が要る実行時活動）が必要——worstcase/
+     attribution が「codegen 後」なのと同型の静的検証の境界。docs/SOURCES.md 参照。
+   - **Q21（代表 logit のキャリブレーション集合）も解消済み（本ラウンド）——散文でなく
+     定量診断で**: 予測橋は代表集合から `P(margin<2δ)` を推定するが、大マージンばかりの
+     集合は決定境界（near-tie）をほとんど踏まず、near-tie が多い本番のフリップ率を過小評価
+     する（偽OK・実測で予測 4.0% vs 本番 13.6%＝3.4 倍）。この gap は Wilson では閉じない
+     （Wilson は与えられた集合の比率不確実性しか見ない）。`decision.flip_bound_support` が
+     裾サポート＝**超過数 k**（= margin<2δ のサンプル数）を報告する——裾確率の相対不確実性は
+     total n でなく k に支配される（≈1/√k・n 非依存）。極値理論（POT）の安定裾サポート目安
+     30 未満なら「n でなく決定境界近傍のサンプルを増やせ」と促す。判定は変えず（Wilson が
+     既に値を保守化済み）透明化に徹する。audit の橋の従来の散文警告に定量行を追加。
+     `verify.py` 不変条件 82。docs/SOURCES.md「代表集合の裾サポート」節。
+   - **A-9 は Q21/Q22/Q31/Q32 をすべて解消し完全解消**（beam の系列レベル decode のみ
+     実行時活動として別軸に残る）。
+
 10. **[A-10] 検証基盤の構造**: Q34（`verify.py` 単一巨大 main() の関数分割）は解消済み——
     61 セクションをテーマ別の 12 個の `_check_*()` 関数に分割し、`main()` は順に呼ぶだけの
     薄い関数にした（挙動・実行順・check 文言・件数は分割前と一字一句同一であることを
@@ -297,8 +393,8 @@ facade から実際に呼ばれるかを必ず確認する）。
   `equivalence.TOLERANCE`・`envelope.DTYPE_LIMITS` の 3 表で整合管理（新 dtype は
   この 3 表に同時追加するのが規約）。NVFP4（NVIDIA 専用・AMD 非対応）は意図的に対象外
   （docs/SOURCES.md「Microscaling (MX) / NVFP4 低精度フォーマット」節）。
-- **機械検証可能な不変条件 163 件**（`verify.py`）と 27 テストファイル・property test
-  （10 性質 × 200 試行）。
+- **機械検証可能な不変条件**（`verify.py`・件数は実行して確認する）と CPU テスト
+  スイート群・property test（10 性質 × 200 試行）。
 
 ---
 

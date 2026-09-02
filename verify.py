@@ -23,6 +23,7 @@ verify.py の不変条件は tests/correctness/test_*.py と *意図的に* 重�
 from __future__ import annotations
 
 import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -72,7 +73,8 @@ def _orphan_tests() -> list[str]:
     import re
 
     orphans: list[str] = []
-    for p in sorted((ROOT / "tests" / "correctness").glob("test_*.py")):
+    suites = sorted((ROOT / "tests" / "correctness").glob("test_*.py"))
+    for p in suites:
         try:
             src = p.read_text(encoding="utf-8")
         except Exception:  # noqa: BLE001
@@ -81,6 +83,21 @@ def _orphan_tests() -> list[str]:
             refs = len(re.findall(rf"\b{re.escape(fn)}\b", src)) - 1  # -1 = def 行自身
             if refs == 0:
                 orphans.append(f"{p.name}:{fn}")
+
+    # **ファイル単位の孤児も見る**（第 61 回で発見した検査の穴）。
+    # 上のループは「関数がそのファイルの main() に登録されているか」しか見ておらず、
+    # **そのファイル自体が run.py のスイート表に載っているか**を問うていなかった——
+    # 一段浅い検査だった。実際 test_attribution / test_blame / test_worstcase /
+    # test_tsugi_torch_compile の 4 本（29 本中）がゲートから外れており、
+    # attribution（新視点12）・blame（新視点13）・worstcase・torch backend は
+    # **`python check.py` が緑でも一度も走っていなかった**。
+    try:
+        runner = (ROOT / "tests" / "correctness" / "run.py").read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return orphans
+    for p in suites:
+        if f'"{p.name}"' not in runner:
+            orphans.append(f"run.py に未登録（ゲートで一度も走らない）: {p.name}")
     return orphans
 
 
@@ -92,6 +109,106 @@ _DEPENDENCY_LICENSE_ALLOWLIST: dict[str, str] = {
     "numpy": "BSD-3-Clause",
     "torch": "BSD-3-Clause 系（PyTorch 独自ライセンス・permissive）",
 }
+
+
+def _doc_api_references(text: str | None = None) -> list[tuple[str, str, str]]:
+    """docs/README の python コード例が参照する API のうち、**実在しない**ものを返す。
+
+    ドキュメントは静かに腐る。API 名が変わっても Markdown は誰も型検査しないので、
+    ユーザーが最初に打つコマンドだけが壊れる——本ラウンドで実際に
+    「no codegen yet」という自社製品についての虚偽が残っていた。**参照の実在を機械で
+    検査する**ことで、この *種類* の腐りを構造的に止める。
+
+    対象は first-party（`tsugi*` と `tests.*`）。`docs/GPU-BRINGUP.md` が指示する
+    `tests.gpu.harness` の名前も含む——実機が来た日に最初に打つ import であり、
+    ここが腐ると一番痛い。
+
+    実行までは求めない（多くの例は変数を前提とする断片で、実行させるにはフィクスチャが
+    要り検査が脆くなる）。「その名前があるか」だけを見るのが費用対効果の最適点。
+
+    解析は正規表現でなく AST で行う: 複数行の `from x import (a, b)` を正規表現で
+    取ると `(` を名前と誤認し、シグネチャだけを並べた説明用ブロックを構文エラーとして
+    誤報する（最初の実装で実際に 4 件の誤検出が出た）。構文として解析できない
+    ブロックは *説明用の断片* とみなして飛ばす——**誤報の多いゲートは無視される**ので、
+    正しさより先に信頼性を取る。
+    """
+    import ast
+    import importlib
+
+    bad: list[tuple[str, str, str]] = []
+    if text is not None:
+        sources = [("<inline>", text)]
+    else:
+        docs = sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md"]
+        sources = [(str(d.relative_to(ROOT)), d.read_text(encoding="utf-8"))
+                   for d in docs if d.exists()]
+
+    def _resolve(name: str):
+        try:
+            return importlib.import_module(name)
+        except Exception:                                     # noqa: BLE001
+            return None
+
+    for src_name, body in sources:
+        for block in re.findall(r"```python\n(.*?)```", body, re.S):
+            try:
+                tree = ast.parse(block)
+            except SyntaxError:
+                continue                        # 説明用の断片（シグネチャ列挙など）
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and \
+                        (node.module or "").startswith(("tsugi", "tests")):
+                    mod = _resolve(node.module)
+                    if mod is None:
+                        bad.append((src_name, node.module, "import failed"))
+                        continue
+                    for alias in node.names:
+                        if alias.name != "*" and not hasattr(mod, alias.name):
+                            bad.append(
+                                (src_name, f"{node.module}.{alias.name}", "missing"))
+                elif isinstance(node, ast.Attribute) and \
+                        isinstance(node.value, ast.Name) and \
+                        node.value.id in ("tsugi", "codegen"):
+                    mod = _resolve("tsugi" if node.value.id == "tsugi"
+                                   else "tsugi.codegen")
+                    if mod is not None and not hasattr(mod, node.attr):
+                        bad.append((src_name, f"{node.value.id}.{node.attr}",
+                                    "missing"))
+    return bad
+
+
+def _doc_numeric_claims(text: str | None = None) -> list[str]:
+    """台帳（ASSESSMENT/FEATURE-AUDIT）の**数えられる主張**が実態と合うかを返す。
+
+    第 60 回で doc の *API 参照* の腐りは不変条件 104 で止めたが、doc の *数値主張* は
+    素通しだった——本ラウンドの実測で **6 件すべて腐っていた**（不変条件 190→206、
+    スイート 23→29、モジュール 30→34、docs 29→32、verify.py 1,400→2,600 行、
+    ゲート 17〜18s→実測）。同じ *種類* の腐りである。
+
+    方針（Musk 第 2 段階「最良の部品は無い部品」）: 数えられる数値は **原則 doc から
+    削る**。行数・秒数・docs 本数・モジュール数・不変条件の総数は、保守コストだけ高く
+    価値が薄いので文章から消した。**機械照合するのは CPU スイート数ただ 1 つ**——
+    実際に欠陥（23 と書いてあるが 29 本ある＝4 本がゲート外）が出た唯一の数値であり、
+    かつ安定して定義できるため。
+
+    不変条件の総数を*照合しない*のは意図的である: `len(INVARIANTS)` はこの検査自身が
+    走っている最中の途中値であり、最終値と 1 ずれる（自己参照）。**正しく書けない数値は
+    文書から消すのが正解**で、検査を無理に足すのは筋が悪い。
+    """
+    import re
+
+    bad: list[str] = []
+    suites = re.findall(r'"(test_\w+\.py)"',
+                        (ROOT / "tests" / "correctness" / "run.py").read_text(
+                            encoding="utf-8"))
+    n_suites = len(set(suites))
+    src = text if text is not None else (
+        ROOT / "docs" / "ASSESSMENT.md").read_text(encoding="utf-8")
+
+    for found in re.findall(r"CPU\s+(\d+)\s*スイート", src):
+        if int(found) != n_suites:
+            bad.append(f"CPU スイート数: 文書は {found}・実際は {n_suites}")
+    return bad
 
 
 def _declared_dependencies(text: str | None = None) -> list[str]:
@@ -224,13 +341,15 @@ def _check_prohibited_and_suites() -> None:
     check("lowering covers every emittable DSL op (nvidia/amd, no drift)",
           all(not unlowered_ops(t) for t in ("nvidia", "amd_cdna", "amd_rdna")))
 
-    # 7. machine-code emission は正直に未実装
+    # 7. machine-code emission は実装済み（不変条件 90-92 が中身を固定）。ここでは
+    #    *正直さ* だけを見る: 未対応ターゲット（SPIR-V）は黙って空を返さず明示的に
+    #    NotImplementedError を投げ、既定の dry-run は生成物を持たない。
     import tsugi
     try:
-        tsugi.compile(lambda: None, (), emit_machine_code=True)
-        check("machine-code honestly unimplemented", False)
+        tsugi.compile(lambda: None, (), target="spirv", emit_machine_code=True)
+        check("machine-code emission is honest about unsupported targets", False)
     except NotImplementedError:
-        check("machine-code honestly unimplemented", True)
+        check("machine-code emission is honest about unsupported targets", True)
 
 
 def _check_core_pillars() -> None:
@@ -1230,7 +1349,7 @@ def _check_shape_guards() -> None:
 
 
 def _check_meta_integrity() -> None:
-    """不変条件 56-73: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
+    """不変条件 56-114: orphan テスト・facade 未接続・警告 facade・依存ライセンス・
     per-sample δ（Q19）・バージョン整合・SSA fork 接続（A-12 Round 1/2/3）・task レベル
     shared-mode（Q31）・denormal 率（Q16）・橋の仮定明示（Q15）・判定の機械可読性
     （First Principles）・誤差境界モデルの選択（確率的/最悪ケース）・検出境界の seed 非依存性（Q43）・
@@ -1299,10 +1418,11 @@ def _check_meta_integrity() -> None:
           len(_w58) == 1 and "scatter_add" in str(_w58[0].message)
           and "noise floor" in str(_w58[0].message))
 
-    # 59. audit_fx/_tsugi_compile が正規化層（LayerNorm/RMSNorm）を検出し、
-    # model_divergence が scale リセット効果を未考慮の保守的な上界であることを警告する
-    # （FEATURE-AUDIT.md A-5）。恣意的な減衰係数の導入でなく、既知の過大評価バイアスを
-    # 隠さず可視化する fail-safe な選択。
+    # 59. audit_fx/_tsugi_compile が正規化層（LayerNorm/RMSNorm）を検出し、警告に出す
+    # （FEATURE-AUDIT.md A-5）。当初は「scale リセット未考慮の保守的な上界」という
+    # 但し書きだったが、数値実験で LayerNorm は平均優勢入力で *増幅* すると判明したため
+    # 文言を撤回した（不変条件 77 が新文言と旧主張の非復活を固定する）。検出フラグ自体は
+    # 可視化として維持。
     from tsugi_torch.fxbridge import audit_fx as _afx59
     _gm_norm59 = _GM58([
         _Node58("placeholder", "x"),
@@ -1618,6 +1738,1184 @@ def _check_meta_integrity() -> None:
           and _rtr72(0.0, 1e-2) == 0 and _rtr72(2e-2, 1e-2) == 0
           and _n1_72 > 1 and abs(_n2_72 / _n1_72 - 4.0) < 0.1
           and _rtr72(1e-3, 1e-2, 0.99) > _rtr72(1e-3, 1e-2, 0.95))
+
+    # 74. SAFETY=4.0 の実機校正が「4σ は σ 既知の極限値」であることを数値で示す
+    #     （FEATURE-AUDIT.md A-2）。片側正規許容係数 k(n,coverage,confidence) は
+    #     公表表（Natrella 1963・0.99/0.95）を再現し、有限標本では常に k > z_p。
+    #     つまり n=8 対しか測っていない実機で「4σ で十分」と言う根拠は無い。
+    #     近似は表より小さい側（＝要求 SAFETY を過小＝許容を締める＝偽BLOCK 側）に
+    #     外れることも固定する（偽OK 方向に外れていないことの保証）。
+    from tsugi.calibration import tolerance_factor_normal as _tf74
+    from tsugi.calibration import wilks_confidence as _wc74
+    from tsugi.calibration import wilks_min_runs as _wm74
+    from tsugi.nondeterminism import normal_quantile as _nq74
+
+    _tbl74 = {10: 3.981, 20: 3.295, 30: 3.064, 100: 2.684}
+    _z74 = _nq74(0.99)
+    check("one-sided tolerance factor reproduces the published table and exceeds z_p (A-2)",
+          all(abs(_tf74(n, 0.99, 0.95) - v) / v < 0.015 and _tf74(n, 0.99, 0.95) <= v
+              for n, v in _tbl74.items())
+          and all(_tf74(n, 0.99, 0.95) > _z74 for n in (8, 16, 100, 1000))
+          and _tf74(2, 0.99, 0.95) == float("inf")          # 標本不足は inf で正直に
+          and _wm74(0.99, 0.95) == 299 and _wc74(299, 0.99) >= 0.95)
+
+    # 75. 実機入口が SAFETY を実測校正し、run-to-run 標本では「下げてよい」と
+    #     言わない（未測定のクロス成分を許容から外す＝偽OK 方向を封じる）。
+    #     校正標本は run 対の差（比較される量と同単位）であって中心偏差ではない。
+    from tsugi.calibration import SRC_CROSS_VENDOR as _SCV75
+    from tsugi.calibration import calibrate_safety as _cs75
+    from tsugi.nondeterminism import pair_deviations as _pd75
+    from tsugi.tolerance import expected_gemm_abs_error as _eg75
+
+    _sig75 = _eg75(256, "float16", 1.0, safety=1.0)
+    _r2r75 = _cs75(np.full(32, 0.01 * _sig75), 256, scale=1.0)
+    _xv75 = _cs75(np.full(32, 0.01 * _sig75), 256, scale=1.0, source=_SCV75)
+    _big75 = _cs75(np.full(32, 6.0 * _sig75), 256, scale=1.0)
+    _st75 = np.stack([np.full((4,), -3.0 if i % 2 == 0 else 3.0) for i in range(8)])
+    check("audit_cross_vendor calibrates SAFETY from measured runs, never downward (A-2)",
+          any("下げる根拠にはならない" in f.message for f in _r2r75.findings)
+          and not any("余裕" in f.message for f in _r2r75.findings)
+          and any("余裕" in f.message for f in _xv75.findings)   # cross 標本なら下げ代を提示
+          and _big75.required > 4.0 and not _big75.covers_measured_noise
+          and _cs75(np.zeros(0), 256).required == float("inf")   # 標本ゼロは校正済み扱いしない
+          and np.allclose(_pd75(_st75), 6.0)                     # 対の差 2d（中心偏差 d の 2 倍）
+          and _pd75(_st75[:1]).size == 0)
+
+    # 76. 正規化層の相対発散増幅を *数値実験で検証してから* モデルへ入れた（A-5）。
+    #     LayerNorm y=(x−μ)/√(σ²+eps) のヤコビアン J=(1/√(σ²+eps))(I−11ᵀ/d−ŷŷᵀ/d) は
+    #     平均方向と半径（スケール）方向の 2 特異値が消える。ゆえに (a) x に平行な摂動は
+    #     出力を変えず、(b) 独立方向の摂動は RMS/√(σ²+eps) 倍まで増幅されうる。
+    #     旧実装は正規化を reduce に写し amp≈1 としており、平均優勢入力で増幅を
+    #     見逃していた（偽OK）。RMSNorm は J=(1/r)(I−ŷŷᵀ) で増幅 ≤1 が無条件に成り立つが、
+    #     1 未満の減衰係数は未検証ゆえ入れず amp=1.0 に固定する（保守側）。
+    from tsugi.propagation import GraphOp as _GO76
+    from tsugi.propagation import amplification as _amp76
+    from tsugi.propagation import empirical_cond as _ec76
+    from tsugi.propagation import is_amplifier as _ia76
+
+    def _ln76(x, eps=1e-5):
+        return (x - x.mean(-1, keepdims=True)) / np.sqrt(x.var(-1, keepdims=True) + eps)
+
+    def _measamp76(x, delta):
+        d_in = np.sqrt(np.mean(delta ** 2)) / np.sqrt(np.mean(x ** 2))
+        y, y2 = _ln76(x), _ln76(x + delta)
+        return (np.sqrt(np.mean((y2 - y) ** 2)) / np.sqrt(np.mean(y ** 2))) / d_in
+
+    _x76 = np.random.default_rng(0).standard_normal((32, 512)) + 10.0
+    _mag76 = 1e-4 * np.sqrt(np.mean(_x76 ** 2))
+    _generic76 = _measamp76(_x76, _mag76 * np.random.default_rng(9).standard_normal(_x76.shape))
+    _bound76 = _ec76(_x76, "layer_norm")
+    _zero76 = np.random.default_rng(1).standard_normal((32, 512))
+    check("layer_norm amplifies and rms_norm neither amplifies nor damps (A-5)",
+          _ia76("layer_norm") and not _ia76("rms_norm")
+          and _amp76(_GO76("rms_norm", cond=100.0)) == 1.0      # 減衰係数も入れない
+          and _amp76(_GO76("layer_norm", cond=7.0)) == 7.0)
+    check("empirical_cond(layer_norm)=max RMS/sqrt(var+eps) bounds measured amplification",
+          _generic76 > 2.0 and _generic76 <= _bound76 * 1.05      # 増幅は実在し上界内
+          and _bound76 > 5.0 and _ec76(_zero76, "layer_norm") < 2.0)
+    check("LayerNorm Jacobian nullspace (scale/mean directions) is annihilated as predicted",
+          _measamp76(_x76, 1e-4 * _x76) < 0.01                     # スケール方向
+          and _measamp76(_x76, np.full_like(_x76, _mag76)) < 0.01)  # 平均方向
+
+    # 77. torch 経路: 正規化は専用 kind に写り（mean/sum/var は reduce 据置）、平均優勢
+    #     sample の実測 cond が model_divergence を引き上げる。旧警告の「実際の発散は
+    #     これより小さい可能性」（無条件の偽OK 主張）が復活していないことも固定する。
+    from tsugi_torch.fxbridge import audit_fx as _afx77
+    from tsugi_torch.fxbridge import fx_to_graph_ops as _f2g77
+
+    def _gm77(target):
+        return _GM58([
+            _Node58("placeholder", "x"),
+            _Node58("call_function", "aten.addmm.default", (8, 512)),
+            _Node58("call_function", target),
+            _Node58("output", "output"),
+        ])
+
+    _rng77 = np.random.default_rng(0)
+    _hot77 = _afx77(_gm77("aten.native_layer_norm.default"),
+                    sample=_rng77.standard_normal((32, 512)) * 0.1 + 5.0)
+    _static77 = _afx77(_gm77("aten.native_layer_norm.default"))["model_divergence"]
+    with _warnings58.catch_warnings(record=True) as _w77:
+        _warnings58.simplefilter("always")
+        _compile58(_gm77("aten.native_layer_norm.default"), [])
+    check("fx maps norm ops to dedicated kinds (mean/sum stay reduce)",
+          [o.kind for o in _f2g77(_gm77("aten.native_layer_norm.default"))]
+          == ["matmul", "layer_norm"]
+          and [o.kind for o in _f2g77(_gm77("aten._rms_norm.default"))]
+          == ["matmul", "rms_norm"]                       # 判定順序（rms が先）を固定
+          and [o.kind for o in _f2g77(_gm77("aten.mean.dim"))] == ["matmul", "reduce"])
+    check("mean-dominated sample raises model_divergence and the false-OK claim is retracted",
+          _hot77["model_divergence"] > _static77 * 3 and "layer_norm" in _hot77["amplifiers"]
+          and len(_w77) == 1 and "増幅" in str(_w77[0].message)
+          and "小さい可能性" not in str(_w77[0].message))
+
+    # 78. 温度サンプリング下の分布一致（A-9・Q22/Q32）。実運用 LLM は温度サンプリングで
+    #     出力するため argmax フリップ率だけでは出荷形態を覆えない。TV 距離の大域的上界
+    #     tanh(ε/T) を採る（確率比が [e^{−2ε/T},e^{2ε/T}] に収まることの帰結・一次近似でない）。
+    #     指示書が出発点に挙げた係数 1/2 型は実測で **破れる**（偽OK）ので採らない——
+    #     A-5 と同じ「係数は数値実験で確かめてから入れる」適用例。
+    #     ε は shift 不変・scale 非不変でなければならない: softmax は shift 不変だが
+    #     scale 非不変（一様スケール＝温度変化）で、argmax は両方に不変という非対称がある。
+    #     既存の residual（argmax 用）は純 scale で ≈0 → 偽OK、total は純 shift で大 → 偽BLOCK。
+    from tsugi.decision import compare_task as _ct78
+    from tsugi.decision import divergence_rms as _drms78
+    from tsugi.decision import flip_rate as _fr78
+    from tsugi.decision import residual_divergence_rms as _res78
+    from tsugi.decision import sampling_epsilon as _se78
+    from tsugi.decision import tv_bound as _tvb78
+
+    def _sm78(z, T):
+        e = np.exp((z - z.max(-1, keepdims=True)) / T)
+        return e / e.sum(-1, keepdims=True)
+
+    def _tv78(a, b, T):
+        return 0.5 * np.abs(_sm78(a, T) - _sm78(b, T)).sum(-1)
+
+    _rng78 = np.random.default_rng(0)
+    _z78 = _rng78.standard_normal((2000, 32)) * 2.0
+    _b78 = _z78 + 0.05 * _rng78.standard_normal(_z78.shape)
+    # 上界が有効（任意の摂動）／tanh/2 では破れる（係数の外部検証）。
+    # 後者は **敵対的な摂動**（各座標 ±ε）でのみ露出する——ランダムなガウス摂動は
+    # 最悪ケースから遠く、そこだけ見ると誤って「1/2 でも足りる」と結論しかねない。
+    _ok78 = True
+    for _T in (0.2, 1.0, 4.0):
+        _tv = _tv78(_z78, _b78, _T)
+        _bd = _tvb78(_se78(_z78, _b78), _T)
+        _ok78 = _ok78 and bool((_tv <= _bd + 1e-12).all())
+    _half78 = False
+    for _eps78 in (0.1, 1.0, 3.0):
+        _adv78 = _z78 + np.random.default_rng(7).choice([-_eps78, _eps78], size=_z78.shape)
+        for _T in (0.5, 1.0):
+            _tva = _tv78(_z78, _adv78, _T)
+            _bda = _tvb78(_se78(_z78, _adv78), _T)
+            _ok78 = _ok78 and bool((_tva <= _bda + 1e-12).all())
+            _half78 = _half78 or bool((_tva > _bda / 2).any())
+    check("tanh(eps/T) bounds sampling TV globally and the 1/2-coefficient form breaks (A-9)",
+          _ok78 and _half78)
+    check("sampling epsilon is shift-invariant but scale-sensitive (residual/total both wrong)",
+          float(_se78(_z78, _z78 + 3.0).max()) < 1e-9          # 純 shift → ε=0
+          and float(_tv78(_z78, _z78 + 3.0, 1.0).max()) < 1e-12  # 実際 TV も 0
+          and _drms78(_z78, _z78 + 3.0) > 2.9                  # total は大＝偽BLOCK
+          and float(_se78(_z78, 1.1 * _z78).min()) > 0.01      # 純 scale → ε>0
+          and float(_tv78(_z78, 1.1 * _z78, 1.0).mean()) > 0.01  # 実際 TV も非ゼロ
+          and _res78(_z78, 1.1 * _z78) < 1e-9)                 # residual は ≈0＝偽OK
+    # T→0 で TV 平均が argmax フリップ率に一致する（サンプリング層は decision 層の一般化）
+    _greedy78 = _fr78(_z78, _b78)
+    _cold78 = _ct78(_z78, _b78, task="sampling", temperature=0.01).flip_rate
+    check("sampling flip rate converges to the argmax flip rate as T->0 (layer continuity)",
+          _greedy78 > 0.005 and abs(_cold78 - _greedy78) <= 0.1 * _greedy78)
+
+    # 79. facade: audit_runtime(task="sampling") が実測 TV と worst-case 上界を報告し、
+    #     低温で上界が無情報になることを自ら申告する（額面通り BLOCK に使わせない）。
+    from tsugi.audit import audit_runtime as _ar79
+
+    _ad79 = _ar79(_z78, _b78, 256, logits_a=_z78, logits_b=_b78, task="sampling",
+                  task_kwargs={"temperature": 0.02}, flip_budget=0.01)
+    _dp79 = next((p for p in _ad79.phases if "sampling" in p.name), None)
+    _txt79 = _dp79.to_text() if _dp79 is not None else ""
+    check("audit_runtime(task=sampling) reports measured TV and flags a vacuous bound (A-9)",
+          _dp79 is not None and "実測 TV" in _txt79 and "tanh" in _txt79
+          and "無情報" in _txt79)
+
+    # 80. beam 探索は静的な代表 logit から *証明可能に* 認証できない（A-9/Q22）。
+    #     per-token フリップ率を (1−p)^L で合成する既存則は beam に不健全: argmax フリップは
+    #     beam の復元を無視して survival を過小評価（偽OK）、frontier(top-k 集合)フリップは
+    #     過度に悲観的。beam は累積対数尤度で並べ替えるため独立合成の前提が崩れる。
+    #     rollout_from_logits(decode="beam") は greedy を経験的下界の参考値として返しつつ
+    #     verdict を必ず WARN 以上にする（never OK・fail-safe）。
+    from tsugi.report import Risk as _Risk80
+    from tsugi.rollout import rollout_from_logits as _rfl80
+
+    _id80 = np.zeros((100, 4), dtype=np.float64)
+    _id80[:, 0] = 10.0
+    _g80 = _rfl80(_id80, _id80.copy(), 8, decode="greedy", conservative=False)
+    _bm80 = _rfl80(_id80, _id80.copy(), 8, decode="beam", conservative=False)
+    check("beam is never certified OK from static logits (greedy reference, +WARN)",
+          _g80.max_risk == _Risk80.OK and _bm80.max_risk >= _Risk80.WARN
+          and abs(_bm80.flip_rate - _g80.flip_rate) < 1e-12
+          and any("証明可能に" in f.message for f in _bm80.findings))
+
+    # 81. beam survival ≥ greedy survival を実 beam 探索（自己回帰トイモデル）で実証。
+    #     beam は幅 k の仮説を保持し過渡的な順位低下を復元するため、クロスベンダー一致は
+    #     greedy 以上になる。これが「greedy を beam の下界に使うのは安全側」の根拠であり、
+    #     同時に「greedy を beam の *認証値* に流用してはいけない（beam は実際もっと等価）」理由。
+    def _beam81(start, trans, k, steps, noise):
+        V = start.shape[0]
+        beams = [([], 0.0)]
+        for t in range(steps):
+            cand = []
+            for toks, sc in beams:
+                prev = toks[-1] if toks else None
+                lp = (start if prev is None else trans[prev]) + noise[t]
+                lp = lp - np.log(np.exp(lp).sum())
+                for v in np.argpartition(-lp, min(k, V - 1))[:min(k, V)]:
+                    cand.append((toks + [int(v)], sc + float(lp[v])))
+            cand.sort(key=lambda x: -x[1])
+            beams = cand[:k]
+        return tuple(beams[0][0])
+
+    _rng81 = np.random.default_rng(0)
+    _V81, _st81, _eps81, _n81 = 24, 6, 0.6, 120
+    _start81 = _rng81.standard_normal(_V81) * 1.5
+    _trans81 = _rng81.standard_normal((_V81, _V81)) * 1.5
+    _bmatch81 = _gmatch81 = 0
+    for _ in range(_n81):
+        _noise81 = [_rng81.standard_normal(_V81) for _ in range(_st81)]
+        _na81 = [z + _eps81 * _rng81.standard_normal(_V81) for z in _noise81]
+        _nb81 = [z + _eps81 * _rng81.standard_normal(_V81) for z in _noise81]
+        _bmatch81 += (_beam81(_start81, _trans81, 6, _st81, _na81)
+                      == _beam81(_start81, _trans81, 6, _st81, _nb81))
+        _gmatch81 += (_beam81(_start81, _trans81, 1, _st81, _na81)
+                      == _beam81(_start81, _trans81, 1, _st81, _nb81))
+    check("beam survival dominates greedy survival (redundancy recovers divergence)",
+          _bmatch81 >= _gmatch81 and _bmatch81 > _gmatch81)
+
+    # 82. 予測フリップ率上界の *信頼性* を裾サポート（超過数 k）で定量化する（A-9/Q21）。
+    #     P(margin<2δ) は決定境界近傍の裾確率で、その相対不確実性は total n でなく k に
+    #     支配される（≈1/√k・n 非依存）。Wilson は与えられた集合の比率不確実性を織り込むが、
+    #     集合が本番を代表しているかは問えない —— 大マージンばかりの代表集合は少数の
+    #     near-tie しか含まず、near-tie が多い本番のフリップ率を過小評価する（偽OK）。
+    #     この gap を裾サポート（well_supported=k≥30・極値理論の安定裾目安）が暴く。
+    #     従来の散文「分布シフトで妥当域を外れうる」を定量シグナルに置き換えた。
+    from tsugi.decision import flip_bound_support as _fbs82
+    from tsugi.decision import flip_rate as _fr82
+    from tsugi.decision import predicted_flip_bound as _pfb82
+
+    _r82 = np.random.default_rng(0)
+    _delta82 = 0.05
+    _ref82 = _r82.standard_normal((500, 10)) * 6.0            # 大マージン・境界を踏まない
+    _pa82 = _r82.standard_normal((500, 10)) * 0.3            # 本番: 境界近傍に多い
+    _pb82 = _pa82 + _delta82 * _r82.standard_normal(_pa82.shape)
+    _bound82 = _pfb82(_ref82, _delta82)
+    _true82 = _fr82(_pa82, _pb82)
+    _sup82 = _fbs82(_ref82, _delta82)
+    # 1/√k が n 非依存: 同じ k なら n が桁違いでも rel_uncertainty は同じ
+    def _setk82(k, n):
+        m = np.full(n, 10.0)
+        m[:k] = 0.001
+        return np.stack([m, np.zeros(n)], axis=-1)
+    _u1_82 = _fbs82(_setk82(30, 1000), 0.5)["rel_uncertainty"]
+    _u2_82 = _fbs82(_setk82(30, 100000), 0.5)["rel_uncertainty"]
+    check("flip-bound tail support exposes an unrepresentative calibration set (A-9/Q21)",
+          _true82 > _bound82 * 2.0                            # 偽OK gap を再現
+          and not _sup82["well_supported"]                    # 診断が不足を暴く
+          and _sup82["exceedances"] < _sup82["min_exceedances"]
+          and abs(_u1_82 - 1.0 / (30 ** 0.5)) < 1e-9          # ≈1/√k
+          and abs(_u1_82 - _u2_82) < 1e-9)                    # n 非依存
+
+    # 82b. facade: audit の propagation→decision 橋が裾サポートを定量報告する（配線）。
+    from tsugi.audit import audit as _audit82
+    from tsugi.portcheck import _demo_module as _dm82
+
+    _mod82, _blk82, _cfg82 = _dm82()
+    _ad82 = _audit82(_mod82, _cfg82, block_dims=_blk82,
+                     ref_logits=_r82.standard_normal((300, 10)) * 6.0)
+    _prop82 = next(p for p in _ad82.phases if "propagation" in p.name)
+    check("audit bridge quantifies calibration-set tail support (not just prose)",
+          any("裾サポート" in ln for ln in _prop82.lines))
+
+    # 83. テンサーコアの入力精度（TF32/bf16）をクロスベンダー発散源としてモデル化する
+    #     （累積順序差とは *別源*）。NVIDIA は fp32 GEMM を既定で TF32 に落としうる
+    #     （PyTorch 2.9 fp32_precision・FlexAttention の ieee→tf32 回帰）が AMD は TF32 非対応。
+    #     入力仮数 truncation は各要素の相対摂動なので発散は ~u で **K 非依存**（累積は √K·u）。
+    #     precision_policy_hint が fp32 の TF32 帯発散を「バグでなく既知の精度ポリシー差」の
+    #     兆候として拾い（LAYOUT 判定と同系統の良性差検出）、audit_runtime に接続済み。
+    from tsugi.equivalence import input_precision_divergence as _ipd83
+    from tsugi.equivalence import precision_policy_hint as _pph83
+    from tsugi.equivalence import simulate_vendor_matmul as _svm83
+    from tsugi.equivalence import truncate_to_tensorcore as _ttc83
+
+    _r83 = np.random.default_rng(0)
+    _a83 = _r83.standard_normal((64, 2048)).astype(np.float32)
+    _b83 = _r83.standard_normal((2048, 64)).astype(np.float32)
+    _ie83 = _svm83(_a83, _b83)
+    _tf83 = _svm83(_a83, _b83, input_precision="tf32")
+    _rel83 = float(np.linalg.norm(_tf83 - _ie83) / np.linalg.norm(_ie83))
+    # 別の K でも発散はほぼ一定（flat・√K でない）
+    _a83b = _r83.standard_normal((64, 256)).astype(np.float32)
+    _b83b = _r83.standard_normal((256, 64)).astype(np.float32)
+    _rel83b = float(np.linalg.norm(_svm83(_a83b, _b83b, input_precision="tf32")
+                                   - _svm83(_a83b, _b83b))
+                    / np.linalg.norm(_svm83(_a83b, _b83b)))
+    _vtrunc83 = _ttc83(_a83, "tf32")
+    check("tensor-core input precision (TF32) is modeled as a K-independent divergence source",
+          np.abs((_vtrunc83 - _a83) / _a83).max() <= 2.0 ** -11 + 1e-9   # フォーマット定義
+          and _rel83 <= _ipd83("tf32")                                   # 予測上界内
+          and max(_rel83, _rel83b) / min(_rel83, _rel83b) < 1.5          # K 非依存（flat）
+          and _pph83(_ie83, _tf83, 2048, "float32") is not None          # 兆候を拾う
+          and _pph83(_ie83, _ie83 * 1.01, 2048, "float32") is None       # 粗いバグは拾わない
+          and _pph83(_ie83, _tf83, 2048, "float16") is None)             # 非 fp32 は黙る
+
+    # 83b. facade: audit_runtime が fp32 の TF32 帯発散に精度ポリシーヒントを surface する。
+    from tsugi.audit import audit_runtime as _ar83
+
+    _ad83 = _ar83(_ie83, _tf83, 2048, dtype="float32")
+    _eqp83 = next(p for p in _ad83.phases if "equivalence" in p.name)
+    check("audit_runtime surfaces the TF32 precision-policy hint on fp32 divergence",
+          any("精度ポリシー差" in ln for ln in _eqp83.lines))
+
+    # 84. テンサーコアの丸めモード差（RTZ vs RNE）は *系統* 発散＝第 3 の発散クラス。
+    #     入力精度差（~u・K 非依存）と累積順序差（√K·u）はどちらもゼロ平均だが、
+    #     round-toward-zero は仮数を切り捨てて |値| を系統的に縮めるため RMS 比が下がる
+    #     （一方向バイアス）。テンサーコアの丸めは実装定義で RTZ 系が報告される
+    #     （Fasi/Higham/Mikaitis/Pranesh, PeerJ CS 7:e330, 2021）。max_abs だけの等価判定は
+    #     この一方向差を見逃しうるが、calibration.check_systematic（RMS 比）が捕まえる。
+    from tsugi.calibration import check_systematic as _cs84
+    from tsugi.calibration import systematic_divergence as _sd84
+    from tsugi.equivalence import simulate_vendor_matmul as _svm84
+    from tsugi.equivalence import truncate_to_tensorcore as _ttc84
+
+    _r84 = np.random.default_rng(0)
+    _a84 = _r84.standard_normal((64, 2048)).astype(np.float32)
+    _b84 = _r84.standard_normal((2048, 64)).astype(np.float32)
+    _ie84 = _svm84(_a84, _b84)
+    _order84 = abs(_sd84(_ie84, _svm84(_a84, _b84, split_k=8)))
+    _prec84 = abs(_sd84(_ie84, _svm84(_a84, _b84, input_precision="tf32")))
+    _rtz84 = _svm84(_a84, _b84, input_precision="tf32", input_rounding="rtz")
+    _bias84 = _sd84(_ie84, _rtz84)
+    # RTZ 既定回帰なし: input_rounding 未指定 = rne
+    _v84 = _r84.standard_normal(1000).astype(np.float32)
+    check("round-toward-zero is a biased divergence class caught by check_systematic",
+          _bias84 < 0                                          # |値| が縮む（一方向）
+          and abs(_bias84) > 20 * max(_order84, _prec84)       # 他 2 クラスより桁違いに大
+          and not _cs84(_ie84, _rtz84, K=2048, dtype="float32").ok   # RMS 比が検出
+          and np.array_equal(_ttc84(_v84, "tf32"),             # 既定は RNE（後方互換）
+                             _ttc84(_v84, "tf32", "rne")))
+
+    # 85. 3xTF32（Triton input_precision="tf32x3" / CUTLASS 3xTF32）は TF32 発散の *緩和策*。
+    #     各 fp32 を hi+lo の 2 TF32 成分に分割し 3 項で積む（lo·lo を落とす・Ootomo & Yokota
+    #     2022, arXiv:2203.03341）。残差 ~u_tf32²（~2⁻²²）で平 TF32（~2⁻¹¹）より桁違いに正確。
+    #     精度ポリシー選択（ieee/tf32/tf32x3）が発散を決める——tf32x3 ベンダーと IEEE ベンダーの
+    #     発散は fp32 等価ゆえ precision_policy_hint は拾わない。
+    from tsugi.equivalence import input_precision_divergence as _ipd85
+    from tsugi.equivalence import precision_policy_hint as _pph85
+    from tsugi.equivalence import simulate_vendor_matmul as _svm85
+
+    _r85 = np.random.default_rng(0)
+    _a85 = _r85.standard_normal((64, 2048)).astype(np.float32)
+    _b85 = _r85.standard_normal((2048, 64)).astype(np.float32)
+    _ie85 = _svm85(_a85, _b85)
+    _tf85 = _svm85(_a85, _b85, input_precision="tf32")
+    _x3_85 = _svm85(_a85, _b85, input_precision="tf32x3")
+    def _rel(x):
+        return float(np.linalg.norm(x - _ie85) / np.linalg.norm(_ie85))
+    check("tf32x3 error-correction recovers near-fp32 accuracy (mitigates TF32 divergence)",
+          _rel(_x3_85) < _rel(_tf85) / 50                       # 桁違いに正確
+          and _rel(_x3_85) <= _ipd85("tf32x3")                  # 予測上界内
+          and _ipd85("tf32x3") < _ipd85("tf32")                 # 復元を上界も反映
+          and _pph85(_ie85, _tf85, 2048, "float32") is not None  # tf32 は拾う
+          and _pph85(_ie85, _x3_85, 2048, "float32") is None)    # tf32x3 は fp32 等価ゆえ黙る
+
+    # 86. CLI（portcheck.report / `python -m tsugi`）の終了コードは CI ゲート契約
+    #     （OK/INFO=0・WARN=1・BLOCK=2）に忠実であること。従来 `0 if portable else 1` で
+    #     BLOCK(2) と WARN(1) を 1 に潰しており、CI が exit>=2 でのみ失敗する設定だと BLOCK が
+    #     素通りした（プロセス層の偽OK）。report は audit.exit_code をそのまま返す。
+    from tsugi.audit import audit as _audit86
+    from tsugi.portcheck import _demo_module as _dm86
+    from tsugi.portcheck import report as _rep86
+
+    _mod86, _blk86, _cfg86 = _dm86()
+    import contextlib as _ctx86
+    import io as _io86
+    _buf86 = _io86.StringIO()
+    with _ctx86.redirect_stdout(_buf86):
+        _rc86 = _rep86(_mod86, _blk86, _cfg86)
+    _a86 = _audit86(_mod86, _cfg86, block_dims=_blk86)
+    check("CLI exit code follows the OK/WARN/BLOCK gate contract (BLOCK=2, not collapsed)",
+          _a86.max_risk.name == "BLOCK" and _rc86 == _a86.exit_code == 2)
+
+    # 87. tsugi.verify() は移植性検証のワンコール入口（CLI の Python 版・簡素化）。
+    #     パス（.py カーネル）と traced module の両方を受け、Audit を返す。手作業の
+    #     trace→audit 連結を 1 コールに畳んだ価値経路——CLI(portcheck)もこれ経由。
+    import tsugi as _tsugi87
+    from tsugi.portcheck import _demo_module as _dm87
+
+    _mod87, _blk87, _cfg87 = _dm87()
+    _ad87 = _tsugi87.verify(_mod87, block_dims=_blk87, cfg=_cfg87)
+    from pathlib import Path as _P87
+    _ex87 = _P87(__file__).resolve().parent / "examples" / "user_kernel.py"
+    _adp87 = _tsugi87.verify(str(_ex87))
+    check("tsugi.verify() one-call facade accepts module and path, returns gated Audit",
+          isinstance(_ad87, _tsugi87.Audit) and _ad87.exit_code == 2
+          and isinstance(_adp87, _tsugi87.Audit) and _adp87.exit_code in (0, 1, 2))
+
+    # 88. 検証ゲートは `check.py` の **単一定義** をローカルと CI が共有する。
+    #     以前は CONTRIBUTING.md と docs/ci-reference.yml にゲートが二重定義され実際に
+    #     食い違っていた（CONTRIBUTING が verify.py を lint 対象から落としていた）——
+    #     「ローカル緑・CI 赤」の温床。両文書が check.py を *呼ぶだけ* になっており、
+    #     ゲートを再列挙していないことを機械的に固定する（ドリフトを構造的に不可能にする）。
+    _root88 = _P87(__file__).resolve().parent
+    _chk88 = (_root88 / "check.py").read_text(encoding="utf-8")
+    _ci88 = (_root88 / "docs" / "ci-reference.yml").read_text(encoding="utf-8")
+    _contrib88 = (_root88 / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    _rel88 = (_root88 / "docs" / "RELEASING.md").read_text(encoding="utf-8")
+    check("verification gates have a single definition (check.py) shared by local/CI/release",
+          "LINT_TARGETS" in _chk88 and "SMOKE_EXAMPLES" in _chk88   # ゲート実体は check.py
+          and "verify.py" in _chk88                                 # lint 対象に verify.py を含む
+          # 旧 3 重定義（CI/CONTRIBUTING/RELEASING）はいずれも呼ぶだけ・再列挙しない
+          and all("python check.py" in d for d in (_ci88, _contrib88, _rel88))
+          and not any("ruff check python/" in d for d in (_ci88, _rel88)))
+
+    # 89. このプロダクトの楔は **フレームワーク層（torch.compile）** なのに、ゲート付き判定
+    #     （exit_code/to_text）は tile-DSL 経路だけが持ち、想定ユーザーである PyTorch 開発者は
+    #     `audit_fx` の素の dict しか得られず出荷判断に使えなかった。`audit_torch`
+    #     （`tsugi.verify(gm)` から到達）が両経路の契約を揃える。
+    #     fail-safe: 静的 FX は等価性を認証できない（第2ベンダー出力が無い）ので発散量に閾値を
+    #     発明して BLOCK にしない——BLOCK は利用者が与えた flip_budget 超過のときだけ。
+    import tsugi as _tsugi89
+    from tsugi_torch.fxbridge import audit_torch as _at89
+
+    _gm89 = _GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default", (8, 512)),
+        _Node58("call_function", "aten._softmax.default"),
+        _Node58("output", "output"),
+    ])
+    _ad89 = _at89(_gm89)
+    _nt89 = np.random.default_rng(0).standard_normal((500, 32)) * 0.05   # near-tie 多め
+    _blk89 = _at89(_gm89, ref_logits=_nt89, flip_budget=0.001)
+    _ok89 = _at89(_gm89, ref_logits=_nt89, flip_budget=1.0)
+    check("torch/FX path yields a gated Audit; BLOCK only from the user's flip_budget",
+          isinstance(_ad89, _tsugi89.Audit)
+          and _ad89.exit_code in (0, 1) and _ad89.portable      # 閾値を発明しない
+          and any(p.when == "pending" for p in _ad89.phases)    # 実機照合が要ると明示
+          and _blk89.exit_code == 2                             # 予算超過なら BLOCK
+          and _ok89.exit_code < 2                               # 予算が緩ければ通す
+          and _tsugi89.verify(_gm89).exit_code == _ad89.exit_code)  # verify() から到達
+
+    # 90. 「codegen は LLVM/MLIR + 実機が要るので不可能」は **要件の誤り**だった。
+    #     生成（純関数）とアセンブル（CPU ツール）と実行（要 GPU）は別物で、前二者は
+    #     この環境で可能。単一の IR から 3 ターゲットの実アセンブリが出ること、そして
+    #     **ベンダー自身のアセンブラ**（ptxas / llvm-mc）が受理することを固定する。
+    #     ツールが無い環境では ok=None（L1）に落ち、**未検証を合格に丸めない**。
+    from tsugi import codegen as _cg90
+    from tsugi import tile as _tile90
+    from tsugi.tracer import EMITTABLE_OPS as _EMITTABLE90
+
+    @_tsugi89.jit
+    def _KMM90(a, b, c, M, N, K, BM, BN, BK):
+        pm, pn = _tsugi89.program_id(0), _tsugi89.program_id(1)
+        acc = _tile90.zeros((BM, BN), _tsugi89.float32)
+        for k in range(0, K, BK):
+            acc = _tile90.dot(_tile90.load(a, (pm * BM, k), (BM, BK)),
+                              _tile90.load(b, (k, pn * BN), (BK, BN)), acc)
+        _tile90.store(c, (pm * BM, pn * BN), acc.to(_tsugi89.float16))
+
+    _ARGS90 = (np.zeros((32, 32), np.float16), np.zeros((32, 32), np.float16),
+               np.zeros((32, 32), np.float32), 32, 32, 32, 16, 16, 16)
+    _mod90 = _tsugi89.trace(_KMM90, _ARGS90, {}, program_ids=(0, 0))
+    _res90 = {t: _cg90.verify_codegen(_mod90, target=t) for t in _cg90.TARGETS}
+    check("one IR emits real PTX/AMDGCN that the vendors' own assemblers accept (or L1)",
+          all(em.text.strip() and not em.uncovered for em, _ in _res90.values())
+          and ".visible .entry" in _res90["nvidia"][0].text
+          and all(".amdgcn_target" in _res90[t][0].text
+                  for t in ("amd_cdna", "amd_rdna"))
+          and all((a.ok is True and a.obj_bytes > 0) if _cg90.toolchain(t) is not None
+                  else (a.ok is None and a.available is False)
+                  for t, (_, a) in _res90.items())
+          # L3（実機実行検証）は到達不能。どの経路もそれを主張しない。
+          and all(a.level != _cg90.VERIFY_LEVELS[3] for _, a in _res90.values()))
+
+    # 91. codegen の価値は「テキストが出る」ことでなく、**arch 条件付きの可用性を
+    #     ツールチェインが事実として返す**こと。手書きの対応表では作り込めない
+    #     移植ブロッカー（WMMA は sm_70+ / MFMA は CDNA 専用）をアセンブラに問う。
+    #     さらに壊れたアセンブリが弾かれることで、この検査自体の有効性を担保する。
+    _probe91 = _cg90.probe_op
+    check("the assembler is the oracle: arch-conditional gaps are found, junk is rejected",
+          (_cg90.toolchain("nvidia") is None or (
+              _probe91("dot", target="nvidia", arch="sm_80").ok is True
+              and _probe91("dot", target="nvidia", arch="sm_60").ok is False
+              and _probe91("add", target="nvidia", arch="sm_60").ok is True
+              and _cg90.assemble(".version 7.0\n.target sm_80\nbogus_ins;\n",
+                                 target="nvidia").ok is False))
+          and (_cg90.toolchain("amd_cdna") is None or (
+              _probe91("dot", target="amd_cdna", arch="gfx90a").ok is True
+              and _probe91("dot", target="amd_rdna", arch="gfx1100").ok is True
+              # CDNA の MFMA を RDNA の arch へ → 成立しない（単一命令では移植不可）
+              and _probe91("dot", target="amd_cdna", arch="gfx1100",
+                           isa="amd_cdna").ok is False
+              and _cg90.assemble("\tv_no_such_instruction v0, v1\n",
+                                 target="amd_cdna").ok is False)))
+
+    # 92. 生成が facade（audit / compile）から到達し、**保証しないもの**を黙らない。
+    #     L2 が言えるのは命令の存在・構文・arch 可用性まで。レイアウト接合と実行の
+    #     正しさは L3（実機）で、そこは常に空だとレポート自身が述べること。
+    _ad92 = _tsugi89.audit(_mod90, block_dims=(32,))
+    _cgp92 = [p for p in _ad92.phases if p.name.startswith("codegen")]
+    _art92 = _tsugi89.compile(_KMM90, _ARGS90, target="nvidia", emit_machine_code=True)
+    check("codegen is reachable from the facades and declares what it does NOT verify",
+          len(_cgp92) == 1                                        # audit に載る
+          and "L3" in _cgp92[0].to_text() and "常に空" in _cgp92[0].to_text()
+          and any(n.startswith("layout-unstitched")               # 未接合を黙らない
+                  for n in _cg90.emit(_mod90, target="nvidia").unstitched)
+          and _art92.asm is not None                              # compile から到達
+          and _art92.level == (_cg90.VERIFY_LEVELS[2]
+                               if _cg90.toolchain("nvidia") is not None
+                               else _cg90.VERIFY_LEVELS[1])
+          and _tsugi89.compile(_KMM90, _ARGS90, target="nvidia").asm is None
+          # ビット同一でないと分類した op が実際に近似命令を出している（分類が腐らない）
+          and set(_cg90.BIT_EXACT_ACROSS_VENDORS) == set(_cg90.CODEGEN_OPS)
+          and _cg90.CODEGEN_OPS <= _EMITTABLE90
+          and not _cg90.uncodegenned_ops("nvidia"))
+
+    # 93. アセンブラが**受理する**ことと、意図した命令に**符号化される**ことは別。
+    #     別名・別エンコーディングへ黙って解釈されうる。出来上がったオブジェクトを
+    #     第二のツール（逆アセンブラ／シンボルリーダ）で読み直して照合する。
+    #     この検査は実際に欠陥を見つけた: RDNA3 は同じ機械語を別ニーモニックで綴り
+    #     （global_load_dword → global_load_b32）、llvm-mc は CDNA の綴りを別名として
+    #     黙って受理していた。アセンブル成功だけでは気づけない種類の不整合。
+    _enc93 = {t: _cg90.verify_encoding(_mod90, target=t) for t in _cg90.TARGETS}
+    _rdna93 = _cg90.emit(_mod90, target="amd_rdna").text
+    _cdna93 = _cg90.emit(_mod90, target="amd_cdna").text
+    check("encoding round-trip: the intended instructions are the ones actually encoded",
+          all((e.ok is True and any(k.name in e.symbols for k in _mod90.kernels))
+              if e.available else e.ok is None                # 未検証を合格にしない
+              for e in _enc93.values())
+          # AMD は逆アセンブル往復・NVIDIA は往復していないことを自己申告する
+          and (not _enc93["amd_cdna"].available
+               or (_enc93["amd_cdna"].method == "disasm-roundtrip"
+                   and _enc93["amd_cdna"].decoded))
+          and (not _enc93["nvidia"].available
+               or ("nvdisasm" in _enc93["nvidia"].method
+                   and not _enc93["nvidia"].decoded
+                   and _enc93["nvidia"].spill_bytes == 0))
+          # 上の欠陥の回帰固定: arch ごとに正しい綴りを出す
+          and "global_load_b32" in _rdna93 and "s_load_b128" in _rdna93
+          and "global_load_dword" not in _rdna93
+          and "global_load_dword" in _cdna93)
+
+    # 94. 「アセンブルできる」と「ローダが受け付ける形になっている」も別。`.text` だけの
+    #     オブジェクトには起動情報（kernarg サイズ・レジスタ数・ワークグループ上限）が
+    #     無く ROCm ローダが拒否する。HSA カーネル記述子（.amdhsa_kernel）と AMDGPU
+    #     メタデータノートを出し、**ELF から部品の実在を確かめる**。
+    #     記述子の内部整合は llvm-mc が検査するが（accum_offset 超過は error）、
+    #     メタデータの .symbol と記述子シンボルの一致は見ない（実測 rc=0）ので ELF で見る。
+    #     これはロードして走らせた証明ではない（それは L3）。
+    _ld94 = {t: _cg90.verify_loadable(_mod90, target=t) for t in _cg90.TARGETS}
+    _names94 = [k.name for k in _mod90.kernels]
+    _good94 = _cg90.emit(_mod90, target="amd_cdna").text
+    check("generated objects carry the structure a loader requires (not just .text)",
+          all((e.ok is True and e.has_metadata) if e.available else e.ok is None
+              for e in _ld94.values())
+          and all(n in _ld94["amd_cdna"].symbols and f"{n}.kd" in _ld94["amd_cdna"].symbols
+                  for n in _names94) if _ld94["amd_cdna"].available else True)
+    check("the assembler validates the kernel descriptor (it is checked, not decoration)",
+          _cg90.toolchain("amd_cdna") is None or (
+              ".amdhsa_kernel" in _good94 and ".amdgpu_metadata" in _good94
+              and _cg90.assemble(_good94, target="amd_cdna").ok is True
+              # accum_offset が VGPR 総数を超える記述子は error になる
+              and _cg90.assemble(
+                  _good94.replace(".amdhsa_accum_offset",
+                                  ".amdhsa_accum_offset 999 ;", 1),
+                  target="amd_cdna").ok is False))
+
+    # 96. ここまでの検査は「私が書いた命令」を前提にしていた。命令選択**そのもの**の
+    #     妥当性は ISA 文書の読み取り（人手の判断）に依存したままだった。LLVM の
+    #     AMDGPU/NVPTX バックエンドは同じ問題を解いている**独立実装**であり、Tsugi を
+    #     知らない——ゆえに循環しない裏づけになる。この突き合わせで実際に欠陥が出た:
+    #     修飾なしの `add.f32`/`mul.f32` は ptxas が `fma.rn.f32` へ contraction しうる
+    #     （中間丸めが消えて数値が変わる）。ビット等価を検証する道具が contraction
+    #     可能な形を出すのは自己矛盾で、LLVM に倣い `.rn` 明示へ直した。
+    _xc96 = {t: _cg90.cross_check_lowering(target=t) for t in _cg90.TARGETS}
+    _ptx96 = {op: _cg90.emit(_cg90._probe_module(op), target="nvidia").text
+              for op in ("add", "sub", "mul", "div")}
+    check("LLVM's own backends agree with our instruction selection (independent oracle)",
+          all(r.ok is True for xs in _xc96.values() for r in xs.values()
+              if r.available)
+          # 回帰固定: PTX の算術は丸めモードを明示し contraction を許さない
+          and all(f"{op}.rn.f32" in t and f"{op}.f32 " not in t
+                  for op, t in _ptx96.items()))
+
+    # 97. 「AMD 側だけ精緻化を要する」⟺「ビット同一でない」——分類を LLVM の出力で裏づける。
+    #     NVIDIA が単一の正確丸め命令で済ませる演算を AMD が精緻化列で実装するなら、
+    #     AMD の単独命令は正確丸めでない。**例外は rsqrt**（分類 False だが片側精緻化は
+    #     起きない）——両社とも近似命令で LLVM もその近似をそのまま使うため。両者が
+    #     近似という点で対称でも実装が違うのでビット同一にはならない。理由が違う。
+    _asym97 = {k for k in _cg90.CODEGEN_OPS - _cg90.NO_LLVM_REFERENCE
+               if _xc96["amd_cdna"][k].available and _xc96["nvidia"][k].available
+               and _xc96["amd_cdna"][k].llvm_refines
+               and not _xc96["nvidia"][k].llvm_refines}
+    _sym97 = (_cg90.CODEGEN_OPS - _cg90.NO_LLVM_REFERENCE) - _asym97
+    _have97 = all(r.available for xs in (_xc96["nvidia"], _xc96["amd_cdna"])
+                  for r in xs.values())
+    check("one-sided refinement in LLVM corroborates the bit-exactness classification",
+          not _have97 or (
+              _asym97 == {"div", "exp", "sqrt"}
+              and all(not _cg90.BIT_EXACT_ACROSS_VENDORS[k] for k in _asym97)
+              and all(_cg90.BIT_EXACT_ACROSS_VENDORS[k]
+                      for k in _sym97 - {"rsqrt"})
+              and not _cg90.BIT_EXACT_ACROSS_VENDORS["rsqrt"]))
+
+    # 98. codegen が届いていたのは **tile-DSL を書く人だけ**だった。このプロダクトの楔は
+    #     torch.compile であり、想定ユーザーは PyTorch 開発者である。彼らの経路は
+    #     論理 op 列（発散予測用）を作るだけで `ir.Module` を一度も作らず、「単一ソースで
+    #     両ベンダー」という看板の約束が看板の想定客に一切届いていなかった。
+    #     `fx_to_ir` がそこを繋ぐ。**表せない op は黙って落とさず partial と言う**。
+    from tsugi_torch.fxlower import fx_to_ir as _f2ir
+
+    _lm98 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.addmm.default"),
+        _Node58("call_function", "aten.native_layer_norm.default"),
+        _Node58("call_function", "aten._softmax.default"),
+        _Node58("output", "output"),
+    ]))
+    _bad98 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten._log_softmax.default"),   # log は DSL に無い
+        _Node58("call_function", "aten.gelu.default"),           # erf 版は表せない
+        _Node58("output", "output"),
+    ]))
+    _asm98 = {t: _cg90.verify_codegen(_lm98.module, target=t)[1]
+              for t in _cg90.TARGETS}
+    check("the PyTorch path reaches real machine code, and gaps are declared partial",
+          _lm98.module.op_kinds() and not _lm98.report.partial
+          and all((a.ok is True) if _cg90.toolchain(t) is not None else a.ok is None
+                  for t, a in _asm98.items())
+          # 表せない op（log_softmax・erf 版 gelu）は partial として載る
+          and _bad98.report.partial
+          and any("log_softmax" in u for u in _bad98.report.unsupported)
+          and any("erf" in u for u in _bad98.report.unsupported)
+          # eps を静的に決められないときは「仮定した」と言う
+          and any("eps" in a for a in _lm98.report.assumptions))
+
+    # 99. **実 `torch.fx` に対してだけ全滅していた偽OK の回帰固定**。`call_module` の
+    #     target は "0"/"1" という経路名で op の種類を表さない。解決しないと `_kind_of`
+    #     が全ノードで None を返し、`audit_fx` は「0 numeric ops・発散 0」を報告する
+    #     ——想定ユーザーのモデルが必ず無害判定になる。stand-in グラフは aten 名を
+    #     使っていたため露見せず、実 torch を入れて初めて判明した（第 60 回）。
+    from tsugi_torch.fxbridge import audit_fx as _afx99
+    from tsugi_torch.fxbridge import resolved_target as _rt99
+
+    class _Mod99:                      # get_submodule を持つ最小の stand-in
+        def __init__(self, mapping):
+            self._m = mapping
+            self.graph = None
+
+        def get_submodule(self, t):
+            return self._m[t]
+
+    class _LN99:
+        pass
+    _LN99.__name__ = "LayerNorm"
+
+    class _SM99:
+        pass
+    _SM99.__name__ = "Softmax"
+
+    class _LIN99:
+        pass
+    _LIN99.__name__ = "Linear"
+
+    _gm99 = _Mod99({"0": _LIN99(), "1": _LN99(), "2": _SM99()})
+    _gm99.graph = _Graph58([_Node58("placeholder", "x"),
+                            _Node58("call_module", "0"),
+                            _Node58("call_module", "1"),
+                            _Node58("call_module", "2"),
+                            _Node58("output", "output")])
+    _rep99 = _afx99(_gm99)
+    check("call_module targets resolve to op kinds (else every real model reads as harmless)",
+          _rt99(_Node58("call_module", "1"), _gm99) == "LayerNorm"
+          and _rep99["n_ops"] >= 3                     # 解決前は 0 だった
+          and _rep99["model_divergence"] > 0.0         # 解決前は 0.0 だった
+          and _rep99["has_normalization"] is True      # 解決前は False だった
+          and {"layer_norm", "softmax"} <= set(_rep99["amplifiers"]))
+
+    # 100. 降下が *意味* を保つかはアセンブラにも LLVM にも問えない——実行して比べる
+    #      しかない。`interp` が IR に CPU リファレンス意味論を与え、torch があれば
+    #      eager と突き合わせる。torch が無ければ **主張しない**（未検証を合格にしない）。
+    from tsugi.interp import evaluate as _ev100
+
+    _x100 = np.random.default_rng(0).standard_normal((4, 16))
+    _sm100 = _f2ir(_GM58([_Node58("placeholder", "x"),
+                          _Node58("call_function", "aten._softmax.default"),
+                          _Node58("output", "output")]))
+    _got100 = _ev100(_sm100.module, [_x100])[-1]
+    _ref100 = np.exp(_x100 - _x100.max(1, keepdims=True))
+    _ref100 = _ref100 / _ref100.sum(1, keepdims=True)
+    _torch100 = True
+    try:
+        import torch as _t100
+        import torch.nn as _tnn100
+        _mods100 = {"softmax": _tnn100.Softmax(-1),
+                    "layer_norm": _tnn100.LayerNorm(16, elementwise_affine=False),
+                    "silu": _tnn100.SiLU(), "tanh": _tnn100.Tanh()}
+        _xt100 = _t100.tensor(_x100, dtype=_t100.float64)
+        for _m100 in _mods100.values():
+            _m100 = _m100.double()
+            _lm100 = _f2ir(_t100.fx.symbolic_trace(_m100))
+            _e100 = float(np.max(np.abs(
+                _ev100(_lm100.module, [_x100])[-1]
+                - _m100(_xt100).detach().numpy())))
+            _torch100 = _torch100 and _e100 < 1e-9
+    except Exception:                                  # noqa: BLE001
+        _torch100 = None                               # torch 無し: 主張しない
+    check("lowered IR preserves meaning (NumPy interp vs closed form; vs torch eager if present)",
+          float(np.max(np.abs(_got100 - _ref100))) < 1e-12
+          and (_torch100 is None or _torch100 is True))
+
+    # 101. README が掲げる実際の入口は `torch.compile(model, backend="tsugi")` である。
+    #      そこが出す警告は **今の実態**を述べねばならない。codegen 実装後も
+    #      "no codegen yet" と言い続けるのは自分の製品についての虚偽になる。
+    #      同時に、実行は eager 素通しのままだと言い続ける（L2 と L3 を混同させない）。
+    _src101 = (ROOT / "python" / "tsugi_torch" / "__init__.py").read_text(
+        encoding="utf-8")
+    _warn101 = None
+    try:
+        import warnings as _w101
+
+        import torch as _t101
+        import torch.nn as _tn101
+
+        import tsugi_torch as _tt101
+        _tt101.register()
+        _m101 = _tn101.Sequential(_tn101.Linear(16, 16), _tn101.LayerNorm(16),
+                                  _tn101.Softmax(-1))
+        _x101 = _t101.randn(4, 16)
+        with _w101.catch_warnings(record=True) as _rec101:
+            _w101.simplefilter("always")
+            _out101 = _t101.compile(_m101, backend="tsugi")(_x101)
+        _msgs101 = [str(r.message) for r in _rec101 if "[tsugi]" in str(r.message)]
+        _warn101 = (_t101.allclose(_out101, _m101(_x101)) and bool(_msgs101)
+                    and "codegen:" in _msgs101[0]
+                    and "実行は未検証" in _msgs101[0]
+                    and "0 numeric ops" not in _msgs101[0])
+    except Exception:                                  # noqa: BLE001
+        _warn101 = None                                # torch 無し: 主張しない
+    # 102. 生成カーネルの引数が何のテンソルなのかを IR 自身が持つ（`load` の binding）。
+    #      これが無いと重みを含むモデルの意味論を照合できず、実際に 2 件の欠陥が
+    #      隠れていた: `linear(x,W,b) = x·Wᵀ + b` の転置落ちと、`call_function` 経路で
+    #      bias が落ちる件（max|Δ|≈3.8e-01）。**どちらもアセンブルは通る**。
+    #      束縛が足りなければ黙って別のテンソルを使わず落ちること（偽OK 防止）も固定。
+    _lin102 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.linear.default"),
+        _Node58("output", "output"),
+    ]))
+    _dot102 = [o for o in _lin102.module.kernels[0].body if o.kind == "dot"]
+    _mm102 = _f2ir(_GM58([
+        _Node58("placeholder", "x"),
+        _Node58("call_function", "aten.mm.default"),
+        _Node58("output", "output"),
+    ]))
+    _dotmm102 = [o for o in _mm102.module.kernels[0].body if o.kind == "dot"]
+    try:
+        _ev100(_lin102.module, {"nope": np.zeros((2, 2))})
+        _raises102 = False
+    except KeyError:
+        _raises102 = True
+    except Exception:                                  # noqa: BLE001
+        _raises102 = False
+    _torch102 = True
+    try:
+        import torch as _t102
+        import torch.nn as _tn102
+        _x102 = _t102.randn(3, 6, dtype=_t102.float64)
+        for _m102 in (_tn102.Linear(6, 4), _tn102.Linear(6, 4, bias=False),
+                      _tn102.Sequential(_tn102.Linear(6, 8), _tn102.Tanh(),
+                                        _tn102.Linear(8, 4))):
+            _m102 = _m102.double()
+            _l102 = _f2ir(_t102.fx.symbolic_trace(_m102))
+            _p102 = dict(_m102.named_parameters())
+            _b102 = {d: (_x102.numpy() if d.startswith("input:")
+                         else _p102[d.split(":", 1)[1]].detach().numpy())
+                     for d in _l102.report.bindings}
+            _e102 = float(np.max(np.abs(_ev100(_l102.module, _b102)[-1]
+                                        - _m102(_x102).detach().numpy())))
+            _torch102 = _torch102 and _e102 < 1e-9
+    except Exception:                                  # noqa: BLE001
+        _torch102 = None
+    check("IR records what each load binds, so weighted models can be checked for meaning",
+          _lin102.report.bindings                      # 束縛が記録される
+          and _dot102 and _dot102[0].attrs.get("rhs_transposed") is True
+          and _dotmm102 and not _dotmm102[0].attrs.get("rhs_transposed")
+          and _raises102                               # 足りなければ落ちる
+          and (_torch102 is None or _torch102 is True))
+
+    # 103. `audit_runtime` は「両ベンダーの実機出力を突き合わせる」入口であり、渡される
+    #      テンソルは当然 **GPU 上にある**。`np.asarray` を直接呼んでいた頃は、実機を
+    #      手にしたユーザーの最初のコマンドが製品の説明でなく torch の生の TypeError で
+    #      止まった。`to_array` が `.detach().cpu().numpy()` を通す。
+    #      同時に `layers_*`/`fn_*` は *呼び出し可能* であって配列ではないので変換しない。
+    from tsugi.audit import audit_runtime as _audit_runtime
+    from tsugi.audit import to_array as _ta103
+
+    class _Dev103:                     # GPU テンソルの挙動（numpy 変換で TypeError）
+        def __init__(self, arr):
+            self._a = np.asarray(arr)
+
+        def __array__(self, *a, **k):
+            raise TypeError("can't convert cuda:0 device type tensor to numpy")
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self._a
+
+    _rng103 = np.random.default_rng(0)
+    _a103 = _rng103.standard_normal((8, 16))
+    _b103 = _a103 + _rng103.standard_normal((8, 16)) * 1e-4
+    _plain103 = False
+    try:                               # stand-in が実際に numpy 変換を拒む（検査の有効性）
+        np.asarray(_Dev103(_a103))
+        _plain103 = True
+    except TypeError:
+        _plain103 = False
+    _ad103 = _audit_runtime(_Dev103(_a103), _Dev103(_b103), K=256, dtype="float16")
+    from tsugi.audit import audit_cross_vendor as _acv103
+    _rngc103 = np.random.default_rng(1)
+    _acvd103 = _acv103(lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
+                       lambda s: _Dev103(_rngc103.standard_normal((8, 16))),
+                       K=256, n_runs=4)
+    # 検証層は「**両ベンダーの実機出力**を突き合わせる」ためにあるのだから、テンソルを
+    # 取る公開関数は *すべて* device テンソルを受けられねばならない。1 箇所ずつ直すと
+    # 直し漏れるので、`arrays.asarray` を 1 つ定義して層が使う asarray を差し替えた。
+    # ここは **面で**（公開 API を掃いて）非回帰を固定する。
+    _tsu103 = _tsugi89
+    _L103 = _rng103.standard_normal((40, 8))
+    _runs103 = [_Dev103(_rng103.standard_normal((8, 16))) for _ in range(4)]
+    _sweep103 = [
+        ("equivalence.compare",
+         lambda: _tsu103.equivalence.compare(_Dev103(_a103), _Dev103(_b103))),
+        ("decision.compare_decisions",
+         lambda: _tsu103.decision.compare_decisions(_Dev103(_L103),
+                                                   _Dev103(_L103 + 1e-4))),
+        ("decision.compare_task",
+         lambda: _tsu103.decision.compare_task(_Dev103(_L103),
+                                               _Dev103(_L103 + 1e-4),
+                                               task="ranking")),
+        ("rollout.rollout_from_logits",
+         lambda: _tsu103.rollout.rollout_from_logits(_Dev103(_L103),
+                                                     _Dev103(_L103 + 1e-4), 16)),
+        ("envelope.check_tensor",
+         lambda: _tsu103.envelope.check_tensor(
+             _Dev103(_a103), _tsu103.envelope.certify_gemm(256, "float16"))),
+        ("calibration.check_systematic",
+         lambda: _tsu103.calibration.check_systematic(_Dev103(_a103),
+                                                     _Dev103(_b103))),
+        ("nondeterminism.noise_floor_from_runs",
+         lambda: _tsu103.nondeterminism.noise_floor_from_runs(_runs103)),
+        ("propagation.empirical_cond",
+         lambda: _tsu103.propagation.empirical_cond(_Dev103(_a103), "reduce")),
+    ]
+    _sweep_bad103 = []
+    for _name103, _fn103 in _sweep103:
+        try:
+            _fn103()
+        except Exception as _exc103:                       # noqa: BLE001
+            _sweep_bad103.append((_name103, type(_exc103).__name__))
+    # 検査の有効性: 素の `np.asarray` は device テンソルを拒む——つまりこの掃きは
+    # 「たまたま通っている」のではなく、変換が効いているから通っている。
+    _plain_rejects103 = False
+    try:
+        np.asarray(_Dev103(_a103))
+    except TypeError:
+        _plain_rejects103 = True
+    check("every tensor-taking public function accepts device (GPU) tensors",
+          not _sweep_bad103 and _plain_rejects103)
+
+    check("audit_runtime / audit_cross_vendor accept device (GPU) tensors",
+          not _plain103                                  # 検査が有効
+          and isinstance(_ta103(_Dev103(_a103)), np.ndarray)
+          and _ta103(None) is None
+          and _ad103.exit_code in (0, 1, 2)
+          and _audit_runtime(_a103, _b103, K=256,
+                             dtype="float16").exit_code in (0, 1, 2)
+          # 実機入口（GPU-BRINGUP が指示する最初のコマンド）も同様
+          and _acvd103.exit_code in (0, 1, 2)
+          and _acv103(lambda s: _rngc103.standard_normal((8, 16)),
+                      lambda s: _rngc103.standard_normal((8, 16)),
+                      K=256, n_runs=4).exit_code in (0, 1, 2))
+
+    # 104. ドキュメントは静かに腐る。API 名が変わっても Markdown は誰も型検査しないので、
+    #      ユーザーが最初に打つコマンドだけが壊れる。本ラウンドで実際に「no codegen yet」
+    #      という自社製品についての虚偽が残っていた（不変条件 101 が個別に潰した）。
+    #      ここは *種類* として止める: docs/README の python 例が参照する tsugi API が
+    #      すべて実在すること。plant-and-detect で検出器自体の有効性も確かめる。
+    check("documented python examples reference APIs that actually exist",
+          not _doc_api_references()
+          # 存在しない属性・存在しない import を検出できる（検査が効いている）
+          and _doc_api_references(
+              "```python\nimport tsugi\ntsugi.no_such_api()\n```")
+          and _doc_api_references(
+              "```python\nfrom tsugi.codegen import no_such_name\n```")
+          # 複数行 import を誤検出しない（誤報の多いゲートは無視されるので重要）
+          and not _doc_api_references(
+              "```python\nfrom tsugi.decision import (\n    margin,\n)\n```"))
+
+    # 106. 「緑」が何を意味するかを狭める。環境起因の skip（torch 無しなら意味論照合と
+    #      実 FX 結線が丸ごと飛ぶ）がサマリに現れないと、**緑が「全部検証した」と読まれる**
+    #      ——GPU 側で Q37 が塞いだのと同型の穴が CPU 側に残っていた（Q60）。
+    #      さらに本ラウンドはより重い穴を見つけた: ゲートが **29 本中 4 本を一度も
+    #      走らせていなかった**（attribution/blame/worstcase/torch backend）。
+    #      `_orphan_tests()` が「関数→ファイル」しか見ず「ファイル→ゲート」を
+    #      見ていない *一段浅い* 検査だったため（Q59）。両方をここで固定する。
+    _runner106 = (ROOT / "tests" / "correctness" / "run.py").read_text(encoding="utf-8")
+    _suites106 = {p.name for p in
+                  (ROOT / "tests" / "correctness").glob("test_*.py")}
+    check("the gate runs every suite on disk, and says how much it skipped",
+          # すべてのスイートがゲートに登録されている（4 本の取りこぼしの回帰固定）
+          all(f'"{n}"' in _runner106 for n in _suites106)
+          and not _orphan_tests()
+          # サマリが環境起因 skip を数えて報告する（緑の意味を狭める）
+          and "環境起因の skip" in _runner106
+          and "_SKIP_RE" in _runner106)
+
+    # 107. 台帳の **数えられる主張** が実態と一致する（第 60 回の不変条件 104 は
+    #      API 参照だけを見ており、数値主張は素通しだった——実測 6 件すべて腐っていた）。
+    check("the ledger's countable claims match reality",
+          not _doc_numeric_claims()
+          # plant-and-detect: ずれた数値を検出できる（検査が効いている）
+          and _doc_numeric_claims("CPU 999 スイート")
+          and not _doc_numeric_claims("（数値を書かない文章）"))
+
+    # 108. 不変条件 106 の **製品版**。開発ゲートで「緑は何を意味するか」を狭めたなら、
+    #      製品のレポートも同じ規律に従うべきである——このプロダクトは「13 検証層」を
+    #      掲げるが `python -m tsugi k.py` の既定出力に現れるのは 5 層ほどで、残りは
+    #      *データが無いので走っていない*。それを告げないと利用者は「移植可」を
+    #      **全層を通した判定** と読む（同じ偽OK の類型）。走らなかった層を名指しし、
+    #      何を渡せば走るかまで書く。
+    from tsugi.audit import LAYER_CATALOG as _CAT108
+    from tsugi.audit import _unrun_layers as _unrun108
+
+    #      しかも規律は **3 つの入口すべて** に要る: `audit`（静的）だけに付けても
+    #      `audit_runtime`（実データ）と `audit_torch`（楔ユーザー）が「全層を通した
+    #      判定」と読まれる——実際 `audit_runtime(a, b, K)` は 15 層中 **1 層**しか
+    #      走らないのに何も告げていなかった。片肺にしない。
+    _ad108 = _tsugi89.audit(_mod90, block_dims=(32,))
+    _rt108 = _audit_runtime(_a103, _b103, K=256, dtype="float16")
+    _tor108 = _at89(_gm89)
+    _txt108 = _ad108.to_text()
+    _unrun108_list = _unrun108(_ad108.phases)
+    _ran108 = {p.name.split()[0] for p in _ad108.phases}
+    check("all three entry points name the layers that did NOT run, and what would run them",
+          _unrun108_list                                   # 実データ無しなら必ず未実行がある
+          and all(f"{n}: 未実行" in _txt108 for n in
+                  ("equivalence", "decision", "worstcase", "blame", "correctness"))
+          # 走った層は未実行として挙げない（誤報を出さない）
+          and not any(u.split(":")[0] in _ran108 for u in _unrun108_list)
+          # 目録は「何を渡せば走るか」を全項目について述べる
+          and all(v.strip() for v in _CAT108.values())
+          and {"portability", "codegen", "propagation"} <= set(_CAT108)
+          # **3 入口すべて** が被覆フェーズを持ち、機械可読（to_dict）にも載る
+          and all(any(p.name.startswith("coverage") for p in ad.phases)
+                  for ad in (_ad108, _rt108, _tor108))
+          and all("検査していない層" in ad.to_text()
+                  for ad in (_ad108, _rt108, _tor108))
+          and any(ph["name"].startswith("coverage")
+                  for ph in _rt108.to_dict()["phases"]))
+
+    # 109. **目録そのものの完全性**（また一段深い検査）。`LAYER_CATALOG` に載っていない
+    #      層が出ると、被覆計算はそれを「走った」とも「走らなかった」とも数えず
+    #      **黙って落とす**。実際 `torch/FX 静的監査`（楔ユーザー経路の中核）が目録から
+    #      漏れており、その経路の被覆が過小に報告されていた。3 入口が出しうる
+    #      フェーズ名がすべて目録か META に属することを固定する。
+    from tsugi.audit import META_PHASES as _META109
+    _seen109 = set()
+    for _ad109 in (_ad108, _rt108, _tor108):
+        _seen109 |= {p.name.split()[0] for p in _ad109.phases}
+    check("the layer catalog covers every phase the entry points can produce",
+          not (_seen109 - set(_CAT108) - _META109)
+          and "torch/FX" in _CAT108            # 楔ユーザー経路の層が目録にある
+          and _META109 == {"runtime", "coverage"})
+
+    # 110. **天井を予測と呼ばない**（第 62 回・本ラウンド最大の発見）。楔ユーザーが
+    #      受け取る唯一の数値は静的伝播の `model_divergence` とそこから導いた flip 上界
+    #      だったが、同じモデルを CPU で 2 ベンダーとして走らせて実測すると、静的値は
+    #      最悪クラスの **200 倍・典型の 1000 倍以上**。伝播モデルは格納 dtype `u(fp16)`
+    #      を発散単位にするが、両ベンダーが f32 累積なら差は `u(f32)` スケール（2¹³ 倍
+    #      小さい）——構造的な乖離であって調整では消えない。真だが無情報な上界で毎回
+    #      BLOCK を出すと、**偽BLOCK の常態化**は偽OK と同じく判定を信号でなくする。
+    #      よって: (a) 判定は実測フリップに基づく、(b) 天井はそう名乗る、(c) 標本不足は
+    #      BLOCK でなく WARN として要求標本数つきで言う、を固定する。
+    from tsugi.rollout import samples_for_flip_budget as _sfb110
+    _src110 = (ROOT / "python" / "tsugi_torch" / "fxbridge.py").read_text(encoding="utf-8")
+    _sim110 = (ROOT / "python" / "tsugi_torch" / "simulate.py").read_text(encoding="utf-8")
+    _meas110 = None
+    try:
+        import torch as _t110
+
+        from tsugi_torch.fxbridge import audit_fx as _afx110
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv110
+        _t110.manual_seed(0)
+        _m110 = _t110.nn.Sequential(_t110.nn.Linear(64, 64), _t110.nn.LayerNorm(64),
+                                    _t110.nn.GELU(approximate="tanh"),
+                                    _t110.nn.Linear(64, 32))
+        _g110 = _t110.fx.symbolic_trace(_m110)
+        _x110 = _t110.randn(256, 64).numpy()
+        _s110 = _scv110(_g110, _x110)
+        _ceil110 = _afx110(_g110, sample=_x110)["model_divergence"]
+        _ad110 = _at89(_g110, ref_logits=_m110(_t110.from_numpy(_x110)).detach().numpy(),
+                       sample=_x110)
+        _dec110 = next(p for p in _ad110.phases if p.name.startswith("decision"))
+        _meas110 = (_s110 is not None and _s110.worst is not None
+                    and _s110.worst.rel_divergence > 0.0
+                    # 天井は実測より桁違いに大きい（これが「予測でない」ことの実証）
+                    and _ceil110 / _s110.worst.rel_divergence > 10.0
+                    and "(実測)" in _dec110.name              # 判定が実測に基づく
+                    and _ad110.exit_code < 2                  # 実測 0 なら BLOCK しない
+                    and any("n≥" in ln for ln in _dec110.lines)   # 要求標本数を出す
+                    and any(p.name.startswith("simulation") for p in _ad110.phases))
+    except Exception:                                  # noqa: BLE001
+        _meas110 = None                                # torch 無し: 主張しない
+    check("the wedge user's gate fires on measured flips, and the static value calls itself a ceiling",
+          "simulate_cross_vendor" in _src110           # 模倣が製品経路に結線されている
+          and "sim_worst.flip_rate > flip_budget" in _src110   # BLOCK は実測点推定から
+          and "flip_rate_ub" in _src110 and "samples_for_flip_budget" in _src110
+          and "許容の天井" in _src110 and "予測ではない" in _src110
+          and "下界" in _sim110                        # 模倣が実機の下界だと黙らない
+          and "simulation" in _CAT108                  # 目録に載る（黙って落ちない）
+          # 要求標本数は上界式そのものの反転（rule of three 定数を書き込まない）
+          and _sfb110(0.001) > 256 and _sfb110(0.01) < _sfb110(0.001)
+          and _sfb110(0.0) >= 10 ** 7
+          and (_meas110 is None or _meas110 is True))
+
+    # 111. **「実測」と称して別のものを測っていた**（第 62 回・110 を実装中に発見）。
+    #      dynamo は重みを引数へ *持ち上げる* ので `example_inputs[0]` は `nn.Parameter`
+    #      であることが多い。それを代表入力として `audit_fx(sample=…)` に渡していたため、
+    #      A-3 の「sample 実測: scale=…」は活性でなく **重み行列**の統計を報告していた
+    #      （実測 scale=0.0718 は重みのスケール・活性は 1.01）。同じ根で模倣の束縛も
+    #      壊れる: 持ち上げられた重みは `input:` 記述子になり `named_parameters()` は
+    #      空になるので、代表入力 1 本を全記述子へ配ると重みの位置に活性が入る。
+    #      **実測と称して別のものを測るのは、静的仮定を残すより悪い。**
+    _sim111 = (ROOT / "python" / "tsugi_torch" / "simulate.py").read_text(encoding="utf-8")
+    _init111 = _src101
+    _dyn111 = None
+    try:
+        import torch as _t111
+        import torch._dynamo as _dy111
+
+        from tsugi_torch import _activation_input as _ai111
+        from tsugi_torch import _sim_inputs as _si111
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv111
+        _seen111 = []
+
+        def _spy111(gm, ex):
+            _seen111.append((gm, ex))
+            return gm.forward
+
+        _dy111.reset()
+        _t111.manual_seed(0)
+        _m111 = _t111.nn.Sequential(_t111.nn.Linear(64, 64), _t111.nn.LayerNorm(64),
+                                    _t111.nn.Softmax(-1))
+        _t111.compile(_m111, backend=_spy111)(_t111.randn(300, 64))
+        _g111, _ex111 = _seen111[0]
+        _act111 = _ai111(_ex111)
+        _ins111 = _si111(_ex111, max_rows=256)
+        _s111 = _scv111(_g111, _ins111)
+        _dyn111 = (
+            isinstance(_ex111[0], _t111.nn.Parameter)      # 前提: 重みが持ち上がる
+            and _act111 is not None and _act111.shape == (300, 64)   # 活性を選ぶ
+            and _scv111(_g111, _act111) is None            # 1 本では諦める（誤測しない）
+            and _ins111[0].shape == (64, 64)               # 重みの行は切らない
+            and _s111 is not None and _s111.n_samples == 256)   # 標本数は出力の行数
+    except Exception:                                  # noqa: BLE001
+        _dyn111 = None                                 # torch 無し: 主張しない
+    # 112. **偽OK を直す道具の中に偽OK があった**（第 62 回・自分の模倣への自己問答）。
+    #      当初 `tf32`/`rtz` を fp16 格納で回しており、両方とも「相対発散 0.00e+00」と
+    #      報告していた。しかしこれは「差が無い」でなく「**その差が表現できない**」——
+    #      fp16 の仮数 10 bit は TF32 と同じで丸めが恒等になり、`input_precision="ieee"`
+    #      は `truncate_to_tensorcore` が仮数 23 bit で即 return するので丸めモードの
+    #      指定ごと捨てられる。0 と出せば「TF32 起因の発散は無い」と読まれる。正しい
+    #      格納で測ると `rtz` は f16 累積より **大きい** 発散を示す（隠れていたのは
+    #      最小のクラスではなく最大のクラスだった）。
+    _vac112 = None
+    try:
+        from tsugi_torch.simulate import CLASS_REQUIRES as _req112
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv112
+        _full112 = _scv112(_g110, _x110)
+        _f16112 = _scv112(_g110, _x110, storage=("float16",))
+        _by112 = {c.name: c for c in _full112.classes}
+        _vac112 = (
+            # 正しい格納なら前提つきクラスは実際に発散する（0 でない）
+            all(_by112[n].applicable and _by112[n].rel_divergence > 0.0 for n in _req112)
+            and _by112["rtz"].rel_divergence > _by112["f16acc"].rel_divergence
+            # 発現しない格納しか測らないなら 0 でなく「非適用」と名指しする
+            and all(not c.applicable and c.why
+                    for c in _f16112.classes if c.name in _req112)
+            and "非適用" in "\n".join(_f16112.to_lines())
+            # 最悪クラスに非適用を混ぜない・上界が並ぶときは相対発散で決着する
+            and _full112.worst.applicable
+            and _full112.worst.rel_divergence == max(c.rel_divergence
+                                                     for c in _full112.measured))
+    except Exception:                                  # noqa: BLE001
+        _vac112 = None                                 # torch 無し: 主張しない
+    check("a divergence class that cannot fire is named, never reported as a measured zero",
+          "非適用" in _sim111 and "CLASS_REQUIRES" in _sim111
+          and "表現できない" in _sim111
+          and (_vac112 is None or _vac112 is True))
+
+    # 113. **同じ罠を新しい道具で踏み直さない**（第 62 回・模倣への 2 度目の自己問答）。
+    #      新視点11 は既に「argmax を非分類タスクに使うと flip_rate=0 に固まる静かな
+    #      誤用」を記録し、`decision.compare_task` を用意していたのに、模倣は
+    #      `decision_flips`（argmax）を **無条件に** 呼んでいた。同じモデル・同じ発散でも
+    #      分類の読みでは 0.0%、回帰の読みでは 94.8%——回帰モデルは「フリップ 0%」として
+    #      出荷される。既存層が解いた問題を、新しい層が作り直していないかを固定する。
+    _task113 = None
+    try:
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv113
+        _cls113 = _scv113(_g110, _x110)
+        _reg113 = _scv113(_g110, _x110, task="regression", task_kwargs={"rtol": 1e-4})
+        _ad113 = _at89(_g110, ref_logits=_m110(_t110.from_numpy(_x110)).detach().numpy(),
+                       sample=_x110, task="regression", task_kwargs={"rtol": 1e-4})
+        _task113 = (
+            _cls113.worst.flip_rate == 0.0                 # argmax では 0 に見える
+            and _reg113.worst.flip_rate > _cls113.worst.flip_rate   # タスクで変わる
+            and _reg113.worst.task == "regression"
+            # 分類のときは argmax 前提だと黙らない（誤用は検出できないので明示する）
+            and any("argmax" in ln for ln in _cls113.to_lines())
+            and _ad113.exit_code == 2                      # 回帰の読みで BLOCK に届く
+            and "task=regression" in _ad113.to_text())
+    except Exception:                                  # noqa: BLE001
+        _task113 = None                                # torch 無し: 主張しない
+    check("flip semantics follow the declared task; argmax is never applied silently",
+          "compare_task" in _sim111 and "task=" in _sim111
+          and "argmax" in _sim111
+          and (_task113 is None or _task113 is True))
+
+    # 114. **見出しの数値それ自体に同じ問いを向ける**（第 62 回・追補4）。
+    #      「静的値は実測の 200〜1700 倍」という本ラウンドの見出しは、実測を
+    #      **スケール正規化** `max|Δ|/max|a|` で測ったときの比だった。`equivalence.compare`
+    #      が使う正準の **要素ごと** `max(|Δ|/(|a|+1e-12))` で測ると、同じ差が静的値を
+    #      **上回る**（f16acc 2.6・tf32 5.7・rtz 7.0 対 静的 3.6e-2）。要素ごとの値は
+    #      分母が 0 に近い要素（GELU/LayerNorm 出力）に支配されるので、伝播モデル
+    #      （典型スケールの量）と比べる相手としては前者が適切だが、**「天井」と一言で
+    #      呼べば要素ごとの意味でも上界だと読まれる**。両尺度を報告し、どちらと
+    #      比べているかを明記することを固定する。
+    _metric114 = None
+    try:
+        from tsugi_torch.simulate import simulate_cross_vendor as _scv114
+        _s114 = _scv114(_g110, _x110)
+        _sp114 = next(p for p in _at89(_g110, sample=_x110).phases
+                      if p.name.startswith("simulation"))
+        _metric114 = (
+            # 2 尺度は別物で、要素ごとが必ず大きい（分母の小さい要素に支配される）
+            all(c.max_rel_elementwise >= c.rel_divergence for c in _s114.measured)
+            # スケール正規化では天井を下回るが、要素ごとでは上回るクラスがある
+            and _s114.worst.rel_divergence < _ceil110
+            and any(c.max_rel_elementwise > _ceil110 for c in _s114.measured)
+            # 両方を出し、どちらと比べているかを述べる
+            and "スケール正規化" in "\n".join(_s114.to_lines())
+            and "要素ごと" in "\n".join(_s114.to_lines())
+            and "天井を上回る" in "\n".join(_sp114.lines))
+    except Exception:                                  # noqa: BLE001
+        _metric114 = None                              # torch 無し: 主張しない
+    check("the ceiling names the metric it bounds; the other metric is reported too",
+          "max_rel_elementwise" in _sim111 and "スケール正規化" in _sim111
+          and (_metric114 is None or _metric114 is True))
+
+    check("the wedge path measures an activation, never a lifted weight",
+          "Parameter" in _init111                      # 型で活性と重みを分ける
+          and "_activation_input" in _init111 and "_sim_inputs" in _init111
+          and "同じテンソルを複数の記述子に当てない" in _sim111
+          and "refusal_reason" in _sim111 and "refusal_reason" in _init111
+          and (_dyn111 is None or _dyn111 is True))
+
+    check("the documented entry point torch.compile(backend='tsugi') states today's truth",
+          "no codegen yet" not in _src101              # 古い虚偽が残っていない
+          and "実行は eager に素通し" in _src101        # 実行の未検証は言い続ける
+          and (_warn101 is None or _warn101 is True))
 
 
 def main() -> int:

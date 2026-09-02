@@ -18,10 +18,12 @@ from . import (
     attribution,
     blame,
     calibration,
+    codegen,
     decision,
     envelope,
     equivalence,
     feasibility,
+    interp,
     ir,
     nondeterminism,
     occupancy,
@@ -34,7 +36,7 @@ from . import (
     tolerance,
     worstcase,
 )
-from .audit import Audit, audit, audit_cross_vendor, audit_runtime
+from .audit import Audit, audit, audit_cross_vendor, audit_runtime, verify
 from .compile import compile  # noqa: A004
 from .dtypes import bfloat16, constexpr, float16, float32, int8, int32
 from .jit import jit
@@ -44,6 +46,8 @@ from .tracer import trace
 __all__ = [
     "tile",
     "ir",
+    "interp",
+    "codegen",
     "portability",
     "equivalence",
     "occupancy",
@@ -61,6 +65,7 @@ __all__ = [
     "oracle_check",
     "provenance",
     "audit",
+    "verify",
     "audit_runtime",
     "audit_cross_vendor",
     "Audit",

@@ -11,18 +11,71 @@ from __future__ import annotations
 from typing import Any, Callable, List
 
 
+def _activation_input(example_inputs: List[Any]):
+    """dynamo の `example_inputs` から **活性**（本物の入力）を選ぶ。
+
+    第 62 回の発見: `example_inputs[0]` を代表入力として使っていたが、dynamo は
+    **重みを引数へ持ち上げる**ので先頭は `nn.Parameter` であることが多い。実際
+    `Sequential(Linear, LayerNorm, Softmax)` では
+
+        [Parameter(64,64), Parameter(64), Tensor(256,64), Parameter(64), Parameter(64)]
+
+    となり、A-3 で導入した「sample 実測: scale=…」は**重み行列の統計を活性の統計として
+    報告していた**（scale=0.0718 は重みのスケール）。実測と称して別のものを測るのは、
+    静的仮定を残すより悪い——利用者はそれを活性の実測だと読む。
+
+    活性は素の `Tensor`、持ち上げられた重みは `nn.Parameter` なので型で分けられる
+    （名前の綴り `L_args_0_` に頼らない——dynamo のバージョンで変わる）。
+    見つからなければ **None**（重みで代用しない）。
+    """
+    try:
+        from torch.nn import Parameter
+    except Exception:                       # noqa: BLE001 — torch 無し
+        return None
+    for t in example_inputs or ():
+        if isinstance(t, Parameter):
+            continue
+        detach = getattr(t, "detach", None)
+        if detach is None:
+            continue
+        return detach().cpu().numpy()
+    return None
+
+
+def _sim_inputs(example_inputs: List[Any], max_rows: int = 256) -> list:
+    """模倣へ渡す引数列（グラフの引数と同順・同数）を作る。
+
+    行数を切るのは活性だけ——重みを切ると行列積の形が壊れる。持ち上げられた重みは
+    `nn.Parameter` なので型で見分ける（`_activation_input` と同じ規律）。
+    """
+    try:
+        from torch.nn import Parameter
+    except Exception:                       # noqa: BLE001 — torch 無し
+        return []
+    out = []
+    for t in example_inputs or ():
+        detach = getattr(t, "detach", None)
+        if detach is None:
+            return []                       # 1 本でも配列化できなければ位置対応が壊れる
+        a = detach().cpu().numpy()
+        if not isinstance(t, Parameter) and getattr(a, "ndim", 0) >= 1:
+            a = a[:max_rows]
+        out.append(a)
+    return out
+
+
 def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
     """TorchDynamo から FX GraphModule を受け取り、Tsugi カーネルへ変換する。
 
-    Phase 4 の実装計画:
-      1. TorchInductor の lowering を再利用して融合機会を取得
-      2. hot op (matmul/attention/norm/elementwise) を tsugi.tile IR へ変換
-      3. SPEC.md §3 パイプラインでコンパイル (tsugi.tile→gpu→NVVM/ROCDL)
-      4. 標準 GEMM 等は cuBLAS/rocBLAS へ escape-hatch (性能優先・R5)
-      5. 残りは torch eager にフォールバック (正しさ優先)
+    実装状況（正直な線引き・第 60 回時点）:
+      - ✅ FX グラフの静的監査（propagation・非決定 op・dynamic shape・タスク影響）
+      - ✅ **FX → Tsugi IR 降下 → 実 PTX/AMDGCN 生成 → ベンダーのアセンブラで検証**
+        （`fxlower` + `codegen`。GPU 不要・L2 まで）
+      - ❌ 生成した機械語の**実行**（要実機・L3）。よって実行は eager に素通しする
+      - ❌ 融合・escape-hatch（cuBLAS/rocBLAS 委譲）・autotuning
 
-    現状: codegen は未実装だが、FX グラフに静的検証（propagation）を走らせて警告を出す
-    —— 「検証だけ先に届ける」楔の早期価値。実行は eager に素通し（嘘をつかない）。
+    実行を eager に委ねるのは「嘘をつかない」ため——生成物は L2 までしか検証されて
+    おらず、走らせて正しい保証が無い。**検証は今届き、実行は実機が来てから**。
     """
     # 検証だけ先に届ける: FX グラフを静的監査し増幅 op / モデル発散を警告（codegen 不要）。
     try:
@@ -42,9 +95,7 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         # 中央値の ~1000 倍に達しうるため、scale=1 のままでは認証 atol を桁で誤る。
         sample = None
         try:
-            first = example_inputs[0] if example_inputs else None
-            if first is not None:
-                sample = first.detach().cpu().numpy()
+            sample = _activation_input(example_inputs)
         except Exception:  # noqa: BLE001 — 取れなければ従来通り静的仮定で報告
             sample = None
         rep = audit_fx(gm, ref_logits=ref_logits, sample=sample)
@@ -54,18 +105,38 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
         # scatter_add 等の atomicAdd 由来 op はグラフに数値 op（matmul/softmax 等）が
         # 無くても存在しうるため、n_ops==0 でも requires_noise_floor だけで警告を出す。
         if rep["n_ops"] or rep["requires_noise_floor"]:
-            task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%"
+            # 天井（静的伝播）でなく **実測** を第一に出す（第 62 回）。天井は実測の
+            # 100〜1000 倍になりうるので、これを "task_flip_bound" として単独で見せると
+            # 毎回「≤ 40〜80%」という無情報な警告になり、読む人が全体を無視する。
+            task = (f", task_flip_bound≤{rep['task_flip_bound'] * 100:.1f}%（天井・予測ではない）"
                     if rep["task_flip_bound"] is not None else "")
+            try:
+                from .simulate import refusal_reason, simulate_cross_vendor
+                # dynamo は重みを引数へ持ち上げるので、**全引数を順に**渡す。1 本だけ
+                # 渡すと束縛が一意に決まらず（第 62 回）、諦めるか誤った実測になる。
+                _ins = _sim_inputs(example_inputs)
+                _sim = simulate_cross_vendor(gm, _ins) if _ins else None
+                _w = _sim.worst if _sim is not None else None
+                if _w is not None and _w.n:
+                    task = (f", 実測フリップ {_w.flip_rate * 100:.3f}%"
+                            f"（上界 {_w.flip_rate_ub * 100:.3f}%・最悪クラス {_w.name}・"
+                            f"n={_w.n}・CPU 2 ベンダー模倣＝実機発散の下界）" + task)
+                elif _ins:
+                    # 走らなかったことを黙らない（天井だけが残るとは利用者に見えない）
+                    task += f"（実測は未取得: {refusal_reason(gm, _ins)}）"
+            except Exception:  # noqa: BLE001 — 模倣は best-effort・警告は出し続ける
+                pass
             dyn = " [has_dynamic_shapes: per-shape 再検証が必要]" if rep["has_dynamic_shapes"] else ""
             nondet = (f" [non-deterministic: {rep['nondeterministic_ops']} → "
                      "noise floor 実測が必須（静的許容では不十分）]"
                      if rep["requires_noise_floor"] else "")
-            # 正規化層（LayerNorm/RMSNorm）はほぼ scale-invariant で、上流のスケール型
-            # クロスベンダー乖離を実質的にリセットする効果を持つが、propagate() は
-            # これを考慮しない（FEATURE-AUDIT.md A-5）。安全な方向（過大評価）だが、
-            # ユーザーが WARN を額面通り受け取り過剰反応しないよう明示する。
-            norm = (" [has_normalization: model_divergence は正規化層のscaleリセット効果を"
-                   "未考慮の保守的な上界（実際の発散はこれより小さい可能性）]"
+            # 正規化層の扱い（A-5 の数値実験で当初想定が反転）: 旧警告は「実際の発散は
+            # これより小さい可能性」と無条件に主張していたが、LayerNorm は平均優勢入力
+            # （μ/RMS→1）で相対発散を amp≈RMS/σ に *増幅* する——旧文言自体が偽OK を
+            # 誘導する未検証主張だったため撤回。RMSNorm のみ無条件安定（amp=1）。
+            norm = (" [has_normalization: RMSNorm は scale 中立（amp=1・実測検証済み）。"
+                   "LayerNorm は平均優勢入力で相対発散を amp≈RMS/σ に増幅しうる"
+                   "（sample 指定時は実測 cond に反映済み）]"
                    if rep.get("has_normalization") else "")
             # A-3: 代表入力から scale/cond を実測できたなら、その旨と外れチャネルを報告。
             # 実測できていなければ「cond=1 は下界」の但し書きを従来通り残す（暗黙化しない）。
@@ -79,10 +150,36 @@ def _tsugi_compile(gm: Any, example_inputs: List[Any]) -> Callable:
             outlier = (f" [outlier channels: scale 広がり ×{spread:.0f} → 単一 scale 仮定が"
                        "崩れる・per-channel 検証を検討]"
                        if spread is not None and spread >= 10.0 else "")
-            warnings.warn(
-                f"[tsugi] verification-only (no codegen yet): {rep['n_ops']} numeric ops, "
+            # codegen: 楔ユーザーにも「単一ソース → 両ベンダーの実機械語」を届ける。
+        # 失敗しても実行は壊さない（best-effort・警告は出続ける）。
+        codegen_note = ""
+        try:
+            from tsugi import codegen as _cg
+
+            from .fxlower import fx_to_ir
+            _lm = fx_to_ir(gm)
+            _ok = []
+            for _t in _cg.TARGETS:
+                _asm = _cg.verify_codegen(_lm.module, target=_t)[1]
+                if _asm.available and _asm.ok:
+                    _ok.append(_t)
+            codegen_note = (
+                f" codegen: 呼び出し {_lm.report.n_calls} 件中 "
+                f"{len(_lm.report.covered)} を IR へ降下し "
+                f"{len(_ok)}/{len(_cg.TARGETS)} ターゲットでアセンブル検証"
+                + ("（**partial**: 表せない op "
+                   f"{sorted(set(_lm.report.unsupported))} があるため生成物はモデル"
+                   "全体ではない）" if _lm.report.partial else "")
+                + "。実行は未検証（要実機）")
+        except Exception:  # noqa: BLE001
+            codegen_note = " codegen: 降下できず（静的監査のみ）"
+
+        warnings.warn(
+                f"[tsugi] verification-only (codegen は L2 まで検証済み・実行は "
+                f"eager 素通し): {rep['n_ops']} numeric ops, "
                 f"amplifiers={rep['amplifiers']}, model_divergence≈{rep['model_divergence']:.2e}"
                 f"{task}{dyn}{nondet}{norm}{basis}{outlier}. "
+                f"{codegen_note}. "
                 "cross-vendor 等価性は実機で audit_cross_vendor を。",
                 stacklevel=2)
     except Exception:  # noqa: BLE001 — 検証は best-effort・実行を壊さない

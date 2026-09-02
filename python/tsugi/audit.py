@@ -1,8 +1,9 @@
 """Tsugi audit — 検証層を 1 つの判定に束ねる統合ファサード。
 
-13 視点（portability/equivalence/occupancy/tolerance/feasibility/propagation/
-envelope/decision/rollout/worstcase/decision拡張/attribution/blame）＋メタ層
-（calibration/oracle_check）＋基盤（nondeterminism）が出揃った。
+検証層の目録は **`LAYER_CATALOG` が単一情報源**（層名 → その層を走らせるのに要るもの）。
+散文に層数を書くと必ず腐るので書かない——第 61 回に「13 検証層」という記述が 7 箇所
+あるのに実体は 15 層、という食い違いを見つけた（数え方の異なる分類が並存していた）。
+メタ層（calibration/oracle_check）と基盤（nondeterminism）はこれとは別に存在する。
 個別に呼ぶのでなく、traced IR ＋タイル構成から **静的に実行できる層をまとめて回し、
 1 つの Audit レポートにする**。さらに *実機データが要る層*（実行時エンベロープ・
 非決定性ノイズ・タスクフリップ）を「実行時チェックリスト」として明示し、検証の
@@ -16,8 +17,10 @@ oracle を渡すと correctness 層が動き、shared-mode 検出に加え blame
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import ir
+from .arrays import asarray
 from .report import Risk
 
 TARGETS = ("nvidia", "amd_cdna", "amd_rdna")
@@ -124,6 +127,69 @@ class Audit:
         if self.certificate is not None:
             lines.append("  " + self.certificate.to_text())
         return "\n".join(lines)
+
+
+#: 検証層の全目録と、その層を走らせるのに要るもの。**走らなかった層を名指しで言う**
+#: ために持つ（`_unrun_layers`）。
+#:
+#: なぜ要るか: このプロダクトは「13 検証層」を掲げるが、`python -m tsugi k.py` の
+#: 既定出力に現れるのは 5 層ほどで、残りは *データが無いので走っていない*。ところが
+#: レポートはその不在を告げず、利用者は「移植可」を **全層を通した判定** と読む。
+#: これは開発ゲートで見つけた「緑は何を意味するか」（不変条件 106）の製品版であり、
+#: 同じ偽OK の類型である——**実行されなかった検査を判定に含めて読ませない**。
+LAYER_CATALOG: dict[str, str] = {
+    "portability": "静的（常に実行）",
+    "torch/FX": "静的（torch.fx GraphModule を渡したとき）",
+    "feasibility": "静的（タイル構成 cfg が要る）",
+    "occupancy": "静的（block_dims が要る）",
+    "numerics": "静的（常に実行）",
+    "propagation": "静的（常に実行）",
+    "codegen": "静的（常に実行・アセンブラがあれば L2）",
+    "envelope": "実データ: 代表テンソル sample=",
+    "simulation": "torch.fx グラフ＋代表入力 sample=（CPU で 2 ベンダーを模倣し実測）",
+    "equivalence": "実機データ: 両ベンダーの出力 a_out/b_out",
+    "decision": "実機データ: 両ベンダーの logits_a/logits_b",
+    "rollout": "実機データ: logits＋生成長 gen_length",
+    "worstcase": "実機データ: 実行可能なカーネル fn_a/fn_b",
+    "attribution": "実機データ: 層ごとの出力 layers_a/layers_b",
+    "blame": "実機データ＋oracle: どちらのベンダーを直すか",
+    "correctness": "oracle: 真値（一致≠正しさ・共有モード障害の検出）",
+    "safety": "実機データ: 同一ベンダーの複数 run（SAFETY 定数の校正）",
+}
+
+
+def _unrun_layers(phases) -> list[str]:
+    """目録のうち、この監査で **走らなかった** 層を必要データつきで返す。"""
+    ran = {p.name.split()[0] for p in phases}
+    return [f"{name}: 未実行 — {need}"
+            for name, need in LAYER_CATALOG.items() if name not in ran]
+
+
+#: 検証層でない管理用フェーズ。被覆の分母に入れない（runtime は「これから何をするか」の
+#: チェックリスト、coverage は被覆報告そのもの）。目録の完全性検査はこれを除外する。
+META_PHASES: frozenset[str] = frozenset({"runtime", "coverage"})
+
+
+def _coverage_phase(phases) -> "AuditPhase":
+    """判定の **被覆範囲** を 1 フェーズとして返す（3 つの入口が共有する単一定義）。
+
+    `audit` / `audit_runtime` / `audit_torch` のどれから来ても同じ規律で
+    「何を検査し、何を検査していないか」を述べる。片方の入口にだけ開示を付けると、
+    もう片方が「全層を通した判定」と読まれる——本ラウンドで繰り返し見つけた
+    *片肺* の類型（Q59/Q60/Q64）。フェーズとして持つので `to_dict()` にも載り、
+    CI が被覆をそのまま機械可読に読める。
+    """
+    ran = sorted({p.name.split()[0] for p in phases} & set(LAYER_CATALOG))
+    unrun = _unrun_layers(phases)
+    cov = AuditPhase("coverage 判定の被覆範囲", "pending", Risk.INFO)
+    cov.lines.append(f"検査した層: {len(ran)}/{len(LAYER_CATALOG)} {ran}")
+    if unrun:
+        cov.lines.append(f"**検査していない層: {len(unrun)}**"
+                         "（判定に含まれない——下記のデータを渡せば走る）")
+        cov.lines += [f"  {u}" for u in unrun]
+    else:
+        cov.lines.append("全層を検査した")
+    return cov
 
 
 def _gemm_depth(module: ir.Module, cfg) -> int:
@@ -342,8 +408,145 @@ def _iter_graphops(nodes):
             yield node
 
 
+def verify(target, *, block_dims=None, cfg=None, **audit_kwargs) -> "Audit":
+    """移植性検証のワンコール入口（CLI `python -m tsugi` の Python 版）。
+
+    `target` は次のどちらでもよい:
+      - 文字列パス: `@tsugi.jit` カーネル + `make_args()`（+任意 `BLOCK_DIMS`/`TILE_CONFIG`）を
+        定義した .py ファイル（portcheck 契約）。トレースして検証する。
+      - traced IR モジュール（`tsugi.trace(...)` の戻り値）: そのまま検証する。
+
+    返り値は `Audit`（`.exit_code` は CI ゲート契約・`.to_text()` は人間可読・
+    `.to_dict()` は JSON）。従来は trace→audit を手で繋ぐ必要があったが、これで
+    `ad = tsugi.verify("my_kernel.py"); print(ad.exit_code)` の 2 行で済む（簡素化）。
+    追加の検証引数（ref_logits/sample/provenance/temperature）は audit_kwargs で透過。
+    """
+    if isinstance(target, str):
+        from .portcheck import _load_user_module
+        module, loaded_block, loaded_cfg = _load_user_module(target)
+        block_dims = block_dims if block_dims is not None else loaded_block
+        cfg = cfg if cfg is not None else loaded_cfg
+    elif hasattr(target, "graph") and hasattr(getattr(target, "graph"), "nodes"):
+        # torch.fx GraphModule（duck-typed・torch 非依存）——このプロダクトの楔は
+        # フレームワーク層（torch.compile）なので、想定ユーザーである PyTorch 開発者が
+        # 同じ 1 コールでゲート付き判定を得られる必要がある。tile-DSL 経路だけが
+        # ゲートを持つ状態は「使えるのは自分たちだけ」という不完全さだった。
+        from tsugi_torch.fxbridge import audit_torch
+        return audit_torch(target, **audit_kwargs)
+    else:
+        module = target
+    return audit(module, cfg, block_dims=block_dims, **audit_kwargs)
+
+
+def _codegen_phase(module: ir.Module, targets) -> AuditPhase:
+    """IR から各社の実アセンブリを生成し、ベンダーのアセンブラに受理させる層。
+
+    `lowering` の対応表が「どの命令に落ちるか」を*主張*するのに対し、ここは
+    その主張を ptxas / llvm-mc に**確かめさせる**。判定の付け方（fail-safe）:
+
+    - アセンブラが**不受理** → BLOCK。その arch にその命令列は成立しない
+      ＝単一ソース約束が命令レベルで破れている（`feasibility` の起動不能と同класс）。
+    - 命令列を持たない op（L0）が IR にある → WARN。カーネル全体は生成できない。
+    - アセンブラが**無い** → INFO で「L1-生成のみ」。**検証済みとは言わない**。
+
+    L2 が保証しないもの（黙らない）: レイアウト接合と実行時の意味論。
+    """
+    from .codegen import TARGETS as CG_TARGETS
+    from .codegen import (
+        approximate_ops,
+        codegen_coverage,
+        uncodegenned_ops,
+        cross_check_lowering,
+        reference_lowering,
+        verify_codegen,
+        verify_encoding,
+        verify_loadable,
+    )
+
+    cg = AuditPhase("codegen 生成物（アセンブル検証）", "decided", Risk.INFO)
+    used = set(module.op_kinds())
+    for t in [x for x in targets if x in CG_TARGETS]:
+        missing = sorted(used & uncodegenned_ops(t))
+        if missing:
+            cg.max_risk = max(cg.max_risk, Risk.WARN)
+            cg.lines.append(f"{t}: 命令列を持たない op {missing} が IR にある（L0）"
+                            "→ カーネル全体は生成できない")
+            continue
+        em, asm = verify_codegen(module, target=t)
+        if asm.available and asm.ok:
+            cg.lines.append(f"{t}/{em.arch}: {asm.level}"
+                            f"（{asm.obj_bytes} B・{Path(asm.tool).name}）")
+            # 受理されたことと「意図した命令に符号化された」ことは別。第二のツール
+            # （逆アセンブラ／シンボルリーダ）で読み直す。
+            enc = verify_encoding(module, target=t, arch=em.arch)
+            if enc.available and enc.ok:
+                extra = (f"・レジスタ {enc.registers}・spill {enc.spill_bytes} B"
+                         if enc.registers is not None else
+                         f"・{len(enc.decoded)} 種の命令を復号")
+                cg.lines.append(f"  符号化照合 OK（{enc.method}{extra}）")
+            elif enc.available and enc.ok is False:
+                cg.max_risk = max(cg.max_risk, Risk.WARN)
+                cg.lines.append(f"  符号化照合 NG: 意図した命令が機械語に現れない "
+                                f"{enc.missing or enc.detail[:120]}")
+            else:
+                cg.lines.append(f"  符号化照合は未実施（{enc.detail[:100]}）")
+            # 「アセンブルできる」と「ローダが受け付ける形になっている」も別。
+            ld = verify_loadable(module, target=t, arch=em.arch)
+            if ld.available and ld.ok:
+                cg.lines.append("  ロード構造 OK（カーネルシンボル"
+                                + ("・記述子 .kd・AMDGPU メタデータノート"
+                                   if t != "nvidia" else "・.nv.info 起動情報")
+                                + "）——ただしロードして走らせてはいない（L3）")
+            elif ld.available:
+                cg.max_risk = max(cg.max_risk, Risk.WARN)
+                cg.lines.append(f"  ロード構造 NG: 欠けている部品 {ld.missing}")
+        elif not asm.available:
+            cg.lines.append(f"{t}/{em.arch}: {asm.level}"
+                            f"（{len(em.text.splitlines())} 行）— {asm.stderr}")
+        else:
+            cg.max_risk = Risk.BLOCK
+            head = (asm.stderr or "").splitlines()[:1]
+            cg.lines.append(f"{t}/{em.arch}: アセンブラが不受理 → 単一ソース約束の破綻"
+                            + (f": {head[0]}" if head else ""))
+        for n in em.unstitched:
+            cg.lines.append(f"  {n}")
+    cov, total = codegen_coverage("nvidia")
+    cg.lines.append(f"命令列を持つ op: {cov}/{total}（DSL の語彙に対して）")
+    # 命令選択そのものの妥当性を独立実装（LLVM のバックエンド）と突き合わせた要約。
+    xc = cross_check_lowering(target="nvidia")
+    asked = [r for r in xc.values() if r.available]
+    if asked:
+        agree = sum(1 for r in asked if r.ok)
+        cg.lines.append(f"LLVM の命令選択との一致: {agree}/{len(asked)} op"
+                        f"（残る {len(xc) - len(asked)} op は単一の LLVM IR 演算に"
+                        "対応せず対象外）")
+    # codegen → numerics の橋: 「生成した命令自体がベンダー間でビット同一か」。
+    # equivalence 層が発散の *大きさ* を扱うのに対し、ここは発散の *出所* を名指す。
+    approx = sorted(used & approximate_ops())
+    if approx:
+        cg.lines.append(f"ビット同一を期待できない命令を含む op: {approx}"
+                        "（近似命令・累積順序の差が発散源——equivalence 層が量を扱う）")
+        # 上の分類は ISA 文書の読み取りに由来する。**独立した実装**（LLVM の
+        # AMDGPU/NVPTX バックエンド）に同じ演算を落とさせ、片側だけが精緻化列を
+        # 要するかで裏を取る（第三者による裏づけ・循環しない）。
+        for k in approx:
+            nv = reference_lowering(k, target="nvidia")
+            am = reference_lowering(k, target="amd_cdna")
+            if not (nv.available and am.available):
+                continue
+            if am.llvm_refines and not nv.llvm_refines:
+                cg.lines.append(
+                    f"  {k}: LLVM も AMD 側にだけ精緻化列を要する"
+                    f"（{len(am.llvm)} 命令 vs NVIDIA {len(nv.llvm)}）"
+                    "→ 単独命令は正確丸めでない（独立実装による裏づけ）")
+    cg.lines.append("L2 が保証するのは命令の存在・構文・arch 可用性まで。"
+                    "レイアウト接合と実行の正しさは L3（実機）——常に空")
+    return cg
+
+
 def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
-          block_dims=None, ref_logits=None, sample=None, provenance=None) -> Audit:
+          block_dims=None, ref_logits=None, sample=None, provenance=None,
+          temperature: float = 1.0) -> Audit:
     """traced IR ＋構成から静的検証層をまとめて回し、1 つの判定に束ねる。
 
     ref_logits を渡すと、propagation のモデル発散を decision に橋渡しして、第2ベンダーを
@@ -488,7 +691,37 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
             prop.lines.append(
                 "  ↑ 仮定: op グラフ相対発散が最終 logit にそのまま乗る（正規化の scale "
                 "リセット・最終射影の条件数・分布シフトで妥当域を外れうる・要再評価）")
+            # Q21: 上の予測の *信頼性* を定量化する（従来は散文の「分布シフトで外れうる」だけ）。
+            # P(margin<2δ) は決定境界近傍の裾確率で、その相対不確実性は total n でなく
+            # 超過数 k（= margin<2δ のサンプル数）に支配される（≈1/√k）。Wilson は与えられた
+            # 集合の比率不確実性を織り込むが、集合が本番を代表しているかは問えない。
+            from .decision import flip_bound_support_from_divergence
+            sup = flip_bound_support_from_divergence(ref_logits, pr.model_divergence)
+            if sup["well_supported"]:
+                prop.lines.append(
+                    f"  裾サポート: near-tie {sup['exceedances']} 件"
+                    f"（相対不確実性 ≈{sup['rel_uncertainty'] * 100:.0f}%・十分）")
+            else:
+                prop.lines.append(
+                    f"  裾サポート不足: near-tie は {sup['exceedances']} 件のみ"
+                    f"（要 ≥{sup['min_exceedances']}・相対不確実性 ≈"
+                    f"{sup['rel_uncertainty'] * 100:.0f}%）→ 予測は外挿寄り。n でなく"
+                    " *決定境界近傍* のサンプルを増やせ（境界を重点サンプリング）")
+            # 貪欲デコードだけでは実運用を覆えない（A-9）。同じ静的発散を、温度 T の
+            # サンプリング分布の差（全変動距離）の上界へも翻訳する。argmax フリップ率が
+            # 「どちらの語を選ぶか」なのに対し、TV は「分布がどれだけ違うか」を測る。
+            from .decision import tv_bound_from_divergence
+            tvb = tv_bound_from_divergence(ref_logits, pr.model_divergence, temperature)
+            prop.lines.append(
+                f"タスク影響(予測・温度サンプリング T={temperature:g}): "
+                f"分布差 TV ≤ {tvb:.3g}"
+                + ("（低温で上界は 1 に飽和し無情報になる——実 logit があれば "
+                   "audit_runtime(task='sampling') の実測 TV を見よ）"
+                   if tvb > 0.5 else ""))
         a.phases.append(prop)
+
+    # --- 静的: codegen 生成物（ベンダーのアセンブラが真値） ---
+    a.phases.append(_codegen_phase(module, targets))
 
     # --- 実行時（実機データが要る層をチェックリストとして明示） ---
     rt = AuditPhase("runtime 実行時チェックリスト", "pending", Risk.INFO)
@@ -501,15 +734,25 @@ def audit(module: ir.Module, cfg=None, *, targets=TARGETS,
         "→ 実データがあれば audit_runtime(...) でこれらを実行し 1 判定に束ねる",
     ]
     a.phases.append(rt)
+    # 判定の被覆範囲を最後に述べる（3 入口共通の規律）。
+    a.phases.append(_coverage_phase(a.phases))
     a.stamp(**(provenance or {}))
     return a
 
+
+def to_array(x):
+    """後方互換の別名。実体は `tsugi.arrays.asarray`（定義は 1 箇所に保つ）。
+
+    デバイス（GPU）テンソルを NumPy 化する。**なぜ要るか**は `tsugi/arrays.py` を参照。
+    """
+    return asarray(x)
 
 def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   noise_floor: float = 0.0, logits_a=None, logits_b=None,
                   logits_oracle=None,
                   flip_budget: float = 0.001, oracle=None, provenance=None,
                   gen_length: int = 0, task: str = "classification",
+                  decode: str = "greedy", beam_width: int = 4,
                   task_kwargs: dict | None = None,
                   layers_a=None, layers_b=None, layers_oracle=None, x0=None,
                   layer_names=None,
@@ -517,6 +760,8 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
                   worst_steps: int = 400, worst_seed: int = 0, worst_bounds=None,
                   worst_tol: float | None = None) -> Audit:
     """実行時チェックリストの *実行版*。実機/実データのクロスベンダー出力を束ねて判定する。
+
+    テンソルは GPU 上にあってよい（`to_array` が `.detach().cpu().numpy()` を通す）。
 
     静的 audit() の鏡像。与えられたデータに応じて適用可能な層だけ回す:
       - env があれば envelope.check_tensor（本番入力が認証前提内か）
@@ -548,6 +793,15 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
     oracle 無しでは a≈b（portability）しか言えず correctness は未確定 —— shared-mode は
     原理的に検出不能（SPEC-verification §4.1）。oracle があって初めて正しさを問える。
     """
+    # 実機テンソル（GPU 上）をそのまま受け取れるようにする。ここを通さないと、
+    # 実機を手にしたユーザーの最初のコマンドが torch の生の TypeError で止まる。
+    # テンソル引数のみ変換する。`layers_*` は *層関数の列*、`fn_a`/`fn_b` は呼び出し可能
+    # であって配列ではない——ここを一律変換すると呼び出せなくなる（既存テストが検出）。
+    a_out, b_out = to_array(a_out), to_array(b_out)
+    logits_a, logits_b = to_array(logits_a), to_array(logits_b)
+    logits_oracle, oracle = to_array(logits_oracle), to_array(oracle)
+    x0 = to_array(x0)
+
     import numpy as np
 
     from .calibration import check_systematic
@@ -615,6 +869,14 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         if dv == DV_LAYOUT:
             eqp.lines.append("LAYOUT: 値の多重集合は一致 → レイアウト不一致（転置/再タイル）"
                              "の疑い・数値精度バグでなく codegen の整列問題を調査せよ")
+        else:
+            # fp32 系の発散が TF32 入力精度ポリシー差（NVIDIA TF32 vs AMD IEEE）の兆候か
+            # を診断する（バグでない可能性・PyTorch 2.9 fp32_precision）。LAYOUT と同様、
+            # 「発散＝バグ」と決めつける前に既知の良性差を候補に挙げる。
+            from .equivalence import precision_policy_hint
+            hint = precision_policy_hint(af, bf, K, dtype)
+            if hint is not None:
+                eqp.lines.append(hint)
     sysrep = check_systematic(af, bf, K, dtype)
     if not sysrep.ok:
         eqp.max_risk = max(eqp.max_risk, sysrep.max_risk)
@@ -655,6 +917,18 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             dp = AuditPhase(f"decision タスクレベル等価({task})", "decided", tr.max_risk)
             dp.lines.append(f"{task} フリップ率 {tr.flip_rate * 100:.2f}% "
                             f"(予算 {flip_budget * 100:.2f}%・n={tr.n})")
+            if task == "sampling":
+                # 実運用 LLM は温度サンプリングで出力するため、argmax フリップ率だけでは
+                # 出荷形態を覆えない（A-9）。TV は最適結合の下で「両ベンダーから引いた
+                # 1 サンプルが食い違う確率」なので他タスクの flip_rate と同義。
+                # worst-case 上界 tanh(ε/T) は低温で 1 に飽和し無情報になるため併記に留め、
+                # 判定は実測 TV で行う（compare_task が無情報なら自ら INFO で申告する）。
+                dp.lines.append(
+                    f"  T={tr.temperature:g}: 実測 TV mean={tr.tv_mean:.3g}/"
+                    f"max={tr.tv_max:.3g}・worst-case 上界 tanh(ε/T)={tr.tv_predicted:.3g}"
+                    "（TV=最適結合での食い違い確率・T→0 で argmax フリップ率に一致）")
+                for f in tr.findings:
+                    dp.lines.append(f"  [{f.risk.name}] {f.message}")
         ad.phases.append(dp)
 
         # rollout: per-token フリップを生成長へ合成（自己回帰では複利的に増幅・新視点9）。
@@ -669,6 +943,13 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
             rp.lines.append(f"L={gen_length}: survival={rr.survival * 100:.2f}%・"
                             f"safe_len={rr.safe_length}・p≤{p_safe * 100:.3f}%/tok(上側限界)"
                             f"（per-token 許容 ⇏ per-sequence 許容）")
+            if decode == "beam":
+                # beam は静的 logit から証明可能に認証できない（累積対数尤度で並べ替え・
+                # 過渡発散を復元）。greedy を経験的下界の参考値として出しつつ verdict を
+                # 必ず WARN 以上に格上げする（never OK・A-9/Q22・rollout._BEAM_UNCERTIFIABLE）。
+                from .rollout import _BEAM_UNCERTIFIABLE
+                rp.max_risk = max(rp.max_risk, Risk.WARN)
+                rp.lines.append("  [WARN] " + _BEAM_UNCERTIFIABLE.format(k=beam_width))
             ad.phases.append(rp)
 
     # correctness 層（oracle がある時のみ）: 一致≠正しさ。oracle 信頼性＋共有モード障害。
@@ -732,8 +1013,26 @@ def audit_runtime(a_out, b_out, K: int, *, dtype: str = "float16", env=None,
         wp.lines.append(wc.to_text())
         ad.phases.append(wp)
 
+    # 実データを渡した入口ほど「徹底的に調べられた」と読まれる。実際には渡された
+    # データで走れる層だけが走るので、被覆範囲を明示する（audit と同じ規律）。
+    ad.phases.append(_coverage_phase(ad.phases))
     ad.stamp(**(provenance or {}))
     return ad
+
+
+def _wrap_run(fn):
+    """実 GPU カーネルの戻り値を NumPy 化する薄いラッパ（None は素通し）。
+
+    `audit_cross_vendor` に渡される `run_a`/`run_b` は *実機のカーネル* であり、
+    返るのは GPU 上のテンソルである。ノイズ床の実測は NumPy で行うので、境界で変換する。
+    """
+    if fn is None:
+        return None
+
+    def _wrapped(*args, **kwargs):
+        return to_array(fn(*args, **kwargs))
+
+    return _wrapped
 
 
 def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None,
@@ -752,15 +1051,48 @@ def audit_cross_vendor(run_a, run_b, K: int, *, dtype: str = "float16", env=None
       robust オプションと同じ理由でここにも露出する（実機入口が Q49 修正から漏れていた）。
     決定論を仮定せず、各ベンダーを n_runs 回走らせてノイズフロアを測り（視点7）、
     その noise を等価判定の床に織り込む。実機では run_* を実カーネルにするだけ。
+
+    集めた run は **使い回す**（実機では 1 run が高価）。同じスタックから
+      (1) ノイズ床（nondeterminism）
+      (2) 比較対象の単発出力（従来は run_*(0) を追加で 1 回走らせていた）
+      (3) SAFETY 定数の実機校正（calibration.calibrate_safety・FEATURE-AUDIT A-2）
+    の 3 つを導く。(3) は「検証器の定数が実機で正しいか」を実測で問う層であり、
+    実機入口である本関数にしか置き場がない（手順書は docs/GPU-BRINGUP.md）。
     """
-    from .nondeterminism import measure_batch_variance, measure_noise_floor
+    # run_* は **実 GPU カーネル**であり、返るテンソルは GPU 上にある。ここを通さないと
+    # `docs/GPU-BRINGUP.md` が指示する最初のコマンドが torch の生の TypeError で止まる
+    # （audit_runtime と同じ欠陥が、より重要な入口に残っていた）。
+    run_a, run_b = _wrap_run(run_a), _wrap_run(run_b)
+    run_batch = _wrap_run(run_batch)
+    logits_a, logits_b = to_array(logits_a), to_array(logits_b)
+
+    import numpy as np
+
+    from .calibration import SRC_RUN_TO_RUN, calibrate_safety
+    from .nondeterminism import (collect_runs, measure_batch_variance,
+                                 noise_floor_from_runs, pair_deviations)
 
     key = "spread_robust" if robust else "spread"
-    nf_a = measure_noise_floor(run_a, n_runs)
-    nf_b = measure_noise_floor(run_b, n_runs)
+    stack_a = collect_runs(run_a, n_runs)
+    stack_b = collect_runs(run_b, n_runs)
+    nf_a = noise_floor_from_runs(stack_a)
+    nf_b = noise_floor_from_runs(stack_b)
     noise = max(nf_a[key], nf_b[key])
     if run_batch is not None:                       # batch-invariance 床を実効床に合流
         noise = max(noise, measure_batch_variance(run_batch, batch_tiles)[key])
-    return audit_runtime(run_a(0), run_b(0), K, dtype=dtype, env=env,
-                         noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
-                         flip_budget=flip_budget, provenance=provenance)
+
+    ad = audit_runtime(stack_a[0], stack_b[0], K, dtype=dtype, env=env,
+                       noise_floor=noise, logits_a=logits_a, logits_b=logits_b,
+                       flip_budget=flip_budget, provenance=provenance)
+
+    # SAFETY 校正: 良性（同一ベンダーの別 run）発散の分布から、SAFETY が満たすべき
+    # 要求値を実測する。run-to-run はクロスベンダー発散の下界ゆえ「上げる根拠」
+    # 専用（calibrate_safety が INFO で明示）。
+    scale = float(np.sqrt(np.mean(np.asarray(stack_a[0], dtype=np.float64) ** 2)) + 1e-30)
+    devs = np.concatenate([pair_deviations(stack_a), pair_deviations(stack_b)])
+    cal = calibrate_safety(devs, K, dtype=dtype, scale=scale, source=SRC_RUN_TO_RUN)
+    cp = AuditPhase("safety 定数の実機校正", "decided", cal.max_risk)
+    cp.lines.append(cal.to_text())
+    ad.phases.append(cp)
+    ad.stamp(**(provenance or {}))   # phase 追加後の verdict で証明書を貼り直す
+    return ad
