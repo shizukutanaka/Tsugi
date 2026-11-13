@@ -48,4 +48,4 @@ Apache-2.0。依存の LLVM（Apache-2.0 with LLVM exception）・IREE（Apache-
 
 ## Q. 収益は？
 
-OSS。寄付は Bitcoin: `bc1qjaet6jgpk08la46jelmlpgsz84luc4lc0tnwr5`。プロダクトコードに課金機能は組み込まない。
+OSS。プロダクトコードに課金機能は組み込まない。
